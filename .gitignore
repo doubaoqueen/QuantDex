@@ -218,3 +218,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# 量化数据仓库目录，全部忽略
+# data/
+raw_data/
+cache/
+
+# 数据文件类型
+*.parquet
+*.csv
+*.xlsx
+
+# 日志、环境、临时文件
+logs/
+__pycache__/
+.conda/
+*.log
