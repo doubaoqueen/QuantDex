@@ -18,6 +18,12 @@ def normalize_code(code) -> str:
     return s.zfill(6)[:6] if s.isdigit() else s
 
 
+def to_sina_code(code) -> str:
+    """6 位代码 -> 新浪代码（sh600519 / sz000001，无点）。"""
+    c = normalize_code(code)
+    return ("sh" if c[0] in ("6", "9", "5") else "sz") + c
+
+
 def to_bs_code(code, is_index: bool = False) -> str:
     """6 位代码 -> baostock 代码（sh.xxx / sz.xxx）。"""
     c = normalize_code(code)
@@ -129,4 +135,26 @@ def standardize_bs_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         if c not in out.columns:
             out[c] = pd.NA
     out = out[DAILY_STD_COLS].sort_values("date").drop_duplicates("date").reset_index(drop=True)
+    return out
+
+
+def standardize_sina_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """标准化 akshare 新浪日线 stock_zh_a_daily（个股，东财不可用时的稳定后端）。"""
+    out = df.copy()
+    out["symbol"] = normalize_code(symbol)
+    out["date"] = pd.to_datetime(out["date"])
+    for c in ["open", "high", "low", "close", "volume", "amount"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    # 新浪 turnover 为比例(0.0025)，统一为百分比口径(0.25)，与东财/baostock 一致
+    if "turnover" in out.columns:
+        out["turnover"] = pd.to_numeric(out["turnover"], errors="coerce") * 100
+    out = out.sort_values("date").drop_duplicates("date")
+    out["pct_chg"] = out["close"].pct_change() * 100
+    out["change"] = out["close"].diff()
+    out["amplitude"] = (out["high"] - out["low"]) / out["close"].shift(1) * 100
+    for c in DAILY_STD_COLS:
+        if c not in out.columns:
+            out[c] = pd.NA
+    out = out[DAILY_STD_COLS].sort_values("date").reset_index(drop=True)
     return out
