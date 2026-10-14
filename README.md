@@ -27,7 +27,7 @@
 | 资金面   | 北向资金、沪深两市融资融券、龙虎榜                                               |
 | 宏观    | CPI、LPR、货币供应量、存贷款基准利率、存款准备金率                                    |
 | 存储    | Parquet 分区存储 + 增量更新（upsert）+ 数据注册表                              |
-| 分析    | 技术指标库、数据质量检查、收益 / 风险概览、分年度收益、仓库覆盖报告                             |
+| 分析    | 技术指标库、数据质量检查、收益 / 风险概览、分年度收益、仓库覆盖报告、**可视化出图（PNG）**       |
 | 因子    | 8 类量价因子库、**RankIC / ICIR / 衰减**、**分层回测（算术 + 中位数双口径）**           |
 | 回测    | T+1 开盘成交、佣金 / 滑点 / 印花税、净值与回撤、完整绩效、逐笔交易明细                        |
 
@@ -47,9 +47,9 @@ QuantDex/
 │   ├── raw/                      # 旧版裸 CSV（保留）
 │   └── store/                    # Parquet 数据仓库
 │       ├── market/
-│       │   ├── daily/{symbol}.parquet
-│       │   ├── weekly/  monthly/
-│       │   └── minute/{symbol}__{freq}.parquet
+│       │   ├── daily/{symbol}__{adjust}.parquet    # adjust: qfq/hfq/none（复权口径分文件隔离）
+│       │   ├── weekly/  monthly/                    # 命名同上
+│       │   └── minute/{symbol}__{freq}__{adjust}.parquet
 │       ├── meta/                 # 列表、日历、成分、行业等
 │       ├── valuation/            # 个股 / 指数估值
 │       ├── financials/
@@ -101,6 +101,9 @@ QuantDex/
 
 
 ```
+# 安装环境（建议 python 3.11）
+conda create -n QuantDex python=3.11 -y
+
 # 激活环境
 conda activate QuantDex
 
@@ -117,6 +120,9 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 
 ```
+# 第 0 步：下载历史指数成分表（point-in-time，消除幸存者偏差）
+python scripts/00_fetch_pit_constituents.py
+
 # 第 1 步：初始化标的池（列表/日历/成分/行业，约 1 分钟）
 python scripts/01_init_universe.py
 
@@ -131,6 +137,7 @@ python scripts/demo_analysis.py
 python scripts/demo_analysis.py 600519
 ```
 
+第 0 步下载 **point-in-time 历史指数成分表**（消除幸存者偏差的地基数据）；
 第 2、3 步都可**重复运行**：已有数据只抓取最新部分（upsert 按日期去重），不会重复堆积。
 
 
@@ -141,9 +148,9 @@ python scripts/demo_analysis.py 600519
 
 全系统内部统一使用 **6 位纯代码**（如 `600519` / `510300` / `000300`）；
 
-调用 baostock 时由 `schema.to_bs_code()` 自动加 `sh.` / `sz.` 前缀。
+调用 baostock 时由 `schema.to_bs_code()` 自动加 `sh.` / `sz.` / `bj.`（北交所）前缀。
 
-**日 / 周 / 月线**（`market/daily/{symbol}.parquet`）：
+**日 / 周 / 月线**（`market/daily/{symbol}__{adjust}.parquet`，adjust 为 qfq/hfq/none）：
 
 
 
@@ -158,8 +165,11 @@ python scripts/demo_analysis.py 600519
 | pct\_chg                  | 涨跌幅（%）        |
 | change                    | 涨跌额           |
 | turnover                  | 换手率（%）        |
+| source                    | 行级数据源（akshare/em、akshare/sina、baostock） |
 
-**分钟线**（`market/minute/{symbol}__{freq}.parquet`）：把 `date` 换成 `datetime`，其余相同。
+> 复权口径（qfq/hfq/none）记在文件名与注册表 adjust 列：同标的、不同口径的数据落在不同文件，禁止混写。source 列保留每条记录出处，跨源 upsert 时可审计。get_kline 用 adjust 参数指定口径（默认 qfq，指数用 none）。
+
+**分钟线**（`market/minute/{symbol}__{freq}__{adjust}.parquet`）：把 `date` 换成 `datetime`，其余相同。
 
 **财务（baostock 季频）**：`financials/baostock/{symbol}__{类型}.parquet`，类型为
 
@@ -168,6 +178,8 @@ python scripts/demo_analysis.py 600519
 `balance`（偿债 / 资产负债，含净资产）、`cashflow`（现金流）、`dupont`（杜邦）、
 
 `dividend`（分红）、`adjfactor`（复权因子）、`express`（快报）、`forecast`（预告）。
+
+财务表已标准化：统一携带 `symbol`（6 位）与 `bs_code`（sh./sz. 前缀），披露日统一为 `pub_date`、报告期统一为 `report_date`。做基本面因子时必须按 `pub_date`（当时已披露）对齐，而非 `report_date`，否则引入前视偏差。
 
 **金额单位注意**：北向资金为 **亿元**；两融汇总为 **万元**（数据源原始口径）。
 
@@ -190,7 +202,7 @@ store = ParquetStore()
 
 # 行情：抓 / 读
 market.fetch_daily("600519", start="20200101", asset="stock", adjust="qfq", store=store)
-df = market.get_kline("600519", store=store)          # 读本地
+df = market.get_kline("600519", adjust="qfq", store=store)   # 读本地（指数用 adjust="none"）
 market.fetch_minute("600519", freq="5", store=store)  # 分钟线
 spot = market.fetch_spot("stock", store=store)        # 实时快照
 
@@ -209,6 +221,19 @@ ind = add_indicators(df)                    # 全套技术指标
 qsum, details = quality_report(df, store)   # 质检（明细在 details）
 ov = symbol_overview(df)                    # 收益/风险概览
 print(store_coverage(store))                # 仓库覆盖
+
+# 可视化（PNG 静态图，默认存 data/store/plots/，返回文件路径）
+from src.analysis.plot import (
+    plot_kline, plot_backtest, plot_ic_heatmap,
+    plot_quantile_nav, plot_yearly_returns,
+)
+plot_kline(df, name="600519", title="贵州茅台 收盘价与均线")     # 行情+均线
+plot_backtest(result, name="600519")                            # 回测净值 vs 基准 + 回撤
+plot_ic_heatmap(ic_table)                                       # 因子 IC 热力图(* = |NW t|>2)
+plot_quantile_nav(nav, name="amihud_20")                        # 分层净值 Q1~Q5
+plot_yearly_returns(df, name="600519")                          # 分年度收益(红涨绿跌)
+
+# 便捷入口：demo_analysis.py 与 04_factor_research.py 已内置自动出图
 ```
 
 回测：
@@ -282,6 +307,8 @@ KDJ、布林带 BOLL、ATR、威廉 WR、CCI、OBV、动量 MOM、PSY；
 
    经验门槛：|IC 均值 | > 0.03 有一定效果，> 0.05 较好；符号代表方向（负 = 因子值高 → 未来收益低）。
 
+   统计输出含 tstat（普通 t 值）与 nw_tstat（Newey-West 自相关一致 t 值）：持有期>1 时 IC 日序列自相关，普通 t 值系统性虚高，显著性以 nw_tstat（|t|>2）为准。
+
 2. **ICIR = IC 均值 / IC 标准差**：衡量稳定性，|ICIR| > 0.5 较稳。
 
 3. **分层回测**：按因子分 5 组（Q1 最低 → Q5 最高），好因子各组收益应**单调排列**，并看 Q5−Q1 多空收益。
@@ -299,7 +326,7 @@ python scripts/04_factor_research.py
 python scripts/04_factor_research.py 000300 300
 ```
 
-结果落 `data/store/factor_results/`：`ic_summary.parquet`、各组净值等。
+结果落 `data/store/factor_results/`：`ic_summary.parquet`（含 tstat 与 nw_tstat）、各组净值等。
 
 ### 5. 重要陷阱：为什么同时看「算术」和「中位数」
 
@@ -317,7 +344,9 @@ python scripts/04_factor_research.py 000300 300
 
 **结论：判断因子有效性以 RankIC / ICIR / 中位数分层为准；算术累计净值对高波、正偏类因子会严重误导。**
 
-要得到无偏分层，需用 "每个历史日期当时真实的指数成分（含后来退市 / 剔除的股票）"，这是后续数据补齐方向。
+要得到无偏分层，需用 "每个历史日期当时真实的指数成分（含后来退市 / 剔除的股票）"。
+
+**本项已完成（point-in-time 成分已落地）**：`scripts/00_fetch_pit_constituents.py` 下载历史成分区间表（沪深300 自 2005-04-08、中证500 自 2007-01-15，来源 unliftedq/index-constitution，与中证官网当前成分交叉验证 300/300 一致），`build_factor_panel(pit_constituents=...) ` 按「当时真实成分」过滤面板，04 脚本默认启用 PIT 模式并对退市股用 baostock 补齐行情。
 
 ### 6. 本次实测结论（2018-01 \~ 2026-10，沪深 300，58.9 万行）
 
@@ -345,9 +374,19 @@ python scripts/04_factor_research.py 000300 300
 
 * 北向资金 2024 年后披露口径调整，接口保留历史数据。
 
+* 北交所代码（43/83/87/88 老号段、92 新号段）统一映射 `bj.` 前缀；新浪日线后端对北交所支持有限，失败会记录在批量更新报告里。
+
+* 复权口径隔离约定：行情文件按 `{symbol}__{adjust}` 命名。若旧仓库存在无口径的 `{symbol}.parquet` 文件，请自行决定归属或重抓。
+
 * 回测为**向量化、单标的、0/1 仓位**模型，适合择时验证；未做逐笔撮合与多标的组合。
 
-* 因子分层目前基于 "**当前**指数成分 "，存在幸存者 / 前视偏差（详见第八节）；后续需补 point-in-time 历史成分（含退市 / 剔除股）。
+* 因子分层已支持 **point-in-time 历史成分**（04 脚本默认启用，退市股用 baostock 补齐），幸存者偏差已消除。
+
+  PIT 成分表（unliftedq/index-constitution，声明源自中证指数公司官方公告）已做如下核验：
+
+  ① 当前截面与中证官网官方成分 **300/300 双向零差异**；② **2023-12-08** 调整与证券时报刊载的官方名单**逐只双向零差异**（调入 14/调出 14）；③ **2024-12-13** 调整，新闻点名的 12 只调入、9 只调出全部吻合；④ **2024-06-14** 调整点名个股全部吻合；⑤ 多段进出区间（如以岭药业）与公开记录自洽。
+
+  已知口径：个别调整生效日在数据源中记在非交易日（边界日 ±1 只），不影响研究结论；若将来用于资金级决策，需对全部 71 个调整时点做全量核验。
 
 后续可扩展：① 多标的组合 / 截面选股回测；② 事件驱动逐笔引擎；
 

@@ -18,23 +18,46 @@ def normalize_code(code) -> str:
     return s.zfill(6)[:6] if s.isdigit() else s
 
 
-def to_sina_code(code) -> str:
-    """6 位代码 -> 新浪代码（sh600519 / sz000001，无点）。"""
+def is_bj_code(code) -> bool:
+    """判断 6 位代码是否属于北交所（老号段 43/83/87/88 开头，新号段 92 开头）。"""
     c = normalize_code(code)
+    return c.startswith(("4", "8", "92"))
+
+
+def to_sina_code(code) -> str:
+    """6 位代码 -> 新浪代码（sh600519 / sz000001 / bj830799，无点）。"""
+    c = normalize_code(code)
+    if is_bj_code(c):
+        return "bj" + c
     return ("sh" if c[0] in ("6", "9", "5") else "sz") + c
 
 
 def to_bs_code(code, is_index: bool = False) -> str:
-    """6 位代码 -> baostock 代码（sh.xxx / sz.xxx）。"""
+    """6 位代码 -> baostock 代码（sh.xxx / sz.xxx / bj.xxx）。"""
     c = normalize_code(code)
     if is_index:
-        # 深证指数 399 开头在深交所，其余指数（上证/中证系列）在上交所
+        # 北交所指数 899 开头；深证指数 399 开头；其余（上证/中证）在上交所
+        if c.startswith("899"):
+            return "bj." + c
         return ("sz." + c) if c.startswith("399") else ("sh." + c)
+    if is_bj_code(c):
+        return "bj." + c
     if c[0] in ("6", "9", "5"):      # 沪市股票/B股、沪市ETF(5开头)
         return "sh." + c
     if c[0] in ("0", "2", "3", "1"):  # 深市股票、深市ETF(1开头)
         return "sz." + c
     return "sh." + c
+
+
+def kline_file_name(code, adjust: str) -> str:
+    """K 线仓库文件名：{6位代码}__{复权口径}；不复权统一记作 none。
+
+    复权口径隔离是数据正确性约定：qfq/hfq/none 三种口径数值不同，
+    同一标的的不同口径必须落在不同文件，禁止混写。
+    """
+    c = normalize_code(code)
+    a = (adjust or "none").strip().lower()
+    return f"{c}__{a}"
 
 
 # ---------------------------------------------------------------- 行情列映射
@@ -84,10 +107,14 @@ BS_DAILY_MAP = {
     "pctChg": "pct_chg",
 }
 
+# 标准列末尾的 source 为行级数据来源标记（akshare/em、akshare/sina、baostock），
+# 用于跨源 upsert 时保留每条记录的出处，避免不同源复权口径差异被静默掩盖。
 DAILY_STD_COLS = ["symbol", "date", "open", "high", "low", "close",
-                  "volume", "amount", "amplitude", "pct_chg", "change", "turnover"]
+                  "volume", "amount", "amplitude", "pct_chg", "change", "turnover",
+                  "source"]
 MIN_STD_COLS = ["symbol", "datetime", "open", "high", "low", "close",
-                "volume", "amount", "amplitude", "pct_chg", "change", "turnover"]
+                "volume", "amount", "amplitude", "pct_chg", "change", "turnover",
+                "source"]
 
 _NUM_COLS = ["open", "high", "low", "close", "volume", "amount",
              "amplitude", "pct_chg", "change", "turnover"]
@@ -104,6 +131,7 @@ def standardize_ak_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     for c in DAILY_STD_COLS:
         if c not in out.columns:
             out[c] = pd.NA
+    out["source"] = "akshare/em"
     out = out[DAILY_STD_COLS].sort_values("date").drop_duplicates("date").reset_index(drop=True)
     return out
 
@@ -119,6 +147,7 @@ def standardize_ak_min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     for c in MIN_STD_COLS:
         if c not in out.columns:
             out[c] = pd.NA
+    out["source"] = "akshare/em"
     out = out[MIN_STD_COLS].sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
     return out
 
@@ -134,6 +163,7 @@ def standardize_bs_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     for c in DAILY_STD_COLS:
         if c not in out.columns:
             out[c] = pd.NA
+    out["source"] = "baostock"
     out = out[DAILY_STD_COLS].sort_values("date").drop_duplicates("date").reset_index(drop=True)
     return out
 
@@ -156,5 +186,6 @@ def standardize_sina_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     for c in DAILY_STD_COLS:
         if c not in out.columns:
             out[c] = pd.NA
+    out["source"] = "akshare/sina"
     out = out[DAILY_STD_COLS].sort_values("date").reset_index(drop=True)
     return out

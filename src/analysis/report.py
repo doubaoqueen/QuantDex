@@ -62,9 +62,15 @@ def symbol_overview(df: pd.DataFrame, benchmark: pd.DataFrame | None = None,
             r2 = m["bench_close"].pct_change()
             joined = pd.concat([r1, r2], axis=1).dropna()
             joined.columns = ["s", "b"]
-            cov = joined.cov().iloc[0, 1]
-            var_b = joined["b"].var()
-            overview["与基准相关系数"] = joined.corr().iloc[0, 1]
+            # 矩方法计算协方差/相关系数（DataFrame.cov/corr 在
+            # pandas 3.0.6 + numpy 2.4.6 / Windows 下存在原生崩溃）
+            s, b = joined["s"], joined["b"]
+            ds, db = s - s.mean(), b - b.mean()
+            var_s, var_b = (ds ** 2).mean(), (db ** 2).mean()
+            cov = (ds * db).mean()
+            corr = (cov / np.sqrt(var_s * var_b)
+                    if var_s > 0 and var_b > 0 else np.nan)
+            overview["与基准相关系数"] = corr
             overview["相对基准Beta"] = cov / var_b if var_b > 0 else np.nan
             overview["基准区间收益"] = m["bench_close"].iloc[-1] / m["bench_close"].iloc[0] - 1
             overview["超额收益(区间)"] = (m["close"].iloc[-1] / m["close"].iloc[0] - 1) - overview["基准区间收益"]

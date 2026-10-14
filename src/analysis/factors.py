@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data.schema import normalize_code
+from src.data.schema import normalize_code, kline_file_name
 from src.data.storage import ParquetStore
 
 # 因子名与中文说明（方向以实测 IC 为准）
@@ -93,11 +93,18 @@ def build_factor_panel(
     symbols: list[str],
     start: str | None = None,
     factor_names: list[str] | None = None,
+    adjust: str = "qfq",
+    pit_constituents: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     读取多标的日线 -> 算原始因子 -> 拼成长表 -> 每个交易日截面 rank(pct)。
 
     返回列：date, symbol, close, ret, 以及各因子的截面百分位(0~1)。
+    adjust 指定读取哪套复权口径（默认 qfq，与 04 脚本写入口径一致）。
+
+    pit_constituents: 传入 point-in-time 成分表（universe.load_pit_constituents 的输出）
+    时，面板只保留「当天确实是该指数成分」的 (date, symbol) 行——消除幸存者偏差。
+    判定口径：in_date <= date < out_date，out_date 为空视为至今仍是成分。
     """
     factor_names = factor_names or FACTOR_NAMES
     keep = ["date", "symbol", "close", "ret", *factor_names]
@@ -105,9 +112,10 @@ def build_factor_panel(
 
     for sym in symbols:
         code = normalize_code(sym)
-        if not store.exists("daily", code):
+        name = kline_file_name(code, adjust)
+        if not store.exists("daily", name):
             continue
-        df = store.read("daily", code)
+        df = store.read("daily", name)
         raw = compute_raw_factors(df)
         frames.append(raw[keep])
 
@@ -117,6 +125,19 @@ def build_factor_panel(
     panel = pd.concat(frames, ignore_index=True)
     if start:
         panel = panel[panel["date"] >= pd.Timestamp(start)]
+
+    # point-in-time 过滤：只保留当时真实在指数内的 (date, symbol)
+    if pit_constituents is not None:
+        pit = pit_constituents[["symbol", "in_date", "out_date"]].copy()
+        pit["in_date"] = pd.to_datetime(pit["in_date"])
+        pit["out_date"] = pd.to_datetime(pit["out_date"])
+        merged = panel.merge(pit, on="symbol", how="inner")
+        keep_rows = (
+            (merged["date"] >= merged["in_date"])
+            & (merged["out_date"].isna() | (merged["date"] < merged["out_date"]))
+        )
+        panel = merged[keep_rows].drop(columns=["in_date", "out_date"])
+        panel = panel.reset_index(drop=True)
 
     # 截面 rank：同一天所有股票横向排名为百分位
     for f in factor_names:

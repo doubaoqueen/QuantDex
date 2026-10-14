@@ -11,7 +11,7 @@ from config import DEFAULT_START_DATE, REQUEST_INTERVAL
 from src.data.storage import ParquetStore
 from src.data.sources import ak, ensure_bs_login, bs_to_df, retry_call
 from src.data.schema import (
-    normalize_code, to_bs_code, to_sina_code,
+    normalize_code, to_bs_code, to_sina_code, kline_file_name,
     standardize_ak_daily, standardize_ak_min, standardize_bs_daily,
     standardize_sina_daily,
 )
@@ -23,6 +23,9 @@ _BS_FREQ = {"daily": "d", "weekly": "w", "monthly": "m"}
 
 
 # ---------------------------------------------------------------- 单标的 K 线
+_BS_ADJUST_FLAG = {"qfq": "2", "hfq": "1", "none": "3"}
+
+
 def fetch_kline(
     symbol: str,
     start: str = DEFAULT_START_DATE,
@@ -30,6 +33,7 @@ def fetch_kline(
     asset: str = "stock",
     period: str = "daily",
     adjust: str = "qfq",
+    source: str = "auto",
     store: ParquetStore | None = None,
 ) -> pd.DataFrame:
     """
@@ -37,6 +41,9 @@ def fetch_kline(
     symbol: 6 位代码；start/end: YYYYMMDD；asset: stock/etf/index；
     period: daily/weekly/monthly；adjust: qfq(前复权)/hfq(后复权)/""(不复权)。
     指数无复权概念，自动忽略 adjust。
+
+    source: "auto"(默认，个股/ETF 走东财) / "bs"(个股走 baostock，
+    覆盖已退市股的历史行情，东财/新浪对退市股无数据)。
     """
     store = store or ParquetStore()
     code = normalize_code(symbol)
@@ -45,21 +52,29 @@ def fetch_kline(
         raise ValueError(f"asset 仅支持 {_VALID_ASSET}")
     if period not in _VALID_PERIOD:
         raise ValueError(f"period 仅支持 {_VALID_PERIOD}")
-
     if asset == "index":
+        source = "bs"
+    if asset == "etf" and source == "bs":
+        raise ValueError("ETF 不支持 baostock 源")
+    # 复权口径落文件名：指数无复权概念，统一记 none；qfq/hfq 分文件隔离
+    adj = "none" if asset == "index" else (adjust or "none")
+
+    if source == "bs":
         bs = ensure_bs_login()
-        bs_code = to_bs_code(code, is_index=True)
+        bs_code = to_bs_code(code, is_index=(asset == "index"))
         fields = "date,code,open,high,low,close,volume,amount,turn,pctChg"
+        flag = "3" if asset == "index" else _BS_ADJUST_FLAG.get(adj, "3")
         rs = bs.query_history_k_data_plus(
             bs_code, fields,
             start_date=f"{start[:4]}-{start[4:6]}-{start[6:]}",
             end_date=f"{end[:4]}-{end[4:6]}-{end[6:]}",
-            frequency=_BS_FREQ[period], adjustflag="3",
+            frequency=_BS_FREQ[period], adjustflag=flag,
         )
         raw = bs_to_df(rs)
         if raw.empty:
             return pd.DataFrame()
         std = standardize_bs_daily(raw, code)
+        src = "baostock"
     else:
         if asset == "stock":
             fn = ak.stock_zh_a_hist
@@ -73,11 +88,12 @@ def fetch_kline(
         if raw is None or raw.empty:
             return pd.DataFrame()
         std = standardize_ak_daily(raw, code)
+        src = "akshare"
 
     kind = period  # daily / weekly / monthly
-    total = store.upsert(std, kind, code, keys=["symbol", "date"],
-                         source="akshare" if asset != "index" else "baostock",
-                         date_col="date")
+    name = kline_file_name(code, adj)
+    total = store.upsert(std, kind, name, keys=["symbol", "date"],
+                         source=src, date_col="date", adjust=adj)
     std.attrs["total_rows"] = total
     return std
 
@@ -112,8 +128,10 @@ def fetch_daily_sina(
     if raw is None or raw.empty:
         return pd.DataFrame()
     std = standardize_sina_daily(raw, code)
-    total = store.upsert(std, "daily", code, keys=["symbol", "date"],
-                         source="akshare/sina", date_col="date")
+    adj = adjust or "none"
+    name = kline_file_name(code, adj)
+    total = store.upsert(std, "daily", name, keys=["symbol", "date"],
+                         source="akshare/sina", date_col="date", adjust=adj)
     std.attrs["total_rows"] = total
     return std
 
@@ -147,9 +165,10 @@ def fetch_minute(
     if raw is None or raw.empty:
         return pd.DataFrame()
     std = standardize_ak_min(raw, code)
-    name = f"{code}__{freq}"
+    adj = adjust or "none"
+    name = f"{code}__{freq}__{adj}"
     store.upsert(std, "minute", name, keys=["symbol", "datetime"],
-                 source="akshare", date_col="datetime")
+                 source="akshare", date_col="datetime", adjust=adj)
     return std
 
 
@@ -176,21 +195,23 @@ def fetch_spot(asset: str = "stock", store: ParquetStore | None = None,
 
 
 # ---------------------------------------------------------------- 本地读取
-def get_kline(symbol: str, period: str = "daily",
+def get_kline(symbol: str, period: str = "daily", adjust: str = "qfq",
               store: ParquetStore | None = None) -> pd.DataFrame:
-    """从本地仓库读取 K 线。"""
+    """从本地仓库读取 K 线。adjust: qfq/hfq/none（指数数据用 none）。"""
     store = store or ParquetStore()
-    return store.read(period, normalize_code(symbol))
+    name = kline_file_name(symbol, adjust)
+    return store.read(period, name)
 
 
-def get_local_last_date(symbol: str, period: str = "daily",
+def get_local_last_date(symbol: str, period: str = "daily", adjust: str = "qfq",
                         store: ParquetStore | None = None):
     """本地数据的最后日期，无数据返回 None。"""
     store = store or ParquetStore()
     code = normalize_code(symbol)
-    if not store.exists(period, code):
+    name = kline_file_name(code, adjust)
+    if not store.exists(period, name):
         return None
-    df = store.read(period, code, columns=["date"])
+    df = store.read(period, name, columns=["date"])
     return pd.to_datetime(df["date"]).max()
 
 
@@ -215,7 +236,7 @@ def update_kline_batch(
     for i, sym in enumerate(symbols, 1):
         code = normalize_code(sym)
         try:
-            last = get_local_last_date(code, period, store)
+            last = get_local_last_date(code, period, adjust, store)
             if last is not None:
                 start = (last + pd.Timedelta(days=1)).strftime("%Y%m%d")
                 if pd.Timestamp(start) > pd.Timestamp.now().normalize():

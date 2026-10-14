@@ -164,6 +164,33 @@ def fetch_index_constituents(index_code: str = "000300",
     return df
 
 
+# ---------------------------------------------------------------- point-in-time 成分
+def load_pit_constituents(index_code: str = "000300",
+                          store: ParquetStore | None = None) -> pd.DataFrame:
+    """读取 point-in-time 历史成分表（消除幸存者偏差的基础数据）。
+
+    每行一只股票的「进出区间」：symbol, name, in_date(纳入生效日), out_date(剔除生效日)。
+    判定某日 t 是否为成分：in_date <= t < out_date（out_date 为 NaT 表示至今仍为成分）。
+
+    数据源：github unliftedq/index-constitution（中证指数公司官方调整记录整理，
+    与 csindex 官网当前成分交叉验证 300/300 一致）。
+    覆盖：沪深300(000300) 自 2005-04-08、中证500(000905) 自 2007-01-15。
+    """
+    store = store or ParquetStore()
+    name = f"pit_constituents_{normalize_code(index_code)}"
+    if not store.exists("meta", name):
+        raise FileNotFoundError(
+            f"PIT 成分表不存在: meta/{name}。请先运行 scripts/00_fetch_pit_constituents.py")
+    return store.read("meta", name)
+
+
+def pit_union_symbols(index_code: str = "000300",
+                      store: ParquetStore | None = None) -> list[str]:
+    """该指数历史成分并集（曾进入过的全部股票，含已剔除/退市）。"""
+    pit = load_pit_constituents(index_code, store)
+    return sorted(pit["symbol"].unique().tolist())
+
+
 def init_universe(store: ParquetStore | None = None,
                   constituent_indexes=("000300", "000905", "000852")) -> dict:
     """一键初始化全部标的池与基础数据。"""
