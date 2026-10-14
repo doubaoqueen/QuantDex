@@ -11,8 +11,9 @@ from config import DEFAULT_START_DATE, REQUEST_INTERVAL
 from src.data.storage import ParquetStore
 from src.data.sources import ak, ensure_bs_login, bs_to_df, retry_call
 from src.data.schema import (
-    normalize_code, to_bs_code,
+    normalize_code, to_bs_code, to_sina_code,
     standardize_ak_daily, standardize_ak_min, standardize_bs_daily,
+    standardize_sina_daily,
 )
 
 _VALID_ASSET = ("stock", "etf", "index")
@@ -85,6 +86,36 @@ def fetch_kline(
 def fetch_daily(symbol, start=DEFAULT_START_DATE, end=None,
                 asset="stock", adjust="qfq", store=None) -> pd.DataFrame:
     return fetch_kline(symbol, start, end, asset, "daily", adjust, store)
+
+
+# ---------------------------------------------------------------- 个股日线（新浪）
+def fetch_daily_sina(
+    symbol: str,
+    start: str = DEFAULT_START_DATE,
+    end: str | None = None,
+    adjust: str = "qfq",
+    store: ParquetStore | None = None,
+) -> pd.DataFrame:
+    """
+    抓取个股日线（新浪 stock_zh_a_daily，稳定后端，东财被限流时使用）。
+    返回标准化 DataFrame 并增量写入 daily。字段含 OHLCV/amount/turnover。
+    """
+    store = store or ParquetStore()
+    code = normalize_code(symbol)
+    end = end or pd.Timestamp.now().strftime("%Y%m%d")
+    sina_code = to_sina_code(code)
+    raw = retry_call(
+        ak.stock_zh_a_daily, symbol=sina_code,
+        start_date=start, end_date=end, adjust=adjust,
+        label=f"sina:{code}",
+    )
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    std = standardize_sina_daily(raw, code)
+    total = store.upsert(std, "daily", code, keys=["symbol", "date"],
+                         source="akshare/sina", date_col="date")
+    std.attrs["total_rows"] = total
+    return std
 
 
 # ---------------------------------------------------------------- 分钟线
@@ -170,10 +201,12 @@ def update_kline_batch(
     period: str = "daily",
     adjust: str = "qfq",
     full_start: str = DEFAULT_START_DATE,
+    source: str = "em",
     store: ParquetStore | None = None,
 ) -> dict:
     """
     批量增量更新 K 线：已有数据的标的只抓最后日期之后，新标的从 full_start 抓。
+    source: "em"(东财，默认) / "sina"(新浪，东财被限流时用，仅个股)。
     返回 {symbol: 新增/状态}，失败标的收集在返回值的 __failed__ 中。
     """
     store = store or ParquetStore()
@@ -190,8 +223,12 @@ def update_kline_batch(
                     continue
             else:
                 start = full_start
-            df = fetch_kline(code, start=start, asset=asset,
-                             period=period, adjust=adjust, store=store)
+            if source == "sina":
+                df = fetch_daily_sina(code, start=start,
+                                      adjust=adjust, store=store)
+            else:
+                df = fetch_kline(code, start=start, asset=asset,
+                                 period=period, adjust=adjust, store=store)
             report[code] = len(df)
         except Exception as e:  # noqa: BLE001
             report["__failed__"].append((code, str(e)))
