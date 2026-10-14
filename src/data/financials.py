@@ -15,6 +15,34 @@ from src.data.schema import normalize_code, to_bs_code
 _BS_FIN_LOADERS = None  # 延迟初始化（需要先登录拿 bs 模块）
 
 
+def _standardize_bs_fin(df: pd.DataFrame) -> pd.DataFrame:
+    """baostock 财务表标准化：披露日/报告期统一列名并解析日期，code→bs_code，附 6 位 symbol。
+
+    披露日(pub_date)与报告期(report_date)分离是防前视偏差的基础：
+    因子计算只能用「当时已披露」的数据，即按 pub_date 对齐而非 statDate。
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    date_map = {
+        "pubDate": "pub_date",                     # 季频六件套披露日
+        "performanceExpPubDate": "pub_date",       # 业绩快报披露日
+        "profitForcastExpPubDate": "pub_date",     # 业绩预告披露日
+        "statDate": "report_date",                 # 季频六件套报告期
+        "performanceExpStatDate": "report_date",   # 快报统计期
+        "profitForcastExpStatDate": "report_date", # 预告统计期
+    }
+    out = out.rename(columns={k: v for k, v in date_map.items()
+                              if k in out.columns})
+    for c in ("pub_date", "report_date"):
+        if c in out.columns:
+            out[c] = pd.to_datetime(out[c], errors="coerce")
+    if "code" in out.columns:
+        out = out.rename(columns={"code": "bs_code"})
+        out.insert(0, "symbol", out["bs_code"].map(normalize_code))
+    return out
+
+
 # ---------------------------------------------------------------- akshare 摘要
 def fetch_financial_abstract(symbol: str,
                              store: ParquetStore | None = None) -> pd.DataFrame:
@@ -67,9 +95,9 @@ def fetch_bs_financials(symbol: str, years: int = 3,
                 if not df.empty:
                     frames.append(df)
         if frames:
-            out = pd.concat(frames, ignore_index=True)
+            out = _standardize_bs_fin(pd.concat(frames, ignore_index=True))
             name = f"{normalize_code(symbol)}__{ftype}"
-            store.write(out, "fin_bs", name, source="baostock", date_col="statDate")
+            store.write(out, "fin_bs", name, source="baostock", date_col="report_date")
             result[ftype] = len(out)
     return result
 
@@ -87,17 +115,17 @@ def fetch_express_forecast(symbol: str, years: int = 2,
     result = {}
 
     rs1 = bs.query_performance_express_report(code, start_date=start, end_date=end)
-    df1 = bs_to_df(rs1)
+    df1 = _standardize_bs_fin(bs_to_df(rs1))
     if not df1.empty:
         store.write(df1, "fin_bs", f"{normalize_code(symbol)}__express",
-                    source="baostock", date_col="statDate")
+                    source="baostock", date_col="pub_date")
         result["express"] = len(df1)
 
     rs2 = bs.query_forecast_report(code, start_date=start, end_date=end)
-    df2 = bs_to_df(rs2)
+    df2 = _standardize_bs_fin(bs_to_df(rs2))
     if not df2.empty:
         store.write(df2, "fin_bs", f"{normalize_code(symbol)}__forecast",
-                    source="baostock", date_col="statDate")
+                    source="baostock", date_col="pub_date")
         result["forecast"] = len(df2)
     return result
 
@@ -121,7 +149,7 @@ def fetch_dividend(symbol: str, years: int = 6,
             frames.append(df)
     if not frames:
         return pd.DataFrame()
-    out = pd.concat(frames, ignore_index=True)
+    out = _standardize_bs_fin(pd.concat(frames, ignore_index=True))
     store.write(out, "fin_bs", f"{normalize_code(symbol)}__dividend",
                 source="baostock", date_col="dividOperateDate")
     return out
@@ -137,7 +165,7 @@ def fetch_adjust_factor(symbol: str, start: str = "2010-01-01",
     code = to_bs_code(normalize_code(symbol))
     end = end or pd.Timestamp.now().strftime("%Y-%m-%d")
     rs = bs.query_adjust_factor(code=code, start_date=start, end_date=end)
-    df = bs_to_df(rs)
+    df = _standardize_bs_fin(bs_to_df(rs))
     if not df.empty:
         store.write(df, "fin_bs", f"{normalize_code(symbol)}__adjfactor",
                     source="baostock", date_col="dividOperateDate")

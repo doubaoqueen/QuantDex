@@ -64,13 +64,54 @@ def rankic_series(panel: pd.DataFrame, factor: str, horizon: int) -> pd.Series:
     return _sectional_pearson(d, factor, y).dropna()
 
 
+def _pearson(a: pd.Series, b: pd.Series) -> float:
+    """等长序列 Pearson 相关（矩方法，纯向量化）。
+
+    说明：个别 pandas/numpy 组合在 Windows 上调用 Series.corr / DataFrame.cov
+    会原生崩溃（本仓库实测 pandas 3.0.6 + numpy 2.4.6 无声退出），
+    矩方法不经过该代码路径，结果一致且无此问题。
+    """
+    a = pd.to_numeric(a, errors="coerce")
+    b = pd.to_numeric(b, errors="coerce")
+    mask = a.notna() & b.notna()
+    a, b = a[mask], b[mask]
+    if len(a) < 2:
+        return np.nan
+    da, db = a - a.mean(), b - b.mean()
+    va, vb = (da ** 2).mean(), (db ** 2).mean()
+    if va <= 0 or vb <= 0:
+        return np.nan
+    return (da * db).mean() / np.sqrt(va * vb)
+
+
+def _newey_west_tstat(x: pd.Series, max_lags: int) -> float:
+    """Newey-West 自相关一致 t 值（Bartlett 核）。
+
+    重叠持有期(h>1)会让相邻交易日的 IC 高度自相关，普通 t 值系统性虚高；
+    max_lags 通常取 h-1。返回 NaN 表示样本不足或方差非正。
+    """
+    x = x.dropna()
+    n = len(x)
+    if n < 3 or max_lags < 1:
+        return np.nan
+    resid = x - x.mean()
+    var = (resid ** 2).sum() / n
+    for lag in range(1, min(max_lags, n - 1) + 1):
+        w = 1 - lag / (max_lags + 1)      # Bartlett 权重
+        var += 2 * w * (resid[lag:] * resid[:-lag]).sum() / n
+    if var <= 0:
+        return np.nan
+    return x.mean() / np.sqrt(var / n)
+
+
 # ================================================================ IC 汇总 / 衰减
 def ic_summary(panel: pd.DataFrame,
                factors: list[str] | None = None,
                horizons=(1, 5, 10, 20)):
     """
     返回：
-      table  长表 factor,horizon,n,ic_mean,ic_std,icir,pos_ratio,tstat
+      table  长表 factor,horizon,n,ic_mean,ic_std,icir,pos_ratio,tstat,nw_tstat
+             tstat 为普通 t 值；nw_tstat 为 Newey-West 自相关一致 t 值（重叠持有期下更可靠）
       series {(factor,horizon): RankIC 日序列}
     """
     factors = factors or FACTOR_NAMES
@@ -87,6 +128,7 @@ def ic_summary(panel: pd.DataFrame,
                 "icir": mean / std if std and std > 0 else np.nan,
                 "pos_ratio": (s > 0).mean() if n else np.nan,
                 "tstat": mean / (std / np.sqrt(n)) if std and std > 0 and n else np.nan,
+                "nw_tstat": _newey_west_tstat(s, max(1, h - 1)) if n else np.nan,
             })
     return pd.DataFrame(rows), series
 
@@ -186,7 +228,7 @@ def quantile_backtest(panel: pd.DataFrame, factor: str,
     totals = stats["total"].reset_index(drop=True)
     grp_idx = pd.Series(range(1, len(totals) + 1), dtype=float)
     if len(totals) >= 2:
-        mono_corr = grp_idx.corr(totals.rank().astype(float), method="pearson")
+        mono_corr = _pearson(grp_idx, totals.rank().astype(float))
         strict = bool(totals.is_monotonic_increasing
                       or totals.is_monotonic_decreasing)
     else:

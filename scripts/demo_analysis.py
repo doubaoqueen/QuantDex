@@ -80,6 +80,18 @@ def main() -> None:
     print("\n>> 数据仓库覆盖：")
     print(store_coverage(store).to_string())
 
+    # 自动出图（失败不影响控制台结果）
+    try:
+        from src.analysis.plot import plot_kline, plot_backtest, plot_yearly_returns
+        p1 = plot_kline(df, name=symbol, title=f"{symbol} 收盘价与均线")
+        p2 = plot_backtest(result, title=f"{symbol} 双均线(5,20)回测", name=symbol)
+        p3 = plot_yearly_returns(df, title=f"{symbol} 分年度收益", name=symbol)
+        print("\n>> 图表已保存：")
+        for p in (p1, p2, p3):
+            print(f"   {p}")
+    except Exception as e:  # noqa: BLE001
+        print(f"\n>> [warn] 出图失败：{e}")
+
     # 带指标的完整 DataFrame 可用于后续研究
     _ = add_indicators(df)
 

@@ -3,10 +3,10 @@
 Parquet 数据仓库：分区存储、读取、增量更新（upsert）、数据注册表。
 
 数据集 kind 与目录、文件命名约定：
-    daily      market/daily/{symbol}.parquet
-    weekly     market/weekly/{symbol}.parquet
-    monthly    market/monthly/{symbol}.parquet
-    minute     market/minute/{symbol}__{freq}.parquet
+    daily      market/daily/{symbol}__{adjust}.parquet      （adjust: qfq/hfq/none）
+    weekly     market/weekly/{symbol}__{adjust}.parquet
+    monthly    market/monthly/{symbol}__{adjust}.parquet
+    minute     market/minute/{symbol}__{freq}__{adjust}.parquet
     meta       meta/{name}.parquet
     valuation  valuation/{symbol}.parquet
     fin_abstract financials/abstract/{symbol}.parquet
@@ -56,13 +56,14 @@ class ParquetStore:
         return self._path(kind, name).exists()
 
     def write(self, df: pd.DataFrame, kind: str, name: str,
-              source: str = "", date_col: str | None = None) -> None:
-        """整表覆盖写入，并更新注册表。"""
+              source: str = "", date_col: str | None = None,
+              adjust: str = "") -> None:
+        """整表覆盖写入，并更新注册表。adjust 记录复权口径（仅行情类数据使用）。"""
         if df is None or len(df) == 0:
             return
         path = self._path(kind, name)
         df.to_parquet(path, index=False, compression="snappy")
-        self._register(kind, name, len(df), source, date_col, df)
+        self._register(kind, name, len(df), source, date_col, df, adjust)
 
     def read(self, kind: str, name: str, columns: list[str] | None = None) -> pd.DataFrame:
         """读取数据集，不存在则抛 FileNotFoundError。"""
@@ -78,10 +79,10 @@ class ParquetStore:
     # -------------------------------------------------- 增量更新
     def upsert(self, df: pd.DataFrame, kind: str, name: str,
                keys: list[str], source: str = "",
-               date_col: str | None = None) -> int:
+               date_col: str | None = None, adjust: str = "") -> int:
         """
         增量合并：新数据按 keys 与旧数据去重（新数据优先），排序后写回。
-        返回合并后的总行数。
+        返回合并后的总行数。adjust 记录复权口径（仅行情类数据使用）。
         """
         if df is None or len(df) == 0:
             return 0
@@ -92,12 +93,13 @@ class ParquetStore:
             merged = df.copy()
         merged = merged.drop_duplicates(subset=keys, keep="last")
         merged = merged.sort_values(keys).reset_index(drop=True)
-        self.write(merged, kind, name, source=source, date_col=date_col)
+        self.write(merged, kind, name, source=source, date_col=date_col, adjust=adjust)
         return len(merged)
 
     # -------------------------------------------------- 注册表
     def _register(self, kind: str, name: str, rows: int,
-                  source: str, date_col: str | None, df: pd.DataFrame) -> None:
+                  source: str, date_col: str | None, df: pd.DataFrame,
+                  adjust: str = "") -> None:
         """更新注册表中该数据集的元信息。"""
         min_date = max_date = pd.NaT
         if date_col and date_col in df.columns:
@@ -112,6 +114,7 @@ class ParquetStore:
             "min_date": min_date,
             "max_date": max_date,
             "source": source,
+            "adjust": adjust,
             "updated_at": pd.Timestamp.now(),
         }])
 
@@ -129,7 +132,8 @@ class ParquetStore:
         """返回数据注册表。"""
         if not REGISTRY_PATH.exists():
             return pd.DataFrame(columns=["dataset", "name", "rows", "date_col",
-                                         "min_date", "max_date", "source", "updated_at"])
+                                         "min_date", "max_date", "source",
+                                         "adjust", "updated_at"])
         return pd.read_parquet(REGISTRY_PATH)
 
     def list_names(self, kind: str) -> list[str]:
