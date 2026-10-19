@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+"""
+组合级回测引擎：目标权重矩阵 -> 组合净值（T+1 生效、含换手成本）。
+
+约定（与单标的向量化引擎口径一致，无未来函数）：
+- 输入 weights：index=信号日（收盘，T），columns=symbols，值=目标权重（Σ≤1，剩余为现金）；
+- 信号在 T 收盘生成，**T+1 收盘执行**（trade_lag=1）：当日先按旧持仓吃满 t-1→t 收益，
+  再在收盘按目标权重调仓并扣费，新权重从 t 收盘起生效；
+- 收益：组合日收益 = Σ w_eff * r_close；两次调仓之间权重按个股收益自然漂移；
+- 成本：调仓时按换手额扣佣金+滑点（买入）、佣金+滑点+印花税（卖出）。
+
+用法：
+    from src.backtest.portfolio import run_portfolio_backtest, portfolio_performance
+    res = run_portfolio_backtest(W, prices, fee=2.5e-4, slippage=5e-4, stamp_duty=5e-4)
+    portfolio_performance(res)
+"""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+TRADING_DAYS = 250
+
+
+def run_portfolio_backtest(
+    weights: pd.DataFrame,
+    prices: pd.DataFrame,
+    fee: float = 0.00025,
+    slippage: float = 0.0005,
+    stamp_duty: float = 0.0,
+    benchmark_returns: pd.Series | None = None,
+    trade_lag: int = 1,
+    verbose: bool = False,
+) -> dict:
+    """目标权重矩阵 -> 组合回测结果。
+
+    weights  : DataFrame（index=信号日，columns=symbols，值=目标权重，可含现金）
+    prices   : DataFrame（index=交易日，columns=symbols，收盘价；缺失日 <= 0 视为无价格）
+    """
+    if weights.empty or prices.empty:
+        raise ValueError("weights / prices 不能为空")
+
+    cols = weights.columns.intersection(prices.columns)
+    if len(cols) == 0:
+        raise ValueError("weights 与 prices 没有共同标的")
+    W = weights[cols].astype(float).fillna(0.0)
+
+    # 价格：按交易日升序，ffill 处理停牌/缺失（停牌日收益记 0，等同持有不动）
+    px = prices[cols].sort_index().ffill()
+    dates = px.index
+    rets = px.pct_change().fillna(0.0).replace([np.inf, -np.inf], 0.0)
+
+    # 信号日 -> 执行日（T 之后的第 trade_lag 个交易日）
+    date_pos = {d: i for i, d in enumerate(dates)}
+    eff = {}
+    for d in W.index.sort_values():
+        if d in date_pos:
+            j = date_pos[d] + trade_lag
+            if j < len(dates):
+                eff[dates[j]] = d
+        else:  # 信号日不在价格序列中：取之后最近的交易日
+            later = dates[dates > d]
+            if len(later) > trade_lag - 1:
+                eff[later[trade_lag - 1]] = d
+    if not eff:
+        raise ValueError("没有任何信号日能映射到执行日（检查 weights 与 prices 的日期范围）")
+
+    n_sym = len(cols)
+    w_hold = np.zeros(n_sym)
+    nav = 1.0
+    nav_s, ret_s, turn_s = {dates[0]: 1.0}, {dates[0]: 0.0}, {}
+    w_rounds = 0
+
+    for i, t in enumerate(dates):
+        if i > 0:
+            r = rets.iloc[i].to_numpy()
+            port_r = float((w_hold * r).sum())
+            nav *= 1.0 + port_r
+            # 权重漂移（总权重不变，现金比例固定）
+            denom = 1.0 + port_r
+            if denom > 1e-12:
+                w_hold = w_hold * (1.0 + r) / denom
+            nav_s[t] = nav
+            ret_s[t] = port_r
+
+        if t in eff and i > 0:
+            w_new = W.loc[eff[t]].to_numpy()
+            buy = np.maximum(w_new - w_hold, 0.0).sum()
+            sell = np.maximum(w_hold - w_new, 0.0).sum()
+            cost = (buy * (fee + slippage)
+                    + sell * (fee + slippage + stamp_duty))
+            nav *= 1.0 - cost
+            nav_s[t] = nav
+            turn_s[t] = buy + sell
+            w_hold = w_new
+            w_rounds += 1
+
+    nav_series = pd.Series(nav_s).sort_index()
+    ret_series = pd.Series(ret_s).sort_index()
+    turn_series = pd.Series(turn_s).reindex(nav_series.index).fillna(0.0)
+
+    result = {
+        "nav": nav_series.astype(float),
+        "daily_ret": ret_series.astype(float),
+        "turnover": turn_series.astype(float),
+        "n_rebalance": w_rounds,
+        "dates": nav_series.index,
+    }
+    if benchmark_returns is not None:
+        br = benchmark_returns.reindex(nav_series.index).fillna(0.0)
+        result["benchmark_nav"] = (1.0 + br).cumprod()
+        result["benchmark_daily_ret"] = br.astype(float)
+    result["drawdown"] = (nav_series / nav_series.cummax() - 1.0).astype(float)
+    return result
+
+
+def portfolio_performance(result: dict, rf: float = 0.018) -> dict:
+    """组合绩效摘要：收益/风险/回撤/换手/超额。"""
+    nav = result["nav"]
+    ret = result["daily_ret"]
+    n = len(ret)
+    total = float(nav.iloc[-1] - 1.0)
+    ann = float(nav.iloc[-1] ** (TRADING_DAYS / n) - 1.0) if n else np.nan
+    vol = float(ret.std() * np.sqrt(TRADING_DAYS))
+    sharpe = (ann - rf) / vol if vol > 0 else np.nan
+    dd = (nav / nav.cummax() - 1.0).min()
+    calmar = ann / abs(dd) if dd < 0 else np.nan
+    out = {
+        "总收益率": total,
+        "年化收益率": ann,
+        "年化波动率": vol,
+        "夏普比率": float(sharpe),
+        "最大回撤": float(dd),
+        "Calmar比率": float(calmar),
+        "调仓次数": int(result.get("n_rebalance", 0)),
+        "年均换手率": float(result["turnover"].sum() / max(n, 1) * TRADING_DAYS),
+    }
+    if "benchmark_nav" in result:
+        bnav = result["benchmark_nav"]
+        btotal = float(bnav.iloc[-1] - 1.0)
+        out["基准总收益率"] = btotal
+        out["超额总收益"] = total - btotal
+        exc = ret - result["benchmark_daily_ret"]
+        exc_ann = float(exc.mean() * TRADING_DAYS)
+        te = float(exc.std() * np.sqrt(TRADING_DAYS))
+        out["年化超额收益"] = exc_ann
+        out["信息比率"] = exc_ann / te if te > 0 else np.nan
+    return out

@@ -18,7 +18,8 @@ import pandas as pd
 from config import STORE_DIR
 from src.data.storage import ParquetStore
 from src.data import universe
-from src.data.market import update_kline_batch
+from src.data.market import get_local_last_date, update_kline_batch
+from src.data.schema import normalize_code
 from src.analysis.factors import FACTOR_NAMES, FACTOR_DESC, build_factor_panel
 from src.analysis.factor_test import run_factor_tests
 
@@ -112,11 +113,15 @@ def main() -> None:
     failed = r.pop("__failed__", [])
     print(f">> 新浪日线就绪：成功 {len(r)}，失败 {len(failed)}")
 
-    # 新浪对已退市股无数据，用 baostock 补齐（baostock 保留退市股历史行情）
-    if failed and pit is not None:
-        print(f">> 用 baostock 补齐退市/失败标的 {len(failed)} 只 ...")
+    # 新浪对已退市股返回空数据（且不计入失败清单），因此不能只依赖 __failed__：
+    # 直接识别「新浪跑完后本地仍无数据」的标的，强制改用 baostock 补齐。
+    no_data = [s for s in symbols
+               if get_local_last_date(normalize_code(s), "daily", "qfq", store) is None]
+    bs_candidates = sorted({c for c, _ in failed} | set(no_data))
+    if bs_candidates:
+        print(f">> 用 baostock 补齐退市/无数据标的 {len(bs_candidates)} 只 ...")
         bs_fail = []
-        for i, (code, err) in enumerate(failed, 1):
+        for i, code in enumerate(bs_candidates, 1):
             try:
                 from src.data import market
                 df = market.fetch_kline(code, start=START_DATE, asset="stock",
@@ -125,8 +130,8 @@ def main() -> None:
                     bs_fail.append((code, "空"))
             except Exception as e:  # noqa: BLE001
                 bs_fail.append((code, str(e)[:60]))
-            if i % 20 == 0 or i == len(failed):
-                print(f"   bs 补齐进度 {i}/{len(failed)}，仍失败 {len(bs_fail)}")
+            if i % 20 == 0 or i == len(bs_candidates):
+                print(f"   bs 补齐进度 {i}/{len(bs_candidates)}，仍失败 {len(bs_fail)}")
         failed = bs_fail
     for code, err in failed[:10]:
         print(f"   FAIL {code}: {err}")
