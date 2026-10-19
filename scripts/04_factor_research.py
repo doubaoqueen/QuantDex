@@ -10,6 +10,8 @@
     python scripts/04_factor_research.py 000300 100    # 只取前100只(快速冒烟，结果有偏)
 """
 import sys
+from pathlib import Path
+
 import _bootstrap  # noqa: F401
 import pandas as pd
 
@@ -78,7 +80,7 @@ def show_results(res: dict) -> None:
         print(f"  {f:<12}{FACTOR_DESC[f]}")
 
 
-def save_results(res: dict) -> "pathlib.Path":
+def save_results(res: dict) -> Path:
     out = STORE_DIR / "factor_results"
     out.mkdir(parents=True, exist_ok=True)
     res["ic_table"].to_parquet(out / "ic_summary.parquet", index=False)
