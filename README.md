@@ -91,6 +91,8 @@ QuantDex/
     ├── 04_factor_research.py     # 因子抓取 + 检验
     ├── 05_portfolio_backtest.py  # 组合/截面回测
     ├── 06_walkforward.py         # walk-forward 防过拟合
+    ├── 07_ledger_demo.py         # 模拟盘账本演示
+    ├── 08_daily_pipeline.py      # 影子盘每日流水线
     └── demo_analysis.py
 ```
 

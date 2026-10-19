@@ -24,3 +24,18 @@ led.daily_backup()
 ```
 
 演示：`python scripts/07_ledger_demo.py`
+
+## 每日流水线 `pipeline.py`（MVP 已实现）
+
+```bash
+python scripts/08_daily_pipeline.py            # 正常运行（首次运行自动建仓）
+python scripts/08_daily_pipeline.py --dry-run  # 只计算不落账本
+```
+
+流程：本地数据 → 目标权重（低换手+低波+短反转，每 20 交易日调仓）→
+风控（单票 10% 上限 / 总仓 1.0 / 回撤断路器 -15%×0.5）→ 模拟成交（**收盘价**，MVP 简化）→
+账本记录（快照/持仓/成交，同日重跑幂等）→ 日报 `data/store/reports/YYYY-MM-DD.md`。
+
+约定：
+- 非调仓日只做净值快照；空账户首次运行自动"建仓"（bootstrap）；
+- 数据更新不在本模块内（先跑 02/04）；真实执行应为 T+1 开盘（账本 fill_date 字段已预留）。
