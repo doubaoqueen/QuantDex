@@ -201,7 +201,7 @@ python scripts/demo_analysis.py 600519
 
 
 
-```
+```python
 from src.data.storage import ParquetStore
 from src.data import universe, market, valuation, financials, moneyflow, macro
 from src.analysis.indicators import add_indicators
@@ -250,7 +250,7 @@ plot_yearly_returns(df, name="600519")                          # 分年度收�
 
 
 
-```
+```python
 from src.strategies.dual_ma import dual_ma_signal
 from src.backtest.engine import run_backtest
 from src.backtest.metrics import performance
