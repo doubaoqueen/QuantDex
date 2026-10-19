@@ -8,6 +8,7 @@
 |---|---|---|
 | `engine.py` | 向量化回测引擎 | `run_backtest(df, fee, slippage, stamp_duty)`：T+1 开盘成交、佣金/滑点/印花税、净值与回撤 |
 | `metrics.py` | 绩效指标与逐笔交易 | `performance(result, trades)`：收益/波动/夏普/Sortino/Calmar/回撤/胜率/盈亏比/信息比率 |
+| `portfolio.py` | 组合级回测引擎 | `run_portfolio_backtest(weights, prices)`：目标权重矩阵、T+1 生效、权重自然漂移、换手成本+印花税；`portfolio_performance` 绩效摘要 |
 
 ## 约定
 

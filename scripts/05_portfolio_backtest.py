@@ -19,7 +19,8 @@ from src.data import universe
 from src.data.market import get_kline
 from src.analysis.factors import build_factor_panel
 from src.analysis.plot import plot_backtest
-from src.strategies.multi_factor import momentum_lowvol_topn
+from src.strategies.multi_factor import (momentum_lowvol_topn,
+                                         turnover_lowvol_reversal_topn)
 from src.backtest.portfolio import portfolio_performance, run_portfolio_backtest
 
 START_DATE = "20180101"
@@ -40,8 +41,12 @@ def main() -> None:
     print(f"   面板 {panel['date'].min().date()} ~ {panel['date'].max().date()}，"
           f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
 
-    print(f">> 策略：20日动量+低波 等权合成，每 {rebalance} 交易日调仓，Top {top_n} 等权")
-    W = momentum_lowvol_topn(panel, top_n=top_n, rebalance_days=rebalance)
+    strategy = sys.argv[4] if len(sys.argv) > 4 else "corrected"
+    print(f">> 策略[{strategy}]：每 {rebalance} 交易日调仓，Top {top_n} 等权")
+    if strategy == "legacy":
+        W = momentum_lowvol_topn(panel, top_n=top_n, rebalance_days=rebalance)
+    else:
+        W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=rebalance)
     print(f"   信号日 {len(W)} 个，覆盖标的 {W.shape[1]} 只")
 
     prices = panel.pivot(index="date", columns="symbol", values="close").sort_index()
