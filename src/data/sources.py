@@ -36,13 +36,23 @@ def bs_to_df(rs) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=rs.fields)
 
 
-def retry_call(fn, *args, label: str = "", **kwargs):
-    """带退避的重试调用。"""
+# 确定性失败（重试无意义）：数据源明确无数据/代码不存在/已退市/已下市。
+# 命中这些特征立即抛出，不为退市股白等 3 次退避（约 10 秒）。
+# 网络抖动（连接重置、超时、限流）不在此列，仍正常重试。
+_FATAL_KEYWORDS = ("no value to decode", "no data", "数据为空", "empty",
+                   "不存在该代码", "已退市", "已下市", "无此代码")
+
+
+def retry_call(fn, *args, label: str = "", fatal_keywords=_FATAL_KEYWORDS, **kwargs):
+    """带退避的重试调用；确定性失败（无数据/退市）立即抛出，不重试。"""
     last_err = None
     for i in range(MAX_RETRIES):
         try:
             return fn(*args, **kwargs)
         except Exception as e:  # noqa: BLE001
             last_err = e
+            msg = str(e).lower()
+            if any(k in msg for k in fatal_keywords):
+                break
             time.sleep(RETRY_SLEEP * (i + 1))
     raise RuntimeError(f"调用失败[{label or getattr(fn, '__name__', '?')}]: {last_err}")

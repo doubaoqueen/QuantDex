@@ -115,7 +115,9 @@ def build_factor_panel(
         name = kline_file_name(code, adjust)
         if not store.exists("daily", name):
             continue
-        df = store.read("daily", name)
+        # 列裁剪：因子只需要日期/代码/收盘/成交额/换手率，Parquet 列存只读这几列
+        df = store.read("daily", name,
+                        columns=["date", "symbol", "close", "amount", "turnover"])
         raw = compute_raw_factors(df)
         frames.append(raw[keep])
 
@@ -139,9 +141,8 @@ def build_factor_panel(
         panel = merged[keep_rows].drop(columns=["in_date", "out_date"])
         panel = panel.reset_index(drop=True)
 
-    # 截面 rank：同一天所有股票横向排名为百分位
-    for f in factor_names:
-        panel[f] = panel.groupby("date")[f].rank(pct=True)
+    # 截面 rank：同一天所有股票横向排名为百分位（一次 groupby 完成全部因子）
+    panel[factor_names] = panel.groupby("date")[factor_names].rank(pct=True)
 
     panel = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
     return panel
