@@ -146,6 +146,8 @@ python scripts/demo_analysis.py 600519
 第 0 步下载 **point-in-time 历史指数成分表**（消除幸存者偏差的地基数据）；
 第 2、3 步都可**重复运行**：已有数据只抓取最新部分（upsert 按日期去重），不会重复堆积。
 
+> 测试：`python tests/run_tests.py`（回归测试：引擎成本/T+1 口径、组合引擎权重漂移、风控、模拟盘账本）。
+
 
 
 ***

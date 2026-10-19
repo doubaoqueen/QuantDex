@@ -232,3 +232,9 @@ __pycache__/
 .conda/
 *.log
 .deps/
+
+# 模拟盘账本（操作状态，不入库；备份目录同样忽略）
+data/store/sim/*.sqlite
+data/store/sim/*.sqlite-wal
+data/store/sim/*.sqlite-shm
+data/store/sim/backups/

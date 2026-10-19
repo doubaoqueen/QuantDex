@@ -15,6 +15,7 @@
 | 4 | `04_factor_research.py` | 因子研究：PIT 历史成分 → 抓日线（退市股 baostock 补齐）→ 因子面板（PIT 过滤）→ IC/分层检验 → 出图 | ✅ 增量 |
 | 5 | `05_portfolio_backtest.py` | 组合/截面回测：多因子 Top-N 等权策略，扣费后对比基准（离线计算） | ✅ |
 | 6 | `06_walkforward.py` | walk-forward 防过拟合：逐年训练选参 → 样本外评估，输出 OOS 绩效与参数稳定性 | ✅ |
+| 7 | `07_ledger_demo.py` | 模拟盘账本演示：写入当日记录（快照/持仓/成交）+ 每日备份 | ✅ |
 | d | `demo_analysis.py` | 单标的演示：质检 → 概览 → 分年度 → 双均线回测 → 出图 | ✅ |
 
 ## 辅助工具
@@ -39,3 +40,9 @@ python scripts/demo_analysis.py 600519           # 单标的演示
 - 04 脚本的「抓取阶段」是增量的：有本地数据的标的只抓最后日期之后的增量；**缺 `trade_calendar` 时无法判断"已最新"，会对全部标的逐个发一次补数请求**（体感像从头跑），先跑 `00_fetch_calendar.py` 修复；
 - 04 的「计算阶段」（面板 + IC 检验）每次都从 2018 起全量重算，这是设计使然（新增一个交易日就会改变所有因子值）；
 - 结果输出：`data/store/factor_results/`（parquet + plots/ 下的 PNG）。
+
+## 测试
+
+```bash
+python tests/run_tests.py     # 回归测试（引擎口径/成本/T+1/风控/账本，零依赖）
+```
