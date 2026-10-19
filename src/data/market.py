@@ -11,7 +11,7 @@ import pandas as pd
 
 from config import DEFAULT_START_DATE, REQUEST_INTERVAL
 from src.data.storage import ParquetStore
-from src.data.sources import ak, ensure_bs_login, bs_to_df, retry_call
+from src.data.sources import ak, ensure_bs_login, bs_query, retry_call
 from src.data.schema import (
     normalize_code, to_bs_code, to_sina_code, kline_file_name,
     standardize_ak_daily, standardize_ak_min, standardize_bs_daily,
@@ -66,13 +66,14 @@ def fetch_kline(
         bs_code = to_bs_code(code, is_index=(asset == "index"))
         fields = "date,code,open,high,low,close,volume,amount,turn,pctChg"
         flag = "3" if asset == "index" else _BS_ADJUST_FLAG.get(adj, "3")
-        rs = bs.query_history_k_data_plus(
+        # bs_query 内部加锁串行化：baostock 单连接协议，严禁并发调用
+        raw = bs_query(
+            bs.query_history_k_data_plus,
             bs_code, fields,
             start_date=f"{start[:4]}-{start[4:6]}-{start[6:]}",
             end_date=f"{end[:4]}-{end[4:6]}-{end[6:]}",
             frequency=_BS_FREQ[period], adjustflag=flag,
         )
-        raw = bs_to_df(rs)
         if raw.empty:
             return pd.DataFrame()
         std = standardize_bs_daily(raw, code)
@@ -238,14 +239,18 @@ def update_kline_batch(
     full_start: str = DEFAULT_START_DATE,
     source: str = "em",
     store: ParquetStore | None = None,
-    workers: int = 8,
+    workers: int = 4,
 ) -> dict:
     """
     【并发】批量增量更新 K 线：
       - 本地最后日期已 >= 最近收盘交易日的标的直接跳过（不发请求），盘后/周末重跑秒级；
-      - 其余标的用线程池并发抓取（IO 密集，workers 控制并发，默认 8）；
+      - 其余标的用线程池并发抓取（IO 密集；默认 4 路，东财对突发并发敏感，
+        调大 workers 容易触发限流）；
+      - index / source="bs" 的 baostock 查询在 sources.bs_query 内串行化
+        （协议单连接，并发会损坏数据流）；
       - 注册表在 batch_write 内缓冲，全部结束统一写盘一次（避免并发写竞争）。
     source: "em"(东财，默认) / "sina"(新浪，东财被限流时用，仅个股)。
+    em 模式下个股失败会自动降级新浪重试（报告里记为 sina_fallback:N）。
     返回 {symbol: 新增行数或"uptodate"}，失败标的收集在 __failed__ 中。
     """
     store = store or ParquetStore()
@@ -259,10 +264,11 @@ def update_kline_batch(
             last = get_local_last_date(code, period, adjust, store)
             if last is not None and last_closed is not None and last >= last_closed:
                 return code, "uptodate"
-            if last is not None:
-                start = (last + pd.Timedelta(days=1)).strftime("%Y%m%d")
-            else:
-                start = full_start
+            start = (full_start if last is None
+                     else (last + pd.Timedelta(days=1)).strftime("%Y%m%d"))
+        except Exception:  # noqa: BLE001  读本地失败也按全新标的处理
+            start = full_start
+        try:
             if source == "sina":
                 df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
             else:
@@ -270,6 +276,13 @@ def update_kline_batch(
                                  period=period, adjust=adjust, store=store)
             return code, len(df)
         except Exception as e:  # noqa: BLE001
+            # 个股走东财失败时自动降级新浪（东财对突发并发限流）
+            if source == "em" and asset == "stock":
+                try:
+                    df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
+                    return code, f"sina_fallback:{len(df)}"
+                except Exception as e2:  # noqa: BLE001
+                    return code, f"__ERR__:{e2}"
             return code, f"__ERR__:{e}"
 
     done = 0
