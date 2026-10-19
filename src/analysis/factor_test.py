@@ -118,6 +118,8 @@ def ic_summary(panel: pd.DataFrame,
     rows, series = [], {}
     for f in factors:
         for h in horizons:
+            # 严格口径：在「该因子与未来收益都非空」的当天样本内对未来收益排名
+            # （不能在全样本预先排名，否则会改变 warmup 期的截面集合口径）
             s = rankic_series(panel, f, h)
             series[(f, h)] = s
             n = len(s)
@@ -196,20 +198,24 @@ def quantile_backtest(panel: pd.DataFrame, factor: str,
     daily_med = daily_med.reindex(columns=qcols).fillna(0.0)
     hi_col, lo_col = qcols[-1], qcols[0]
 
-    # 再平衡换手成本（按组，实际成分权重变化）
-    cost = pd.DataFrame(0.0, index=daily.index, columns=qcols)
+    # 再平衡换手成本（按组，实际成分权重变化）；批量收集后一次 pivot，避免逐格 .loc
+    snap_by_eff = {ed: g for ed, g in snap.groupby("eff_date")}
     prev_w: dict[str, dict] = {}
-    for ed in sorted(reb["date"].unique()):
-        cur = snap[snap["eff_date"] == ed]
+    cost_rows = []
+    for ed, cur in snap_by_eff.items():
+        members_by_g = {f"Q{gid}": set(gdf["symbol"])
+                        for gid, gdf in cur.groupby("grp")}
         for g in qcols:
-            members = set(cur[cur["grp"].astype(str) == g[1:]]["symbol"])
+            members = members_by_g.get(g, set())
             w = 1.0 / len(members) if members else 0.0
             old = prev_w.get(g, {})
             turn = sum(abs((w if x in members else 0.0) - old.get(x, 0.0))
                        for x in members | set(old))
-            if ed in cost.index:
-                cost.loc[ed, g] = turn * cost_rate
+            cost_rows.append((ed, g, turn * cost_rate))
             prev_w[g] = {x: w for x in members}
+    cost_long = pd.DataFrame(cost_rows, columns=["date", "grp", "cost"])
+    cost = (cost_long.pivot(index="date", columns="grp", values="cost")
+            .reindex(index=daily.index, columns=qcols).fillna(0.0))
 
     daily_net = daily - cost
     nav = (1 + daily_net).cumprod()

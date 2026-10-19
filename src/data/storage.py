@@ -16,6 +16,8 @@ Parquet 数据仓库：分区存储、读取、增量更新（upsert）、数据
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pandas as pd
 
 from config import (
@@ -42,6 +44,17 @@ class ParquetStore:
 
     def __init__(self) -> None:
         ensure_dirs()
+        # 进程内读缓存：{(路径, 列名): (mtime, df)}，写文件后按路径失效
+        self._cache: dict = {}
+        # 批量写注册表缓冲：batch_write 期间只更新内存，结束统一落盘一次
+        self._reg_suspend = False
+        self._reg_buf: dict = {}
+
+    # -------------------------------------------------- 缓存
+    def _invalidate_cache(self, path) -> None:
+        sp = str(path)
+        for key in [k for k in self._cache if k[0] == sp]:
+            self._cache.pop(key, None)
 
     # -------------------------------------------------- 路径
     def _path(self, kind: str, name: str) -> "pd.io.common.PathLike":
@@ -63,14 +76,22 @@ class ParquetStore:
             return
         path = self._path(kind, name)
         df.to_parquet(path, index=False, compression="snappy")
+        self._invalidate_cache(path)
         self._register(kind, name, len(df), source, date_col, df, adjust)
 
     def read(self, kind: str, name: str, columns: list[str] | None = None) -> pd.DataFrame:
-        """读取数据集，不存在则抛 FileNotFoundError。"""
+        """读取数据集，不存在则抛 FileNotFoundError。带进程内缓存（按 mtime 失效）。"""
         path = self._path(kind, name)
         if not path.exists():
             raise FileNotFoundError(f"数据集不存在: {kind}/{name} ({path})")
-        return pd.read_parquet(path, columns=columns)
+        ckey = tuple(columns) if columns else None
+        cache_key = (str(path), ckey)
+        hit = self._cache.get(cache_key)
+        if hit is not None and hit[0] == path.stat().st_mtime:
+            return hit[1]
+        df = pd.read_parquet(path, columns=columns)
+        self._cache[cache_key] = (path.stat().st_mtime, df)
+        return df
 
     def read_or_empty(self, kind: str, name: str) -> pd.DataFrame:
         """读取数据集，不存在返回空 DataFrame。"""
@@ -118,15 +139,50 @@ class ParquetStore:
             "updated_at": pd.Timestamp.now(),
         }])
 
+        # 批量模式：只更新内存缓冲，由 batch_write 结束时统一落盘
+        if self._reg_suspend:
+            self._reg_buf[(kind, name)] = entry
+            return
+
+        self._write_registry_entry(kind, name, entry)
+
+    @staticmethod
+    def _merge_entry(reg: pd.DataFrame, kind: str, name: str,
+                     entry: pd.DataFrame) -> pd.DataFrame:
+        if reg.empty:
+            return entry
+        mask = (reg["dataset"] == kind) & (reg["name"] == name)
+        return pd.concat([reg[~mask], entry], ignore_index=True)
+
+    def _write_registry_entry(self, kind: str, name: str,
+                              entry: pd.DataFrame) -> None:
         if REGISTRY_PATH.exists():
             reg = pd.read_parquet(REGISTRY_PATH)
-            mask = (reg["dataset"] == kind) & (reg["name"] == name)
-            reg = reg[~mask]
-            reg = pd.concat([reg, entry], ignore_index=True)
+            reg = self._merge_entry(reg, kind, name, entry)
         else:
             reg = entry
         REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
         reg.to_parquet(REGISTRY_PATH, index=False)
+
+    @contextmanager
+    def batch_write(self):
+        """批量写入上下文：期间注册表只在内存缓冲，退出时合并并只写盘一次。"""
+        self._reg_suspend = True
+        try:
+            yield
+        finally:
+            self._reg_suspend = False
+            self._flush_registry()
+
+    def _flush_registry(self) -> None:
+        if not self._reg_buf:
+            return
+        reg = pd.read_parquet(REGISTRY_PATH) if REGISTRY_PATH.exists() else pd.DataFrame()
+        for (kind, name), entry in self._reg_buf.items():
+            reg = self._merge_entry(reg, kind, name, entry)
+        REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        reg.to_parquet(REGISTRY_PATH, index=False)
+        self._reg_buf.clear()
 
     def registry(self) -> pd.DataFrame:
         """返回数据注册表。"""

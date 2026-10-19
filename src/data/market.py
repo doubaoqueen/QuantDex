@@ -5,6 +5,8 @@
 - 指数：baostock（东财指数接口分页很慢）
 """
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 
 from config import DEFAULT_START_DATE, REQUEST_INTERVAL
@@ -215,6 +217,18 @@ def get_local_last_date(symbol: str, period: str = "daily", adjust: str = "qfq",
     return pd.to_datetime(df["date"]).max()
 
 
+def last_closed_trade_date(store: ParquetStore | None = None):
+    """最近一个已收盘交易日（16:00 收盘后才计入当天；无交易日历返回 None）。"""
+    store = store or ParquetStore()
+    if not store.exists("meta", "trade_calendar"):
+        return None
+    cal = pd.to_datetime(store.read("meta", "trade_calendar")["date"])
+    now = pd.Timestamp.now()
+    cutoff = now.normalize() if now.hour >= 16 else now.normalize() - pd.Timedelta(days=1)
+    closed = cal[cal <= cutoff]
+    return closed.max() if len(closed) else None
+
+
 # ---------------------------------------------------------------- 批量增量更新
 def update_kline_batch(
     symbols: list[str],
@@ -224,36 +238,51 @@ def update_kline_batch(
     full_start: str = DEFAULT_START_DATE,
     source: str = "em",
     store: ParquetStore | None = None,
+    workers: int = 8,
 ) -> dict:
     """
-    批量增量更新 K 线：已有数据的标的只抓最后日期之后，新标的从 full_start 抓。
+    【并发】批量增量更新 K 线：
+      - 本地最后日期已 >= 最近收盘交易日的标的直接跳过（不发请求），盘后/周末重跑秒级；
+      - 其余标的用线程池并发抓取（IO 密集，workers 控制并发，默认 8）；
+      - 注册表在 batch_write 内缓冲，全部结束统一写盘一次（避免并发写竞争）。
     source: "em"(东财，默认) / "sina"(新浪，东财被限流时用，仅个股)。
-    返回 {symbol: 新增/状态}，失败标的收集在返回值的 __failed__ 中。
+    返回 {symbol: 新增行数或"uptodate"}，失败标的收集在 __failed__ 中。
     """
     store = store or ParquetStore()
     report: dict = {"__failed__": []}
     n = len(symbols)
-    for i, sym in enumerate(symbols, 1):
+    last_closed = last_closed_trade_date(store)
+
+    def _one(sym):
         code = normalize_code(sym)
         try:
             last = get_local_last_date(code, period, adjust, store)
+            if last is not None and last_closed is not None and last >= last_closed:
+                return code, "uptodate"
             if last is not None:
                 start = (last + pd.Timedelta(days=1)).strftime("%Y%m%d")
-                if pd.Timestamp(start) > pd.Timestamp.now().normalize():
-                    report[code] = "uptodate"
-                    continue
             else:
                 start = full_start
             if source == "sina":
-                df = fetch_daily_sina(code, start=start,
-                                      adjust=adjust, store=store)
+                df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
             else:
                 df = fetch_kline(code, start=start, asset=asset,
                                  period=period, adjust=adjust, store=store)
-            report[code] = len(df)
+            return code, len(df)
         except Exception as e:  # noqa: BLE001
-            report["__failed__"].append((code, str(e)))
-        if i % 20 == 0 or i == n:
-            print(f"  进度 {i}/{n}，失败 {len(report['__failed__'])}")
-        time.sleep(REQUEST_INTERVAL)
+            return code, f"__ERR__:{e}"
+
+    done = 0
+    with store.batch_write():
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            futures = [ex.submit(_one, s) for s in symbols]
+            for fut in as_completed(futures):
+                code, res = fut.result()
+                done += 1
+                if isinstance(res, str) and res.startswith("__ERR__:"):
+                    report["__failed__"].append((code, res[len("__ERR__:"):]))
+                else:
+                    report[code] = res
+                if done % 20 == 0 or done == n:
+                    print(f"  进度 {done}/{n}，失败 {len(report['__failed__'])}", flush=True)
     return report
