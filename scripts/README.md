@@ -13,6 +13,8 @@
 | 2 | `02_update_market.py` | 批量增量抓取核心标的日线（东财为主，失败自动降级新浪） | ✅ 增量 |
 | 3 | `03_fetch_alternative.py` | 估值 / 财务 / 资金流 / 宏观 / 龙虎榜 | ✅ |
 | 4 | `04_factor_research.py` | 因子研究：PIT 历史成分 → 抓日线（退市股 baostock 补齐）→ 因子面板（PIT 过滤）→ IC/分层检验 → 出图 | ✅ 增量 |
+| 5 | `05_portfolio_backtest.py` | 组合/截面回测：多因子 Top-N 等权策略，扣费后对比基准（离线计算） | ✅ |
+| 6 | `06_walkforward.py` | walk-forward 防过拟合：逐年训练选参 → 样本外评估，输出 OOS 绩效与参数稳定性 | ✅ |
 | d | `demo_analysis.py` | 单标的演示：质检 → 概览 → 分年度 → 双均线回测 → 出图 | ✅ |
 
 ## 辅助工具

@@ -7,6 +7,7 @@
 | 文件 | 策略 | 逻辑 |
 |---|---|---|
 | `dual_ma.py` | 双均线择时 | 快线在慢线上方持仓，否则空仓；信号 T+1 执行（`position` 后移一日） |
+| `multi_factor.py` | 多因子选股（组合级） | `composite_topn`：任意因子列表等权合成 → 定期调仓 Top-N 等权目标权重；预设 `turnover_lowvol_reversal_topn`（PIT 修正后的低换手+低波+短反转） |
 
 ## 新增策略规范
 
