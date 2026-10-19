@@ -1,0 +1,39 @@
+# scripts/ — 一键脚本
+
+> 按编号顺序执行即可跑通整个项目。所有脚本需在**项目根目录**运行；
+> 建议使用 conda 环境 `QuantDex`（Python 3.11）。
+
+## 运行顺序
+
+| 步骤 | 脚本 | 作用 | 可重复运行 |
+|---|---|---|---|
+| 0 | `00_fetch_pit_constituents.py` | 下载 PIT 历史指数成分表（消除幸存者偏差的地基数据） | ✅ 幂等 |
+| 0b | `00_fetch_calendar.py` | 补全交易日历 `meta/trade_calendar`（增量跳过逻辑依赖它） | ✅ 幂等 |
+| 1 | `01_init_universe.py` | 标的池初始化：股票/ETF/指数/可转债列表、交易日历、全量证券、行业、指数成分 | ✅ |
+| 2 | `02_update_market.py` | 批量增量抓取核心标的日线（东财为主，失败自动降级新浪） | ✅ 增量 |
+| 3 | `03_fetch_alternative.py` | 估值 / 财务 / 资金流 / 宏观 / 龙虎榜 | ✅ |
+| 4 | `04_factor_research.py` | 因子研究：PIT 历史成分 → 抓日线（退市股 baostock 补齐）→ 因子面板（PIT 过滤）→ IC/分层检验 → 出图 | ✅ 增量 |
+| d | `demo_analysis.py` | 单标的演示：质检 → 概览 → 分年度 → 双均线回测 → 出图 | ✅ |
+
+## 辅助工具
+
+| 脚本 | 用途 |
+|---|---|
+| `net_diag.py` | 数据源连通性诊断（代理环境 / 东财 / 新浪 / baostock），抓取异常时先跑它 |
+| `_bootstrap.py` | 把项目根目录加入 `sys.path` 的引导模块（被其他脚本 import） |
+
+## 常用命令
+
+```bash
+python scripts/00_fetch_pit_constituents.py      # 第 0 步：PIT 成分表
+python scripts/00_fetch_calendar.py              # 补交易日历（让增量跳过生效）
+python scripts/04_factor_research.py             # 因子研究（首次约 20~40 分钟，可断点续跑）
+python scripts/04_factor_research.py 000905      # 中证500
+python scripts/demo_analysis.py 600519           # 单标的演示
+```
+
+## 说明
+
+- 04 脚本的「抓取阶段」是增量的：有本地数据的标的只抓最后日期之后的增量；**缺 `trade_calendar` 时无法判断"已最新"，会对全部标的逐个发一次补数请求**（体感像从头跑），先跑 `00_fetch_calendar.py` 修复；
+- 04 的「计算阶段」（面板 + IC 检验）每次都从 2018 起全量重算，这是设计使然（新增一个交易日就会改变所有因子值）；
+- 结果输出：`data/store/factor_results/`（parquet + plots/ 下的 PNG）。

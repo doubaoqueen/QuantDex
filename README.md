@@ -83,12 +83,16 @@ QuantDex/
 │   └── strategies/
 │       └── dual_ma.py            # 双均线策略
 └── scripts/                      # 一键脚本（按编号顺序运行）
+    ├── 00_fetch_pit_constituents.py  # PIT 历史成分表
+    ├── 00_fetch_calendar.py      # 补全交易日历（增量跳过依赖）
     ├── 01_init_universe.py
     ├── 02_update_market.py
     ├── 03_fetch_alternative.py
     ├── 04_factor_research.py     # 因子抓取 + 检验
     └── demo_analysis.py
 ```
+
+> 各目录均有独立 README.md：`src/`、`src/data/`、`src/analysis/`、`src/backtest/`、`src/strategies/`、`scripts/`、`data/`。
 
 
 
