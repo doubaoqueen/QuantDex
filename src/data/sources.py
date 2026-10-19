@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """数据源会话管理：baostock 登录单例、结果转换、统一重试。"""
+import threading
 import time
 import pandas as pd
 import baostock as bs
@@ -8,16 +9,21 @@ import akshare as ak
 from config import MAX_RETRIES, RETRY_SLEEP
 
 _BS_LOGGED_IN = False
+# baostock 是单连接串行协议：查询与读结果必须原子地占用连接，多线程
+# 并发会交错收发、损坏数据流（表现为 utf-8 解码错误 / "接收数据异常"）。
+# 所有 baostock 调用必须经此锁串行化。
+_bs_lock = threading.RLock()
 
 
 def ensure_bs_login():
-    """确保 baostock 已登录（进程内单例），返回 baostock 模块。"""
+    """确保 baostock 已登录（进程内单例，多线程安全），返回 baostock 模块。"""
     global _BS_LOGGED_IN
-    if not _BS_LOGGED_IN:
-        lg = bs.login()
-        if lg.error_code != "0":
-            raise RuntimeError(f"baostock 登录失败: {lg.error_code} {lg.error_msg}")
-        _BS_LOGGED_IN = True
+    with _bs_lock:
+        if not _BS_LOGGED_IN:
+            lg = bs.login()
+            if lg.error_code != "0":
+                raise RuntimeError(f"baostock 登录失败: {lg.error_code} {lg.error_msg}")
+            _BS_LOGGED_IN = True
     return bs
 
 
@@ -34,6 +40,18 @@ def bs_to_df(rs) -> pd.DataFrame:
     while rs.error_code == "0" and rs.next():
         rows.append(rs.get_row_data())
     return pd.DataFrame(rows, columns=rs.fields)
+
+
+def bs_query(fn, *args, **kwargs) -> pd.DataFrame:
+    """串行化执行一次 baostock 查询并转 DataFrame。
+
+    baostock 查询与读结果必须在同一把锁内完成（批处理线程池场景下
+    严禁直接调用 bs.query_* 再 bs_to_df）。"""
+    with _bs_lock:
+        rs = fn(*args, **kwargs)
+        if rs.error_code != "0":
+            raise RuntimeError(f"baostock 查询失败: {rs.error_code} {rs.error_msg}")
+        return bs_to_df(rs)
 
 
 # 确定性失败（重试无意义）：数据源明确无数据/代码不存在/已退市/已下市。

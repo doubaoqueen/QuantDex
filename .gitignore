@@ -218,18 +218,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-# 量化数据仓库目录，全部忽略
-# data/
+# 量化数据仓库：数据已纳入版本管理（随仓库上传）
+# 注意：原 *.parquet / *.csv / *.xlsx 全局忽略已移除，
+# data/store 下的 parquet、factor_results 等数据文件会随仓库提交。
+# 数据会随每日抓取持续增长（当前 data/store ≈ 120 MB），
+# 若仓库体量继续膨胀，可改为 Release 附件 / Git LFS 托管。
 raw_data/
 cache/
-
-# 数据文件类型
-*.parquet
-*.csv
-*.xlsx
 
 # 日志、环境、临时文件
 logs/
 __pycache__/
 .conda/
 *.log
+.deps/
