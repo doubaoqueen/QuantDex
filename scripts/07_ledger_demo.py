@@ -3,18 +3,29 @@
 模拟盘账本演示：写入一条当日示例记录（快照 + 持仓 + 成交）并做每日备份。
 
 用法: python scripts/07_ledger_demo.py
-数据库: data/store/sim/ledger.sqlite（WAL 模式，已加入 .gitignore）
+**注意：演示使用独立的临时账本文件，绝不写入生产账本**
+（data/store/sim/ledger.sqlite 只允许 08_daily_pipeline.py 写入）。
 """
 import datetime
+from pathlib import Path
 
 import _bootstrap  # noqa: F401
 import pandas as pd
 
+from config import STORE_DIR
 from src.live.ledger import Ledger
+
+DEMO_DB = STORE_DIR / "sim" / "_demo_ledger.sqlite"
+
+
+def _cleanup() -> None:
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(DEMO_DB) + suffix).unlink(missing_ok=True)
 
 
 def main() -> None:
-    led = Ledger()
+    _cleanup()
+    led = Ledger(DEMO_DB)   # 演示专用临时库
     today = datetime.date.today().isoformat()
 
     positions = pd.DataFrame({
@@ -42,9 +53,15 @@ def main() -> None:
     print("== 成交 ==")
     print(led.trades().tail(5).to_string(index=False))
 
-    p = led.daily_backup()
-    print("备份:", p)
+    # 演示备份到临时路径（不写生产 backups/ 目录）
+    import shutil
+    led.connect().commit()
+    bak = DEMO_DB.with_suffix(".backup.sqlite")
+    shutil.copyfile(DEMO_DB, bak)
+    print("演示备份:", bak)
     led.close()
+    _cleanup()   # 删除演示库与演示备份，生产账本不受影响
+    print("演示完成（临时账本已清理，生产账本 data/store/sim/ledger.sqlite 未被触碰）")
 
 
 if __name__ == "__main__":

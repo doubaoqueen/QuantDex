@@ -39,3 +39,26 @@ def test_apply_risk_scales_on_drawdown():
     assert np.isclose(out.loc[dates[1], "A"], 0.5)
     assert np.isclose(out.loc[dates[2], "A"], 0.25)  # 截断后再乘 0.5
     assert np.isclose(out.loc[dates[2], "B"], 0.1)
+
+
+def test_defaults_do_not_trigger_on_new_highs():
+    """默认参数下：净值一路新高时，断路器不得减仓（防 max_dd 符号 bug 回归）。
+
+    注：权重取 0.08，低于默认单票上限 0.10，避免单票截断干扰本测试。
+    """
+    dates = pd.date_range("2024-01-01", periods=4)
+    W = pd.DataFrame({"A": [0.08] * 4, "B": [0.08] * 4}, index=dates)
+    nav = pd.Series([1.0, 1.05, 1.10, 1.20], index=dates)   # 全程新高，回撤=0
+    out = apply_risk(W, nav=nav)                            # 默认参数！
+    assert np.allclose(out["A"].values, 0.08), out["A"].values
+    assert np.allclose(out["B"].values, 0.08)
+
+
+def test_defaults_trigger_below_threshold():
+    """默认参数下：回撤超过 -15% 才减半。"""
+    dates = pd.date_range("2024-01-01", periods=3)
+    nav = pd.Series([1.0, 1.10, 0.85], index=dates)         # 回撤 0.85/1.10-1 ≈ -22.7%
+    m = drawdown_multiplier(nav)                            # 默认参数
+    assert m.iloc[0] == 1.0
+    assert m.iloc[1] == 1.0
+    assert m.iloc[2] == 0.5
