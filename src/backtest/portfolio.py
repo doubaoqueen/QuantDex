@@ -7,11 +7,17 @@
 - 信号在 T 收盘生成，**T+1 收盘执行**（trade_lag=1）：当日先按旧持仓吃满 t-1→t 收益，
   再在收盘按目标权重调仓并扣费，新权重从 t 收盘起生效；
 - 收益：组合日收益 = Σ w_eff * r_close；两次调仓之间权重按个股收益自然漂移；
-- 成本：调仓时按换手额扣佣金+滑点（买入）、佣金+滑点+印花税（卖出）。
+- 成本：逐笔佣金（含**最低佣金 5 元/笔**）+ 过户费 + 滑点 + 卖出印花税；
+- 保真约束（limit_skip=True）：执行日**停牌**跳过该标的调仓；**涨停买不进/跌停卖不出**
+  （按收盘涨跌幅判断，主板 10%、创业板/科创板 20%）→ 维持原权重；
+- 分红：dividends=(date, symbol, dividend) 时，除权日按持仓权重计入现金（近似）。
 
 用法：
     from src.backtest.portfolio import run_portfolio_backtest, portfolio_performance
-    res = run_portfolio_backtest(W, prices, fee=2.5e-4, slippage=5e-4, stamp_duty=5e-4)
+    res = run_portfolio_backtest(W, prices, fee=2.5e-4, min_fee=5.0,
+                                 slippage=5e-4, stamp_duty=5e-4,
+                                 transfer_fee=1e-5, limit_skip=True,
+                                 init_capital=1_000_000)
     portfolio_performance(res)
 """
 from __future__ import annotations
@@ -20,6 +26,11 @@ import numpy as np
 import pandas as pd
 
 TRADING_DAYS = 250
+_GEM_PREFIX = ("300", "301", "688")
+
+
+def _board_limit(symbol: str) -> float:
+    return 0.20 if str(symbol).startswith(_GEM_PREFIX) else 0.10
 
 
 def run_portfolio_backtest(
@@ -30,6 +41,11 @@ def run_portfolio_backtest(
     stamp_duty: float = 0.0,
     benchmark_returns: pd.Series | None = None,
     trade_lag: int = 1,
+    min_fee: float = 0.0,
+    transfer_fee: float = 0.0,
+    limit_skip: bool = False,
+    dividends: pd.DataFrame | None = None,
+    init_capital: float = 1.0,
     verbose: bool = False,
 ) -> dict:
     """目标权重矩阵 -> 组合回测结果。
@@ -45,10 +61,20 @@ def run_portfolio_backtest(
         raise ValueError("weights 与 prices 没有共同标的")
     W = weights[cols].astype(float).fillna(0.0)
 
-    # 价格：按交易日升序，ffill 处理停牌/缺失（停牌日收益记 0，等同持有不动）
-    px = prices[cols].sort_index().ffill()
+    # 原始价格（保留缺失，用于停牌判断）与 ffill 价格（用于收益）
+    px_raw = prices[cols].sort_index()
+    px = px_raw.ffill()
     dates = px.index
     rets = px.pct_change().fillna(0.0).replace([np.inf, -np.inf], 0.0)
+    prev_raw = px_raw.shift(1)
+
+    # 分红：{日期: Series(symbol->每股分红)}
+    div_by_date = None
+    if dividends is not None and len(dividends):
+        d = dividends.copy()
+        d["date"] = pd.to_datetime(d["date"])
+        div_by_date = {dd: g.set_index("symbol")["dividend"].astype(float)
+                       for dd, g in d.groupby("date")}
 
     # 信号日 -> 执行日（T 之后的第 trade_lag 个交易日）
     date_pos = {d: i for i, d in enumerate(dates)}
@@ -70,13 +96,28 @@ def run_portfolio_backtest(
     nav = 1.0
     nav_s, ret_s, turn_s = {dates[0]: 1.0}, {dates[0]: 0.0}, {}
     w_rounds = 0
+    n_skipped = 0
+    totals = {"commission": 0.0, "slippage": 0.0, "stamp_duty": 0.0, "transfer": 0.0}
 
     for i, t in enumerate(dates):
+        # 除权日：现金分红（近似按持仓权重）
+        if div_by_date is not None and t in div_by_date:
+            dps = div_by_date[t]
+            div_frac = 0.0
+            for k, sym in enumerate(cols):
+                dv = float(dps.get(sym, 0.0) or 0.0)
+                if dv > 0 and w_hold[k] > 0:
+                    p = float(px.loc[t, sym])
+                    if p > 0:
+                        div_frac += w_hold[k] * (dv / p)
+            if div_frac:
+                nav *= 1.0 + div_frac
+                nav_s[t] = nav
+
         if i > 0:
             r = rets.iloc[i].to_numpy()
             port_r = float((w_hold * r).sum())
             nav *= 1.0 + port_r
-            # 权重漂移（总权重不变，现金比例固定）
             denom = 1.0 + port_r
             if denom > 1e-12:
                 w_hold = w_hold * (1.0 + r) / denom
@@ -84,15 +125,56 @@ def run_portfolio_backtest(
             ret_s[t] = port_r
 
         if t in eff and i > 0:
-            w_new = W.loc[eff[t]].to_numpy()
-            buy = np.maximum(w_new - w_hold, 0.0).sum()
-            sell = np.maximum(w_hold - w_new, 0.0).sum()
-            cost = (buy * (fee + slippage)
-                    + sell * (fee + slippage + stamp_duty))
-            nav *= 1.0 - cost
+            w_target = W.loc[eff[t]].to_numpy().astype(float).copy()
+
+            # 保真约束：停牌跳过、涨停买不进、跌停卖不出
+            if limit_skip:
+                raw_t = px_raw.loc[t]
+                raw_prev = prev_raw.loc[t]
+                for k, sym in enumerate(cols):
+                    if abs(w_target[k] - w_hold[k]) < 1e-12:
+                        continue                          # 本就不需要调仓
+                    if pd.isna(raw_t.get(sym)):
+                        w_target[k] = w_hold[k]   # 无当日行情：无法交易，保持原仓位
+                        if not pd.isna(raw_prev.get(sym)):
+                            n_skipped += 1        # 昨日有价、今日无价 = 停牌
+                        continue
+                    p0 = raw_prev.get(sym)
+                    if pd.isna(p0) or p0 <= 0:
+                        continue
+                    chg = raw_t.get(sym) / p0 - 1.0
+                    lim = _board_limit(sym)
+                    tol = 0.006  # 涨跌停判断容差：涨幅需落在 ±(10%±0.6%) 内
+                    if w_target[k] > w_hold[k] and abs(chg - lim) <= tol:
+                        w_target[k] = w_hold[k]           # 涨停买不进
+                        n_skipped += 1
+                    elif w_target[k] < w_hold[k] and abs(chg + lim) <= tol:
+                        w_target[k] = w_hold[k]           # 跌停卖不出
+                        n_skipped += 1
+
+            delta = w_target - w_hold
+            buy = np.maximum(delta, 0.0)
+            sell = np.maximum(-delta, 0.0)
+            notional = nav * init_capital
+            buy_amt = buy * notional
+            sell_amt = sell * notional
+            comm = float(sum(max(a * fee, min_fee) for a in buy_amt if a > 0)
+                         + sum(max(a * fee, min_fee) for a in sell_amt if a > 0))
+            slip_amt = float((buy_amt.sum() + sell_amt.sum()) * slippage)
+            stamp_amt = float(sell_amt.sum() * stamp_duty)
+            trans_amt = float((buy_amt.sum() + sell_amt.sum()) * transfer_fee)
+            cost_amt = comm + slip_amt + stamp_amt + trans_amt
+            if notional > 0:
+                nav *= 1.0 - cost_amt / notional
+            totals["commission"] += comm
+            totals["slippage"] += slip_amt
+            totals["stamp_duty"] += stamp_amt
+            totals["transfer"] += trans_amt
+            if verbose:
+                print(f"[{t.date()}] 换手 {buy.sum() + sell.sum():.3f} 成本 {cost_amt:,.2f}")
             nav_s[t] = nav
-            turn_s[t] = buy + sell
-            w_hold = w_new
+            turn_s[t] = buy.sum() + sell.sum()
+            w_hold = w_target
             w_rounds += 1
 
     nav_series = pd.Series(nav_s).sort_index()
@@ -104,8 +186,11 @@ def run_portfolio_backtest(
         "daily_ret": ret_series.astype(float),
         "turnover": turn_series.astype(float),
         "n_rebalance": w_rounds,
+        "n_skipped": n_skipped,
+        "costs": {k: float(v) for k, v in totals.items()},
         "dates": nav_series.index,
     }
+    result["costs"]["total"] = float(sum(totals.values()))
     if benchmark_returns is not None:
         br = benchmark_returns.reindex(nav_series.index).fillna(0.0)
         result["benchmark_nav"] = (1.0 + br).cumprod()
@@ -115,7 +200,7 @@ def run_portfolio_backtest(
 
 
 def portfolio_performance(result: dict, rf: float = 0.018) -> dict:
-    """组合绩效摘要：收益/风险/回撤/换手/超额。"""
+    """组合绩效摘要：收益/风险/回撤/换手/超额/成本。"""
     nav = result["nav"]
     ret = result["daily_ret"]
     n = len(ret)
@@ -135,6 +220,13 @@ def portfolio_performance(result: dict, rf: float = 0.018) -> dict:
         "调仓次数": int(result.get("n_rebalance", 0)),
         "年均换手率": float(result["turnover"].sum() / max(n, 1) * TRADING_DAYS),
     }
+    costs = result.get("costs")
+    if costs:
+        out["成本_佣金"] = costs.get("commission", np.nan)
+        out["成本_印花税"] = costs.get("stamp_duty", np.nan)
+        out["成本_过户费"] = costs.get("transfer", np.nan)
+        out["成本_滑点"] = costs.get("slippage", np.nan)
+        out["成本合计"] = costs.get("total", np.nan)
     if "benchmark_nav" in result:
         bnav = result["benchmark_nav"]
         btotal = float(bnav.iloc[-1] - 1.0)

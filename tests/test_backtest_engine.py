@@ -8,6 +8,7 @@ from src.backtest.engine import run_backtest
 FEE = 0.00025
 SLIP = 0.0005
 STAMP = 0.0005
+TRANSFER = 0.00001  # 过户费（引擎默认已计入）
 
 
 def _make_df():
@@ -33,14 +34,16 @@ def test_t1_and_cost_hand_calc():
         chg = pos[i] - pos[i - 1]
         buys = 1.0 if chg > 0 else 0.0
         sells = 1.0 if chg < 0 else 0.0
-        cost = (buys + sells) * SLIP + buys * FEE + sells * (FEE + STAMP)
+        cost = ((buys + sells) * SLIP + buys * FEE
+                + sells * (FEE + STAMP) + (buys + sells) * TRANSFER)
         nav *= 1.0 + strat_ret - cost
     assert np.isclose(out["nav"].iloc[-1], nav, rtol=1e-12), (out["nav"].iloc[-1], nav)
 
     # 关键口径断言
     assert out["position"].tolist() == [0, 1, 1, 0]
-    assert np.isclose(out["cost"].iloc[1], SLIP + FEE, rtol=1e-12)    # 建仓日
-    assert np.isclose(out["cost"].iloc[3], SLIP + FEE + STAMP, rtol=1e-12)  # 平仓日含印花税
+    assert np.isclose(out["cost"].iloc[1], SLIP + FEE + TRANSFER, rtol=1e-12)  # 建仓日
+    assert np.isclose(out["cost"].iloc[3], SLIP + FEE + STAMP + TRANSFER,
+                      rtol=1e-12)  # 平仓日含印花税
     assert np.isclose(out["strat_ret"].iloc[0], 0.0)                  # 第 0 天无仓位不赚
 
 
