@@ -17,6 +17,7 @@ def run_backtest(
     fee: float = 0.00025,        # 券商佣金（单边）
     slippage: float = 0.0005,    # 滑点（双边，按成交额；ETF流动性好约万5）
     stamp_duty: float = 0.0,     # 卖出印花税，股票 0.0005，ETF 0
+    transfer_fee: float = 0.00001,  # 过户费（双边，0.001%）
     init_cash: float = 100000.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """返回 (每日结果 DataFrame, 逐笔交易 DataFrame)。"""
@@ -38,6 +39,7 @@ def run_backtest(
         turnover * slippage
         + buys * fee
         + sells * (fee + stamp_duty)
+        + turnover * transfer_fee
     )
 
     out["strat_ret_net"] = out["strat_ret"] - out["cost"]

@@ -34,12 +34,19 @@ from src.live.ledger import Ledger
 from src.risk.risk import apply_risk
 from src.strategies.multi_factor import turnover_lowvol_reversal_topn
 
-FEE = 0.00025
-SLIP = 0.0005
-STAMP = 0.0005
+FEE = 0.00025       # 券商佣金率（单边）
+SLIP = 0.0005       # 滑点（单边，按成交额）
+STAMP = 0.0005      # 印花税（仅卖出）
 LOT = 100
+MIN_FEE = 5.0       # 券商最低佣金（元/笔，小资金影响巨大）
+TRANSFER = 0.00001  # 过户费（双边，0.001%；深市免，这里保守统一收）
 # 涨跌停幅度：主板/中小板 10%；创业板(300/301)/科创板(688) 20%
 _GEM_PREFIX = ("300", "301", "688")
+
+
+def _trade_fee(amount: float) -> float:
+    """单笔交易费用 = max(成交额×佣金率, 最低佣金) + 成交额×过户费。"""
+    return max(amount * FEE, MIN_FEE) + amount * TRANSFER
 
 
 def _board_limit(symbol: str) -> float:
@@ -133,7 +140,7 @@ def _fill_pending(led: Ledger, price_lookup: dict,
             continue
         qty = float(o.qty)
         amount = qty * op
-        fee = amount * FEE
+        fee = _trade_fee(amount)
         stamp = amount * STAMP if o.side == "sell" else 0.0
         slip = amount * SLIP
         led.mark_filled(o.id, str(fd.date()), op, amount, fee, stamp)
@@ -160,8 +167,8 @@ def _plan_orders(target_w: dict[str, float], cur_shares: dict[str, float],
             amount = qty * close
             orders.append({"side": "sell", "symbol": sym, "qty": qty,
                            "price": close, "amount": amount,
-                           "fee": amount * FEE, "stamp": amount * STAMP})
-            cash += amount - amount * FEE - amount * STAMP - amount * SLIP
+                           "fee": _trade_fee(amount), "stamp": amount * STAMP})
+            cash += amount - _trade_fee(amount) - amount * STAMP - amount * SLIP
     buys: list[dict] = []
     for sym, w in target_w.items():
         close = prices.get(sym)
@@ -173,7 +180,7 @@ def _plan_orders(target_w: dict[str, float], cur_shares: dict[str, float],
             amount = delta * close
             buys.append({"side": "buy", "symbol": sym, "qty": delta,
                          "price": close, "amount": amount,
-                         "fee": amount * FEE, "stamp": 0.0})
+                         "fee": _trade_fee(amount), "stamp": 0.0})
     need = sum(b["amount"] + b["fee"] + b["amount"] * SLIP for b in buys)
     if need > cash and need > 0:
         scale = cash / need
@@ -182,7 +189,7 @@ def _plan_orders(target_w: dict[str, float], cur_shares: dict[str, float],
         buys = [b for b in buys if b["qty"] > 0]
         for b in buys:
             b["amount"] = b["qty"] * b["price"]
-            b["fee"] = b["amount"] * FEE
+            b["fee"] = _trade_fee(b["amount"])
     for b in buys:
         cash -= b["amount"] + b["fee"] + b["amount"] * SLIP
         orders.append(b)
@@ -212,7 +219,8 @@ def _plan_small_orders(day: pd.DataFrame, cur_shares: dict[str, float],
         px = prices.get(str(r.symbol))
         if px is None or px <= 0:
             continue
-        cost = px * LOT * (1.0 + FEE + SLIP)
+        one_lot = px * LOT
+        cost = one_lot + _trade_fee(one_lot) + one_lot * SLIP
         if cost > budget:
             continue
         targets.append(str(r.symbol))
@@ -229,7 +237,7 @@ def _plan_small_orders(day: pd.DataFrame, cur_shares: dict[str, float],
             amount = sh * px
             orders.append({"side": "sell", "symbol": sym, "qty": sh,
                            "price": px, "amount": amount,
-                           "fee": amount * FEE, "stamp": amount * STAMP})
+                           "fee": _trade_fee(amount), "stamp": amount * STAMP})
     for sym in targets:
         if cur_shares.get(sym, 0.0) > 0:
             continue
@@ -238,7 +246,7 @@ def _plan_small_orders(day: pd.DataFrame, cur_shares: dict[str, float],
         # 预算已在选目标时预留并校验，这里直接下单
         orders.append({"side": "buy", "symbol": sym, "qty": float(LOT),
                        "price": px, "amount": amount,
-                       "fee": amount * FEE, "stamp": 0.0})
+                       "fee": _trade_fee(amount), "stamp": 0.0})
     return orders
 
 
@@ -386,6 +394,19 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                 lines.append(f"| {r['symbol']} | - | - | - | {r['status']} |")
     else:
         lines.append("- 无（没有到期的待成交订单）")
+    filled = [r for r in fill_results if r["status"] == "filled"]
+    if filled:
+        c_fee = sum(r["fee"] for r in filled)
+        c_slip = sum(r["slip"] for r in filled)
+        c_stamp = sum(r["stamp"] for r in filled)
+        c_trans = sum(r["amount"] * TRANSFER for r in filled)
+        lines.append("")
+        lines.append("## 今日费用")
+        lines.append(f"- 佣金(含最低 {MIN_FEE:.0f} 元/笔): {c_fee:,.2f}")
+        lines.append(f"- 印花税: {c_stamp:,.2f}")
+        lines.append(f"- 过户费: {c_trans:,.2f}")
+        lines.append(f"- 滑点(估算): {c_slip:,.2f}")
+        lines.append(f"- 合计: {c_fee + c_slip + c_stamp + c_trans:,.2f}")
 
     lines += ["", "## 待成交订单"]
     if not dry_run and len(pending_after):

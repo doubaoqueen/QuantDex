@@ -61,9 +61,16 @@ def main() -> None:
     except FileNotFoundError:
         print("   [warn] 无指数日线，跳过基准对比（可在 02 脚本补指数后再跑）")
 
+    # 保真口径：最低佣金 5 元/笔、过户费 0.001%、涨跌停/停牌跳过、100 万名义本金
     res = run_portfolio_backtest(
-        W, prices, fee=0.00025, slippage=0.0005, stamp_duty=0.0005,
-        benchmark_returns=bench_ret)
+        W, prices, fee=0.00025, min_fee=5.0, slippage=0.0005,
+        stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
+        init_capital=1_000_000.0, benchmark_returns=bench_ret)
+    print(f"   保真约束：跳过 {res['n_skipped']} 笔（涨停买不进/跌停卖不出/停牌）")
+    c = res["costs"]
+    print(f"   成本合计 {c['total']:,.2f} 元（佣金 {c['commission']:,.0f} "
+          f"印花税 {c['stamp_duty']:,.0f} 过户费 {c['transfer']:,.0f} "
+          f"滑点 {c['slippage']:,.0f}）")
     perf = portfolio_performance(res)
 
     print()
@@ -75,6 +82,8 @@ def main() -> None:
             print(f"  {k}: {v:.0%}")
         elif isinstance(v, float) and k in ("夏普比率", "Calmar比率", "信息比率"):
             print(f"  {k}: {v:.2f}")
+        elif isinstance(v, float) and k.startswith("成本"):
+            print(f"  {k}: {v:,.0f} 元")
         elif isinstance(v, float):
             print(f"  {k}: {v:.2%}")
         else:
