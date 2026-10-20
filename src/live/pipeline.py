@@ -193,6 +193,7 @@ def _plan_orders(target_w: dict[str, float], cur_shares: dict[str, float],
 def run_pipeline(index_code: str = "000300", top_n: int = 50,
                  rebalance: int = 20, capital: float = 1_000_000.0,
                  max_single: float = 0.10, dry_run: bool = False,
+                 push: bool = True,
                  _panel: pd.DataFrame | None = None) -> dict:
     store = ParquetStore()
     panel = _panel if _panel is not None else _load_panel(store, index_code)
@@ -353,6 +354,14 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     print(report)
     if not dry_run:
         print(f"\n报表已写入: {report_path}")
+        # 邮件推送（配置了 SMTP 才发；失败不影响主流程）
+        if push:
+            try:
+                from src.live.notifier import is_configured, send_report
+                if is_configured():
+                    send_report(f"影子盘日报 {latest.date()}", report)
+            except Exception as e:  # noqa: BLE001
+                print(f"[notifier] 推送异常: {e}")
     print(f"（dry_run={dry_run}，撮合 {sum(1 for r in fill_results if r['status']=='filled')} 笔，"
           f"拒单 {sum(1 for r in fill_results if r['status'].startswith('rejected'))} 笔，"
           f"待成交 {len(pending_after) if not dry_run else 0} 笔，净值 {nav_now:,.2f}）")

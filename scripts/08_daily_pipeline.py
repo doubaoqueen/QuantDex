@@ -32,6 +32,7 @@ def main() -> None:
         rebalance=_arg("--rebalance", 20),
         capital=_arg("--capital", 1_000_000.0),
         dry_run="--dry-run" in sys.argv,
+        push="--no-push" not in sys.argv,   # 配置了 SMTP 时默认发送邮件
     )
 
 
