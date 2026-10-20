@@ -83,6 +83,40 @@ def test_fill_pending_statuses():
         _cleanup()
 
 
+def _small_day():
+    return pd.DataFrame({
+        "symbol": ["A", "B", "C", "D"],
+        "turnover_20": [0.1, 0.2, 0.9, 0.5],
+        "vol_20": [0.1, 0.2, 0.9, 0.5],
+        "rev_5": [0.1, 0.2, 0.9, 0.5],
+    })
+
+
+def test_small_capital_orders_only_affordable_lots():
+    """2000 元账户：按分数挑可负担的整手，最多 max_positions 只。"""
+    from src.live.pipeline import _plan_small_orders
+
+    prices = {"A": 5.0, "B": 10.0, "C": 3.0, "D": 30.0}
+    orders = _plan_small_orders(_small_day(), {}, prices, cash=2000.0,
+                                max_positions=3)
+    buys = [o for o in orders if o["side"] == "buy"]
+    # 分数排序 A(0.9) > B(0.8) > D(0.5) > C(0.1)；D 一手 3000 元买不起 → 跳过
+    assert {b["symbol"] for b in buys} == {"A", "B", "C"}
+    assert all(b["qty"] == 100 for b in buys)
+    assert sum(b["amount"] * 1.00075 for b in buys) <= 2000.0 + 1e-6
+
+
+def test_small_capital_sells_unselected_holdings():
+    from src.live.pipeline import _plan_small_orders
+
+    prices = {"A": 5.0, "B": 10.0, "C": 3.0, "D": 30.0, "X": 4.0}
+    orders = _plan_small_orders(_small_day(), {"X": 100.0}, prices,
+                                cash=500.0, max_positions=2)
+    sells = [o for o in orders if o["side"] == "sell"]
+    assert {s["symbol"] for s in sells} == {"X"}
+    assert sells[0]["qty"] == 100
+
+
 def test_pending_not_due_stays_pending():
     led = _ledger_with_orders()
     try:

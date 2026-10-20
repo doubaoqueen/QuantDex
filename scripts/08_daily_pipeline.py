@@ -26,6 +26,14 @@ def _arg(name: str, default):
     return default
 
 
+def _str_arg(name: str, default: str | None = None):
+    if name in sys.argv:
+        i = sys.argv.index(name)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
 def main() -> None:
     run_pipeline(
         top_n=_arg("--top-n", 50),
@@ -33,6 +41,9 @@ def main() -> None:
         capital=_arg("--capital", 1_000_000.0),
         dry_run="--dry-run" in sys.argv,
         push="--no-push" not in sys.argv,   # 配置了 SMTP 时默认发送邮件
+        db_path=_str_arg("--db"),
+        label=_str_arg("--label", "large"),
+        max_positions=int(_str_arg("--max-positions", 0)) or None,
     )
 
 

@@ -26,6 +26,10 @@
 - [x] **每日一键脚本 `scripts/10_daily_run.py`**：更新 PIT 全量行情 → 流水线 → 邮件
   - Windows 任务计划示例：
     `schtasks /Create /TN "QuantDex Daily" /SC DAILY /ST 19:00 /TR "D:\conda\miniconda3\envs\QuantDex\python.exe D:\MeineArbeit\QuantDex\scripts\10_daily_run.py" /F`
+- [x] **第二个影子账户（2000 元，实盘建仓模拟）**（2026-10-20）
+  - 独立账本 `data/store/sim/ledger_2000.sqlite`、独立日报 `reports/small/`
+  - 整手小组合策略：按分数挑买得起 1 手的标的，最多 3 只（小资金硬约束）
+  - 首日挂单 3 笔（600905/002736/600018，合计约 1,860 元），待次日开盘撮合
 - [ ] **Windows 任务计划**：每日 19:00 运行流水线，勾选"错过计划时尽快运行"
 
 ## P1 — 研究增强（外部评审增补）
