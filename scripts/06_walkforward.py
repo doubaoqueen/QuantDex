@@ -53,7 +53,10 @@ def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo, dates: pd.Dateti
     W = W[W.index.isin(p.index)]
     if W.empty:
         return None
-    return run_portfolio_backtest(W, p)
+    return run_portfolio_backtest(
+        W, p, fee=0.00025, min_fee=5.0, slippage=0.0005,
+        stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
+        init_capital=1_000_000.0)
 
 
 def main() -> None:
