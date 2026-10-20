@@ -147,6 +147,53 @@ class Ledger:
     def trades(self) -> pd.DataFrame:
         return pd.read_sql_query("SELECT * FROM trade_log ORDER BY id", self.connect())
 
+    # -------------------------------------------------- 待成交订单（T+1 两段式）
+    def add_pending(self, orders: pd.DataFrame) -> int:
+        """写入待成交订单（status='pending'），返回写入条数。
+
+        订单字段：signal_date / fill_date(预期成交日) / symbol / side / qty /
+        price(参考价,信号日收盘) / amount / fee / stamp_duty / status / note
+        """
+        if orders is None or len(orders) == 0:
+            return 0
+        t = orders.copy()
+        for c in _TRADE_COLS:
+            if c not in t.columns:
+                t[c] = None
+        t = t[_TRADE_COLS]
+        rows = [tuple(None if (v is None or (isinstance(v, float) and pd.isna(v))) else v
+                      for v in r) for r in t.itertuples(index=False)]
+        conn = self.connect()
+        with conn:
+            conn.executemany(
+                "INSERT INTO trade_log(signal_date,fill_date,symbol,side,qty,price,"
+                "amount,fee,stamp_duty,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                rows)
+        return len(rows)
+
+    def pending_orders(self) -> pd.DataFrame:
+        """返回全部待成交订单。"""
+        return pd.read_sql_query(
+            "SELECT * FROM trade_log WHERE status='pending' ORDER BY signal_date, id",
+            self.connect())
+
+    def mark_filled(self, trade_id: int, fill_date: str, price: float,
+                    amount: float, fee: float, stamp_duty: float) -> None:
+        """把待成交订单标记为已完成（写入真实成交价与费用）。"""
+        conn = self.connect()
+        with conn:
+            conn.execute(
+                "UPDATE trade_log SET fill_date=?, price=?, amount=?, fee=?, "
+                "stamp_duty=?, status='filled' WHERE id=?",
+                (fill_date, price, amount, fee, stamp_duty, trade_id))
+
+    def mark_rejected(self, trade_id: int, status: str, note: str = "") -> None:
+        """把待成交订单标记为拒单（涨停/跌停/停牌）。"""
+        conn = self.connect()
+        with conn:
+            conn.execute("UPDATE trade_log SET status=?, note=? WHERE id=?",
+                         (status, note, trade_id))
+
     # -------------------------------------------------- 备份
     def daily_backup(self) -> Path:
         """每日备份：复制 sqlite 到 backups/，保留最近 _KEEP_BACKUPS 份。"""
