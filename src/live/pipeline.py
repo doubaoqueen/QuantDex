@@ -189,11 +189,66 @@ def _plan_orders(target_w: dict[str, float], cur_shares: dict[str, float],
     return orders
 
 
+def _ranked_candidates(day: pd.DataFrame) -> pd.DataFrame:
+    """按策略分数排序当日候选（与 multi_factor 的合成分一致）。"""
+    d = day[["symbol", "turnover_20", "vol_20", "rev_5"]].dropna().copy()
+    d["score"] = ((1.0 - d["turnover_20"]) + (1.0 - d["vol_20"]) + (1.0 - d["rev_5"])) / 3.0
+    d["symbol"] = d["symbol"].astype(str)
+    return d.sort_values("score", ascending=False)
+
+
+def _plan_small_orders(day: pd.DataFrame, cur_shares: dict[str, float],
+                       prices: dict[str, float], cash: float,
+                       max_positions: int = 3) -> list[dict]:
+    """小资金模式：按分数顺序挑「买得起 1 手」的标的，每只 1 手，最多 N 只。
+
+    2000 元级别资金无法做 50 只等权（每只 40 元买不起 1 手），
+    因此改用整手小组合；未被选中的持仓全部卖出。
+    """
+    cand = _ranked_candidates(day)
+    targets: list[str] = []
+    budget = cash
+    for r in cand.itertuples(index=False):
+        px = prices.get(str(r.symbol))
+        if px is None or px <= 0:
+            continue
+        cost = px * LOT * (1.0 + FEE + SLIP)
+        if cost > budget:
+            continue
+        targets.append(str(r.symbol))
+        budget -= cost
+        if len(targets) >= max_positions:
+            break
+
+    orders: list[dict] = []
+    for sym, sh in cur_shares.items():
+        if sh > 0 and sym not in targets:
+            px = prices.get(sym)
+            if px is None or px <= 0:
+                continue
+            amount = sh * px
+            orders.append({"side": "sell", "symbol": sym, "qty": sh,
+                           "price": px, "amount": amount,
+                           "fee": amount * FEE, "stamp": amount * STAMP})
+    for sym in targets:
+        if cur_shares.get(sym, 0.0) > 0:
+            continue
+        px = prices[sym]
+        amount = px * LOT
+        # 预算已在选目标时预留并校验，这里直接下单
+        orders.append({"side": "buy", "symbol": sym, "qty": float(LOT),
+                       "price": px, "amount": amount,
+                       "fee": amount * FEE, "stamp": 0.0})
+    return orders
+
+
 # ---------------------------------------------------------------- 主流程
 def run_pipeline(index_code: str = "000300", top_n: int = 50,
                  rebalance: int = 20, capital: float = 1_000_000.0,
                  max_single: float = 0.10, dry_run: bool = False,
                  push: bool = True,
+                 db_path=None, label: str = "large",
+                 max_positions: int | None = None,
                  _panel: pd.DataFrame | None = None) -> dict:
     store = ParquetStore()
     panel = _panel if _panel is not None else _load_panel(store, index_code)
@@ -201,7 +256,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     W = turnover_lowvol_reversal_topn(panel, top_n=top_n,
                                       rebalance_days=rebalance)
 
-    led = Ledger()
+    led = Ledger(db_path)
     # 1) 撮合到期订单（T+1 开盘价）
     fill_results: list[dict] = []
     if not dry_run:
@@ -249,16 +304,21 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     bootstrap = snap_now.empty and len(W) > 0
     orders_df = None
     if not dry_run and (rebalance_day or bootstrap) and led.pending_orders().empty:
-        w_row = (W.loc[latest] if rebalance_day else W.iloc[-1]).astype(float)
-        nav_hist = None
-        if not snap_now.empty:
-            nav_hist = pd.Series(snap_now["total_nav"].values,
-                                 index=pd.to_datetime(snap_now["date"]))
-        w_series = apply_risk(w_row.to_frame().T, nav=nav_hist,
-                              max_single=max_single, max_total=1.0).iloc[0]
-        target_w = {str(k): float(v) for k, v in w_series.items() if float(v) > 0}
         next_td = _next_trading_day(store, latest) or (latest + pd.Timedelta(days=1))
-        orders = _plan_orders(target_w, new_shares, prices_close, nav_now, cash)
+        if max_positions:
+            # 小资金模式：整手组合，按分数挑最多 max_positions 只
+            orders = _plan_small_orders(day, new_shares, prices_close, cash,
+                                        max_positions=max_positions)
+        else:
+            w_row = (W.loc[latest] if rebalance_day else W.iloc[-1]).astype(float)
+            nav_hist = None
+            if not snap_now.empty:
+                nav_hist = pd.Series(snap_now["total_nav"].values,
+                                     index=pd.to_datetime(snap_now["date"]))
+            w_series = apply_risk(w_row.to_frame().T, nav=nav_hist,
+                                  max_single=max_single, max_total=1.0).iloc[0]
+            target_w = {str(k): float(v) for k, v in w_series.items() if float(v) > 0}
+            orders = _plan_orders(target_w, new_shares, prices_close, nav_now, cash)
         if orders:
             rows = [{
                 "signal_date": str(latest.date()), "fill_date": str(next_td.date()),
@@ -304,9 +364,9 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     pending_after = led.pending_orders() if not dry_run else pd.DataFrame()
 
     # ---- 日报 ----
-    report_dir = STORE_DIR / "reports"
+    report_dir = STORE_DIR / "reports" / label
     report_dir.mkdir(parents=True, exist_ok=True)
-    lines = [f"# 影子盘日报 {latest.date()}", "", "## 账户",
+    lines = [f"# 影子盘日报[{label}] {latest.date()}", "", "## 账户",
              f"- 现金: {cash:,.2f}",
              f"- 持仓市值: {mv:,.2f}",
              f"- 总净值: {nav_now:,.2f}",
@@ -359,7 +419,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             try:
                 from src.live.notifier import is_configured, send_report
                 if is_configured():
-                    send_report(f"影子盘日报 {latest.date()}", report)
+                    send_report(f"影子盘日报[{label}] {latest.date()}", report)
             except Exception as e:  # noqa: BLE001
                 print(f"[notifier] 推送异常: {e}")
     print(f"（dry_run={dry_run}，撮合 {sum(1 for r in fill_results if r['status']=='filled')} 笔，"

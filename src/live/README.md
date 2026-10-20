@@ -54,3 +54,24 @@ python scripts/08_daily_pipeline.py --dry-run  # 只计算不落账本
   `SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / REPORT_TO`；
 - 流水线在生成日报后自动发送（未配置或失败只打印提示，不影响记账）；`08 --no-push` 可关闭；
 - 测试：`python scripts/09_test_mail.py`。
+
+## 双账户（2026-10-20 起）
+
+| 账户 | 账本 | 日报目录 | 资金 | 策略口径 |
+|---|---|---|---|---|
+| **large**（看大盘） | `data/store/sim/ledger.sqlite` | `reports/large/` | 100 万 | Top50 等权，每 20 交易日调仓 |
+| **small**（实盘建仓模拟） | `data/store/sim/ledger_2000.sqlite` | `reports/small/` | **2000 元** | 整手小组合：按分数挑**买得起 1 手**的标的，最多 3 只 |
+
+**2000 元账户的特殊处理**：A 股 100 股一手，2000 元做不了 50 只等权（每只 40 元）。
+因此 `_plan_small_orders` 按分数顺序挑「一手成本 ≤ 可用现金」的标的，每只买 1 手，
+最多 `max_positions` 只；未选中的持仓全部卖出。**代价是集中度高（每只约占 25%~50%）、
+且只能买低价股（价格越高越容易买不起）**——这是小资金实盘的客观约束，需在归因报告里明示。
+
+启动命令：
+```bash
+# large
+python scripts/08_daily_pipeline.py
+# small
+python scripts/08_daily_pipeline.py --capital 2000 --db data/store/sim/ledger_2000.sqlite --label small --max-positions 3
+```
+每日一键 `10_daily_run.py` 会依次跑两个账户。
