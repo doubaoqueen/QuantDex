@@ -73,7 +73,7 @@ def run_portfolio_backtest(
     if dividends is not None and len(dividends):
         d = dividends.copy()
         d["date"] = pd.to_datetime(d["date"])
-        div_by_date = {dd: g.set_index("symbol")["dividend"].astype(float)
+        div_by_date = {dd: g.groupby("symbol")["dividend"].sum().astype(float)
                        for dd, g in d.groupby("date")}
 
     # 信号日 -> 执行日（T 之后的第 trade_lag 个交易日）

@@ -62,6 +62,8 @@ def main() -> None:
         print("   [warn] 无指数日线，跳过基准对比（可在 02 脚本补指数后再跑）")
 
     # 保真口径：最低佣金 5 元/笔、过户费 0.001%、涨跌停/停牌跳过、100 万名义本金
+    # 注意：价格用前复权（qfq），其收益已包含分红效应（除权日价格平滑），
+    #       因此这里不再叠加现金分红（否则双重计算；见 DECISIONS.md）
     res = run_portfolio_backtest(
         W, prices, fee=0.00025, min_fee=5.0, slippage=0.0005,
         stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
