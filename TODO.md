@@ -19,10 +19,13 @@
   - 已实现：读数据 → 目标权重（经风控：单票上限/回撤断路器）→ 模拟成交（收盘价）→ 写账本（快照/持仓/成交）→ 生成纯文本日报
   - 已验证：首次运行自动建仓（49 笔）、同日重跑幂等、风控生效、账本+日报落盘
   - 待做：Windows 任务计划定时 + 邮件推送（下方 P0 第二项）
-- [x] **邮件推送**（SMTP，已完成代码，待真实邮箱联调）
+- [x] **邮件推送**（SMTP，2026-10-20 联调通过）
   - `src/live/notifier.py`：纯文本邮件；配置走环境变量或 `.env`（已 gitignore）
-  - 流水线生成日报后自动发送；`08 --no-push` 可关闭；`09_test_mail.py` 测试连通性
-  - 待办：在 `.env` 填入真实 QQ 邮箱地址后跑一次 09 验证
+  - 流水线生成日报后自动发送；`08/10 --no-push` 可关闭；`09_test_mail.py` 测试连通性
+  - 已实测发送成功（3521601975@qq.com）
+- [x] **每日一键脚本 `scripts/10_daily_run.py`**：更新 PIT 全量行情 → 流水线 → 邮件
+  - Windows 任务计划示例：
+    `schtasks /Create /TN "QuantDex Daily" /SC DAILY /ST 19:00 /TR "D:\conda\miniconda3\envs\QuantDex\python.exe D:\MeineArbeit\QuantDex\scripts\10_daily_run.py" /F`
 - [ ] **Windows 任务计划**：每日 19:00 运行流水线，勾选"错过计划时尽快运行"
 
 ## P1 — 研究增强（外部评审增补）
