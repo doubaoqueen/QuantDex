@@ -155,6 +155,39 @@ def fetch_dividend(symbol: str, years: int = 6,
     return out
 
 
+def load_dividend_panel(store: ParquetStore | None = None,
+                        symbols: list[str] | None = None) -> pd.DataFrame:
+    """把已抓取的分红数据拼成回测用面板：(date=除权除息日, symbol, dividend=每股税前红利)。
+
+    缺失/无分红标的自动跳过；返回按 date 排序的 DataFrame。
+    """
+    store = store or ParquetStore()
+    if symbols is None:
+        symbols = store.list_names("fin_bs")
+        symbols = [str(s).replace("__dividend", "") for s in symbols
+                   if str(s).endswith("__dividend")]
+    frames = []
+    for sym in symbols:
+        try:
+            df = store.read("fin_bs", f"{sym}__dividend")
+        except FileNotFoundError:
+            continue
+        if df.empty or "dividOperateDate" not in df.columns:
+            continue
+        d = df[["dividOperateDate", "dividCashPsBeforeTax"]].copy()
+        d["date"] = pd.to_datetime(d["dividOperateDate"], errors="coerce")
+        d["dividend"] = pd.to_numeric(d["dividCashPsBeforeTax"], errors="coerce")
+        d = d.dropna(subset=["date", "dividend"])
+        d = d[d["dividend"] > 0]
+        if d.empty:
+            continue
+        d["symbol"] = str(sym)
+        frames.append(d[["date", "symbol", "dividend"]])
+    if not frames:
+        return pd.DataFrame(columns=["date", "symbol", "dividend"])
+    return pd.concat(frames, ignore_index=True).sort_values("date").reset_index(drop=True)
+
+
 # ---------------------------------------------------------------- 复权因子
 def fetch_adjust_factor(symbol: str, start: str = "2010-01-01",
                         end: str | None = None,

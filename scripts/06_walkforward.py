@@ -46,7 +46,8 @@ def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
     return {"ann": ann, "ir": ir, "mdd": mdd, "total": float(nav.iloc[-1] - 1)}
 
 
-def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo, dates: pd.DatetimeIndex):
+def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo,
+              dates: pd.DatetimeIndex):
     top_n, reb = combo
     W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=reb)
     p = prices.loc[dates]
@@ -73,6 +74,8 @@ def main() -> None:
 
     bench = get_kline(index_code, adjust="none", store=store)
     bench_ret = bench.set_index("date")["close"].pct_change().rename("bench")
+
+    # 价格用 qfq（收益已含分红），不再叠加现金分红；见 DECISIONS.md
 
     all_dates = prices.index
     folds = []
