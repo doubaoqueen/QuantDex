@@ -46,3 +46,11 @@ python scripts/08_daily_pipeline.py --dry-run  # 只计算不落账本
 
 约定：非调仓日只做净值快照；空账户首次运行自动"建仓"（挂单等次日开盘）；
 数据更新不在本模块（先跑 02/04）。
+
+## 邮件推送 `notifier.py`（可选）
+
+- SMTP 纯文本邮件（QQ 邮箱示例：`smtp.qq.com:465` SSL）；
+- 配置来源：环境变量 > 项目根 `.env`（**`.env` 已被 .gitignore 忽略，禁止提交**）：
+  `SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / REPORT_TO`；
+- 流水线在生成日报后自动发送（未配置或失败只打印提示，不影响记账）；`08 --no-push` 可关闭；
+- 测试：`python scripts/09_test_mail.py`。
