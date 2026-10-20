@@ -23,17 +23,23 @@ def cap_weights(weights: pd.Series, max_single: float = 0.10,
     return w
 
 
-def drawdown_multiplier(nav: pd.Series, max_dd: float = 0.15,
+def drawdown_multiplier(nav: pd.Series, max_dd: float = -0.15,
                         scale: float = 0.5) -> pd.Series:
-    """回撤断路器：当前回撤深于 max_dd（如 -15%）时，仓位乘 scale（如 0.5）。"""
+    """回撤断路器：当前回撤深于 max_dd（如 -15%，**必须传负数**）时，仓位乘 scale（如 0.5）。
+
+    注意：dd = nav/cummax - 1 恒 ≤ 0，阈值必须为负数；传正数会导致任何一天都触发。
+    """
     dd = nav / nav.cummax() - 1.0
     return pd.Series(np.where(dd < max_dd, scale, 1.0), index=nav.index)
 
 
 def apply_risk(weights: pd.DataFrame, nav: pd.Series | None = None,
                max_single: float = 0.10, max_total: float = 1.0,
-               max_dd: float = 0.15, dd_scale: float = 0.5) -> pd.DataFrame:
-    """对目标权重矩阵（index=信号日，columns=symbols）逐日施加风控。"""
+               max_dd: float = -0.15, dd_scale: float = 0.5) -> pd.DataFrame:
+    """对目标权重矩阵（index=信号日，columns=symbols）逐日施加风控。
+
+    max_dd 必须为负数（回撤阈值，如 -0.15 表示回撤 15% 才触发断路器）。
+    """
     out = weights.astype(float).copy()
     out = out.apply(lambda s: cap_weights(s, max_single, max_total), axis=1)
     if nav is not None:
