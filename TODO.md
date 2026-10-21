@@ -34,6 +34,10 @@
   - 任务名 `QuantDex Daily`，每天 19:00 运行 `scripts/run_daily.bat`（→ `10_daily_run.py`），已启用"错过补跑"
   - 下次运行 2026-10-22 19:00；日志 `data/store/logs/daily_run.log`
   - 备注：仅"用户登录时"运行；如需未登录运行需在任务计划程序里改凭据
+- [x] **Python 原生调度器**（`scripts/14_scheduler.py`，APScheduler，2026-10-21 写好）
+  - 每天 19:00 执行 02b 更新 + 10 流水线；支持 `--run-now`；日志 `data/store/logs/scheduler.log`
+  - 需常驻：`pip install apscheduler` 后运行；开机自启可用启动文件夹/任务计划
+  - 定位：与 Windows 任务计划二选一（任务计划触发一次 vs 调度器常驻），推荐任务计划（更稳）
 
 ## P1 — 研究增强（外部评审增补）
 
