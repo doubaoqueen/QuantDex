@@ -23,6 +23,16 @@
 | 12 | `12_fetch_dividends.py` | 分红送配增量抓取（baostock，可断点续跑） | ⏳ 进行中 |
 | d | `demo_analysis.py` | 单标的演示：质检 → 概览 → 分年度 → 双均线回测 → 出图 | ✅ |
 
+## 定时任务（每日自动跑）
+
+| 文件 | 用途 |
+|---|---|
+| `run_daily.bat` | 任务计划实际调用的包装脚本（切目录 + 日志重定向到 `data/store/logs/daily_run.log`） |
+| `13_setup_task.ps1` | 一键安装/卸载 Windows 任务计划（每天 19:00，错过补跑） |
+
+安装：右键 `13_setup_task.ps1` →「使用 PowerShell 运行」；或命令：
+`powershell -ExecutionPolicy Bypass -File scripts\13_setup_task.ps1`
+
 ## 辅助工具
 
 | 脚本 | 用途 |
