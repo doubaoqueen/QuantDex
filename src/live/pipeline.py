@@ -107,7 +107,8 @@ def _day_prices(store: ParquetStore, date: pd.Timestamp,
 
 # ---------------------------------------------------------------- 撮合
 def _fill_pending(led: Ledger, price_lookup: dict,
-                  latest: pd.Timestamp) -> list[dict]:
+                  latest: pd.Timestamp,
+                  last_dates: dict | None = None) -> list[dict]:
     """撮合 fill_date ≤ latest 的待成交订单；返回每单处理结果。"""
     pend = led.pending_orders()
     if pend.empty:
@@ -121,6 +122,12 @@ def _fill_pending(led: Ledger, price_lookup: dict,
             continue
         dp = price_lookup.get(fd, {}).get(str(o.symbol))
         if dp is None:
+            last = (last_dates or {}).get(str(o.symbol))
+            if last is None or pd.Timestamp(last) < fd:
+                # 行情尚未更新到成交日：保持待成交（不是停牌）
+                results.append({"id": o.id, "symbol": o.symbol, "status": "pending",
+                                "msg": f"行情未更新到 {fd.date()}，保持待成交"})
+                continue
             led.mark_rejected(o.id, "rejected_suspended", "停牌/无行情")
             results.append({"id": o.id, "symbol": o.symbol,
                             "status": "rejected_suspended", "msg": "停牌/无行情"})
@@ -270,11 +277,18 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     if not dry_run:
         pend = led.pending_orders()
         lookup = {}
+        last_dates = {}
         if not pend.empty:
             symbols = sorted({str(s) for s in pend["symbol"]})
             for d in sorted({pd.Timestamp(x) for x in pend["fill_date"]}):
                 lookup[d] = _day_prices(store, d, symbols)
-        fill_results = _fill_pending(led, lookup, latest)
+            for sym in symbols:
+                try:
+                    k = get_kline(sym, adjust="qfq", store=store)
+                    last_dates[sym] = pd.to_datetime(k["date"]).max()
+                except Exception:  # noqa: BLE001
+                    last_dates[sym] = None
+        fill_results = _fill_pending(led, lookup, latest, last_dates=last_dates)
 
     # 2) 账户状态 + 应用撮合结果
     snap_now = led.snapshot()
@@ -344,13 +358,20 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         if sh <= 0:
             continue
         px = prices_close.get(s)
-        if px is None:
-            try:
-                df = get_kline(s, adjust="qfq", store=store)
-                px = float(df[df["date"] <= latest]["close"].iloc[-1])
-            except Exception:  # noqa: BLE001
-                px = 0.0
+        prev_px = None
+        try:
+            df = get_kline(s, adjust="qfq", store=store)
+            k2 = df[pd.to_datetime(df["date"]) <= latest]
+            if px is None and len(k2):
+                px = float(k2["close"].iloc[-1])
+            if len(k2) >= 2:
+                prev_px = float(k2["close"].iloc[-2])
+        except Exception:  # noqa: BLE001
+            px = px or 0.0
+        chg = (px / prev_px - 1.0) if (prev_px and px) else None
+        pnl = (px - prev_px) * sh if (prev_px and px) else 0.0
         pos_rows.append({"symbol": s, "shares": sh, "close": px,
+                         "prev_close": prev_px, "pct_chg": chg, "pnl": pnl,
                          "weight": (sh * px) / nav_now if nav_now else 0.0})
     positions = pd.DataFrame(pos_rows)
     if len(positions):
@@ -374,10 +395,22 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     # ---- 日报 ----
     report_dir = STORE_DIR / "reports" / label
     report_dir.mkdir(parents=True, exist_ok=True)
+    prev_nav = float(snap_now["total_nav"].iloc[-1]) if not snap_now.empty else nav_now
+    day_pnl = nav_now - prev_nav
+    day_ret = (nav_now / prev_nav - 1.0) if prev_nav else 0.0
+    if len(positions) and "pct_chg" in positions.columns:
+        up = int((positions["pct_chg"] > 0).sum())
+        down = int((positions["pct_chg"] < 0).sum())
+        flat = int((positions["pct_chg"].isna() | (positions["pct_chg"] == 0)).sum())
+        chg_txt = f"涨 {up} / 跌 {down} / 平 {flat}"
+    else:
+        chg_txt = "-"
     lines = [f"# 影子盘日报[{label}] {latest.date()}", "", "## 账户",
              f"- 现金: {cash:,.2f}",
              f"- 持仓市值: {mv:,.2f}",
              f"- 总净值: {nav_now:,.2f}",
+             f"- 今日盈亏: {day_pnl:+,.2f}（{day_ret:+.2%}）",
+             f"- 涨跌家数: {chg_txt}",
              f"- 基准(沪深300): {bench_close:,.2f}",
              f"- 持仓数: {len(positions)}",
              "", "## 今日撮合（T+1 开盘价）"]
@@ -420,10 +453,13 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         lines.append("- 无")
 
     if len(positions):
-        lines += ["", "## 前 10 大持仓", "| 代码 | 股数 | 收盘 | 权重 |",
-                  "|---|---|---|---|"]
+        lines += ["", "## 前 10 大持仓",
+                  "| 代码 | 股数 | 收盘 | 涨跌幅 | 当日盈亏 | 权重 |",
+                  "|---|---|---|---|---|---|"]
         for r in positions.head(10).itertuples(index=False):
-            lines.append(f"| {r.symbol} | {r.shares:.0f} | {r.close:.2f} | {r.weight:.2%} |")
+            chg = f"{r.pct_chg:+.2%}" if pd.notna(r.pct_chg) else "-"
+            lines.append(f"| {r.symbol} | {r.shares:.0f} | {r.close:.2f} | {chg} | "
+                         f"{r.pnl:+,.0f} | {r.weight:.2%} |")
 
     lines += ["", "> 成交口径：T 日收盘挂单，T+1 开盘价撮合；"
                   "涨停买不进/跌停卖不出/停牌记为拒单。数据更新由 02/04 负责。"]

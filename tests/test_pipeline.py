@@ -63,7 +63,8 @@ def test_fill_pending_statuses():
             "300750": {"open": 10.0, "close": 10.0, "prev_close": 20.0},   # -50% 跌停(创业板20%)
             "688009": None,                                                 # 停牌
         }}
-        results = _fill_pending(led, lookup, pd.Timestamp(D))
+        last_dates = {s: "2026-10-22" for s in ("600519", "000001", "300750", "688009")}
+        results = _fill_pending(led, lookup, pd.Timestamp(D), last_dates=last_dates)
         by_sym = {r["symbol"]: r for r in results}
         assert by_sym["600519"]["status"] == "filled"
         assert abs(by_sym["600519"]["price"] - 1495.0) < 1e-9
@@ -115,6 +116,31 @@ def test_small_capital_sells_unselected_holdings():
     sells = [o for o in orders if o["side"] == "sell"]
     assert {s["symbol"] for s in sells} == {"X"}
     assert sells[0]["qty"] == 100
+
+
+def test_missing_data_keeps_pending_not_rejected():
+    """行情未更新到成交日 → 保持 pending（不能误判成停牌拒单）。"""
+    led = _ledger_with_orders()
+    try:
+        last_dates = {s: "2026-10-19" for s in ("600519", "000001", "300750", "688009")}
+        results = _fill_pending(led, {}, pd.Timestamp(D), last_dates=last_dates)
+        assert all(r["status"] == "pending" for r in results)
+        assert len(led.pending_orders()) == 4
+    finally:
+        led.close()
+        _cleanup()
+
+
+def test_suspended_when_data_exists_past_fill_date():
+    """数据已覆盖成交日、但当天无行情 → 才算停牌拒单。"""
+    led = _ledger_with_orders()
+    try:
+        last_dates = {s: "2026-10-22" for s in ("600519", "000001", "300750", "688009")}
+        results = _fill_pending(led, {}, pd.Timestamp(D), last_dates=last_dates)
+        assert all(r["status"] == "rejected_suspended" for r in results)
+    finally:
+        led.close()
+        _cleanup()
 
 
 def test_pending_not_due_stays_pending():

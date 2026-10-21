@@ -31,12 +31,19 @@ def main() -> None:
         symbols = symbols[:limit]
     source = os.environ.get("QUANTDEX_SOURCE", "em")
     allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
-    print(f">> 更新 PIT 行情：{len(symbols)} 只 | source={source} | 新浪降级={allow_sina}", flush=True)
+    allow_bs = os.environ.get("QUANTDEX_BS_FALLBACK", "1") == "1"
+    print(f">> 更新 PIT 行情：{len(symbols)} 只 | source={source} | "
+          f"新浪降级={allow_sina} | baostock兜底={allow_bs}", flush=True)
     r = update_kline_batch(symbols, asset="stock", adjust="qfq",
                            full_start=DEFAULT_START_DATE, source=source,
-                           store=store, workers=4, sina_fallback=allow_sina)
+                           store=store, workers=4, sina_fallback=allow_sina,
+                           bs_fallback=allow_bs)
     failed = r.pop("__failed__", [])
-    print(f">> 完成：成功 {len(r)} 只，失败 {len(failed)} 只", flush=True)
+    n_up = sum(1 for v in r.values() if v == "uptodate")
+    n_bs = sum(1 for v in r.values() if isinstance(v, str) and v.startswith("bs_fallback"))
+    n_sina = sum(1 for v in r.values() if isinstance(v, str) and v.startswith("sina_fallback"))
+    print(f">> 完成：处理 {len(r)} 只（已最新 {n_up}、baostock兜底 {n_bs}、新浪兜底 {n_sina}），"
+          f"失败 {len(failed)} 只", flush=True)
     for code, err in failed[:10]:
         print(f"   FAIL {code}: {str(err)[:100]}", flush=True)
 
