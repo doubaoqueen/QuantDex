@@ -25,16 +25,26 @@ from src.live.pipeline import run_pipeline
 
 
 def main() -> None:
-    store = ParquetStore()
-    symbols = universe.pit_union_symbols("000300", store)
-    print(f">> 更新 PIT 历史成员行情（{len(symbols)} 只，增量）...")
-    r = update_kline_batch(symbols, asset="stock", adjust="qfq",
-                           full_start=DEFAULT_START_DATE, source="sina",
-                           store=store)
-    failed = r.pop("__failed__", [])
-    print(f">> 行情更新完成：成功 {len(r)} 只，失败 {len(failed)} 只")
-    for code, err in failed[:5]:
-        print(f"   FAIL {code}: {err}")
+    import os
+
+    push = "--no-push" not in sys.argv
+    if "--skip-update" not in sys.argv:
+        store = ParquetStore()
+        symbols = universe.pit_union_symbols("000300", store)
+        source = os.environ.get("QUANTDEX_SOURCE", "em")
+        allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
+        print(f">> 更新 PIT 历史成员行情（{len(symbols)} 只，增量，source={source}）...")
+        r = update_kline_batch(symbols, asset="stock", adjust="qfq",
+                               full_start=DEFAULT_START_DATE, source=source,
+                               store=store, sina_fallback=allow_sina)
+        failed = r.pop("__failed__", [])
+        print(f">> 行情更新完成：成功 {len(r)} 只，失败 {len(failed)} 只")
+        for code, err in failed[:5]:
+            print(f"   FAIL {code}: {err}")
+    else:
+        print(">> 跳过行情更新（--skip-update，使用本地已有数据）")
+
+    print("")
 
     push = "--no-push" not in sys.argv
     print("\n>> [账户 large] 影子盘流水线（100 万 / Top50 等权）...")

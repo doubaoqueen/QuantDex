@@ -240,6 +240,7 @@ def update_kline_batch(
     source: str = "em",
     store: ParquetStore | None = None,
     workers: int = 4,
+    sina_fallback: bool = True,
 ) -> dict:
     """
     【并发】批量增量更新 K 线：
@@ -277,7 +278,7 @@ def update_kline_batch(
             return code, len(df)
         except Exception as e:  # noqa: BLE001
             # 个股走东财失败时自动降级新浪（东财对突发并发限流）
-            if source == "em" and asset == "stock":
+            if sina_fallback and source == "em" and asset == "stock":
                 try:
                     df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
                     return code, f"sina_fallback:{len(df)}"
