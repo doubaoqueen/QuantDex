@@ -30,10 +30,10 @@
   - 独立账本 `data/store/sim/ledger_2000.sqlite`、独立日报 `reports/small/`
   - 整手小组合策略：按分数挑买得起 1 手的标的，最多 3 只（小资金硬约束）
   - 首日挂单 3 笔（600905/002736/600018，合计约 1,860 元），待次日开盘撮合
-- [ ] **Windows 任务计划**：一键安装脚本已就绪（`scripts/13_setup_task.ps1` + `run_daily.bat`）
-  - **未安装原因**：agent 沙箱无法写系统任务计划（schtasks 被 Access denied），必须由用户在本机运行一次
-  - 安装：右键 `scripts/13_setup_task.ps1` →「使用 PowerShell 运行」（已内置"错过计划补跑"）
-  - 日志：`data/store/logs/daily_run.log`
+- [x] **Windows 任务计划**（2026-10-21 已安装）
+  - 任务名 `QuantDex Daily`，每天 19:00 运行 `scripts/run_daily.bat`（→ `10_daily_run.py`），已启用"错过补跑"
+  - 下次运行 2026-10-22 19:00；日志 `data/store/logs/daily_run.log`
+  - 备注：仅"用户登录时"运行；如需未登录运行需在任务计划程序里改凭据
 
 ## P1 — 研究增强（外部评审增补）
 
