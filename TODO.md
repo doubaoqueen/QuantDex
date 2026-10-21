@@ -30,7 +30,10 @@
   - 独立账本 `data/store/sim/ledger_2000.sqlite`、独立日报 `reports/small/`
   - 整手小组合策略：按分数挑买得起 1 手的标的，最多 3 只（小资金硬约束）
   - 首日挂单 3 笔（600905/002736/600018，合计约 1,860 元），待次日开盘撮合
-- [ ] **Windows 任务计划**：每日 19:00 运行流水线，勾选"错过计划时尽快运行"
+- [ ] **Windows 任务计划**：一键安装脚本已就绪（`scripts/13_setup_task.ps1` + `run_daily.bat`）
+  - **未安装原因**：agent 沙箱无法写系统任务计划（schtasks 被 Access denied），必须由用户在本机运行一次
+  - 安装：右键 `scripts/13_setup_task.ps1` →「使用 PowerShell 运行」（已内置"错过计划补跑"）
+  - 日志：`data/store/logs/daily_run.log`
 
 ## P1 — 研究增强（外部评审增补）
 
