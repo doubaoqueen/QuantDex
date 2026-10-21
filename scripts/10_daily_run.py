@@ -33,12 +33,17 @@ def main() -> None:
         symbols = universe.pit_union_symbols("000300", store)
         source = os.environ.get("QUANTDEX_SOURCE", "em")
         allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
-        print(f">> 更新 PIT 历史成员行情（{len(symbols)} 只，增量，source={source}）...")
+        allow_bs = os.environ.get("QUANTDEX_BS_FALLBACK", "1") == "1"
+        print(f">> 更新 PIT 历史成员行情（{len(symbols)} 只，增量，source={source}，"
+              f"baostock兜底={allow_bs}）...")
         r = update_kline_batch(symbols, asset="stock", adjust="qfq",
                                full_start=DEFAULT_START_DATE, source=source,
-                               store=store, sina_fallback=allow_sina)
+                               store=store, sina_fallback=allow_sina,
+                               bs_fallback=allow_bs)
         failed = r.pop("__failed__", [])
-        print(f">> 行情更新完成：成功 {len(r)} 只，失败 {len(failed)} 只")
+        n_bs = sum(1 for v in r.values() if isinstance(v, str) and v.startswith("bs_fallback"))
+        n_up = sum(1 for v in r.values() if v == "uptodate")
+        print(f">> 行情更新完成：处理 {len(r)} 只（已最新 {n_up}、baostock兜底 {n_bs}），失败 {len(failed)} 只")
         for code, err in failed[:5]:
             print(f"   FAIL {code}: {err}")
     else:

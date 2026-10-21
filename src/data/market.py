@@ -241,6 +241,7 @@ def update_kline_batch(
     store: ParquetStore | None = None,
     workers: int = 4,
     sina_fallback: bool = True,
+    bs_fallback: bool = False,
 ) -> dict:
     """
     【并发】批量增量更新 K 线：
@@ -269,22 +270,34 @@ def update_kline_batch(
                      else (last + pd.Timedelta(days=1)).strftime("%Y%m%d"))
         except Exception:  # noqa: BLE001  读本地失败也按全新标的处理
             start = full_start
-        try:
-            if source == "sina":
-                df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
-            else:
-                df = fetch_kline(code, start=start, asset=asset,
-                                 period=period, adjust=adjust, store=store)
-            return code, len(df)
-        except Exception as e:  # noqa: BLE001
-            # 个股走东财失败时自动降级新浪（东财对突发并发限流）
-            if sina_fallback and source == "em" and asset == "stock":
-                try:
+        last_err = None
+        for attempt in range(3):
+            try:
+                if source == "sina":
                     df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
-                    return code, f"sina_fallback:{len(df)}"
-                except Exception as e2:  # noqa: BLE001
-                    return code, f"__ERR__:{e2}"
-            return code, f"__ERR__:{e}"
+                else:
+                    df = fetch_kline(code, start=start, asset=asset,
+                                     period=period, adjust=adjust,
+                                     source=source, store=store)
+                return code, len(df)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                time.sleep(0.8 * (attempt + 1))  # 简单退避，缓解东财限流
+        # 个股降级：新浪（会崩，默认关闭）/ baostock（稳，推荐）
+        if sina_fallback and source == "em" and asset == "stock":
+            try:
+                df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
+                return code, f"sina_fallback:{len(df)}"
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        if bs_fallback and asset == "stock":
+            try:
+                df = fetch_kline(code, start=start, asset=asset, period=period,
+                                 adjust=adjust, source="bs", store=store)
+                return code, f"bs_fallback:{len(df)}"
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        return code, f"__ERR__:{last_err}"
 
     done = 0
     with store.batch_write():
