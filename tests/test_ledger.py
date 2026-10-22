@@ -50,3 +50,23 @@ def test_ledger_record_and_readback():
         except NameError:
             pass
         _cleanup()
+
+
+def test_daily_ops_is_deduped():
+    """每日操作记录：同一天同一账户同一动作只保留 1 行。"""
+    _cleanup()
+    try:
+        led = Ledger(DB)
+        led.record_daily_op("2026-10-22", "large", "pipeline", "done", "第一次")
+        led.record_daily_op("2026-10-22", "large", "pipeline", "done", "第二次覆盖")
+        led.record_daily_op("2026-10-23", "large", "pipeline", "done", "另一天")
+        ops = led.daily_ops("large")
+        assert len(ops) == 2
+        row = ops[ops["date"] == "2026-10-22"].iloc[0]
+        assert "第二次覆盖" in row["summary"]
+    finally:
+        try:
+            led.close()
+        except NameError:
+            pass
+        _cleanup()

@@ -387,6 +387,15 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         led.record_day(str(latest.date()), cash=cash, market_value=mv,
                        positions=positions, trades=None,
                        benchmark_nav=bench_close)
+        # 每日操作记录：同一天重复运行只更新这一条（不新增行、不占空间）
+        try:
+            filled_n = sum(1 for r in fill_results if r["status"] == "filled")
+            pend_n = len(led.pending_orders())
+            led.record_daily_op(
+                str(latest.date()), label, "pipeline", "done",
+                f"fills={filled_n} pending={pend_n} nav={nav_now:,.2f}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[daily_ops] 记录失败: {e}")
         led.daily_backup()
         led.close()
 
