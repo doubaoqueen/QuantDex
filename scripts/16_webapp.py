@@ -60,14 +60,18 @@ def overview(acc):
         snap = pd.read_sql_query("SELECT * FROM account_snapshot ORDER BY date", conn)
         pend = pd.read_sql_query("SELECT * FROM trade_log WHERE status='pending'", conn)
         pos = pd.read_sql_query("SELECT * FROM positions WHERE date=(SELECT MAX(date) FROM positions)", conn)
+        last_date = str(snap["date"].iloc[-1]) if len(snap) else None
+        prior = snap[pd.to_datetime(snap["date"]) < pd.Timestamp(last_date)] if last_date else snap
         out = {"account": acc, "label": ACCOUNTS[acc]["label"], "empty": False,
-               "date": str(snap["date"].iloc[-1]) if len(snap) else None,
+               "date": last_date,
                "nav": float(snap["total_nav"].iloc[-1]) if len(snap) else None,
                "cash": float(snap["cash"].iloc[-1]) if len(snap) else None,
                "mv": float(snap["market_value"].iloc[-1]) if len(snap) else None,
-               "prev_nav": float(snap["total_nav"].iloc[-2]) if len(snap) >= 2 else None,
+               "prev_nav": float(prior["total_nav"].iloc[-1]) if len(prior) else None,
+               "base_nav": float(snap["total_nav"].iloc[0]) if len(snap) else None,
                "positions": int(len(pos)), "pending": int(len(pend))}
         out["day_pnl"] = (out["nav"] - out["prev_nav"]) if out["prev_nav"] else 0.0
+        out["cum_ret"] = (out["nav"] / out["base_nav"] - 1.0) if out["base_nav"] else 0.0
         return out
     finally:
         conn.close()
@@ -377,7 +381,8 @@ function card(id,o){const el=document.getElementById(id);if(!o||o.empty){el.inne
  el.innerHTML='<div class="s">'+o.label+(o.date?' · '+o.date:'')+'</div>'+
  '<div class="v">'+fmt(o.nav)+' 元</div>'+
  '<div class="s">现金 '+fmt(o.cash)+' · 持仓 '+o.positions+' · 待成交 '+o.pending+'</div>'+
- '<div class="s '+cls(pnl)+'">今日 '+(pnl>=0?'+':'')+fmt(pnl)+'（'+(o.prev_nav?pct(o.nav/o.prev_nav-1):'-')+'）</div>'}
+ '<div class="s '+cls(pnl)+'">今日 '+(pnl>=0?'+':'')+fmt(pnl)+'（'+(o.prev_nav?pct(o.nav/o.prev_nav-1):'-')+'）</div>'+
+ '<div class="s '+cls(o.cum_ret)+'">累计 '+pct(o.cum_ret)+'</div>'}
 async function loadAll(){
  const [L,S,R]=await Promise.all([j('/api/overview?account=large'),j('/api/overview?account=small'),j('/api/regime')]);
  card('card-large',L);card('card-small',S);

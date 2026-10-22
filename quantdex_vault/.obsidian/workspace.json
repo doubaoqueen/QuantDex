@@ -4,24 +4,35 @@
     "type": "split",
     "children": [
       {
-        "id": "9076a0ca0142c8ce",
+        "id": "15f65e3518cadd57",
         "type": "tabs",
         "children": [
           {
-            "id": "acf020d7b8f0ef07",
+            "id": "4aac8f195e7ffeb3",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "欢迎.md",
+                "file": "00-总览/作品集.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "欢迎"
+              "title": "作品集"
+            }
+          },
+          {
+            "id": "9c270e8ee213064a",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "新标签页"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -99,7 +110,6 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "欢迎.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -118,7 +128,6 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "欢迎.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
@@ -161,7 +170,6 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "欢迎.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -188,8 +196,25 @@
       "bases:新建数据库": false
     }
   },
-  "active": "acf020d7b8f0ef07",
+  "active": "cceb87f433d3231b",
   "lastOpenFiles": [
+    "06-问题与解决/延迟撮合与快照修正.md",
+    "06-问题与解决/问题索引.md",
+    "06-问题与解决/行情缺失被误判停牌.md",
+    "06-问题与解决/沪深300不更新.md",
+    "06-问题与解决/每次更新改几百个文件.md",
+    "06-问题与解决/最低佣金与小资金.md",
+    "06-问题与解决/数据更新很慢.md",
+    "06-问题与解决/幸存者偏差推翻结论.md",
+    "06-问题与解决/定时任务崩溃py_mini_racer.md",
+    "06-问题与解决/今日盈亏显示0.00.md",
+    "06-问题与解决/qfq叠加分红导致翻倍.md",
+    "06-问题与解决",
+    "00-总览/Obsidian入门.md",
+    "未命名",
+    "00-总览/作品集.md",
+    "01-概念/复权与PIT.md",
+    "欢迎.md",
     "04-复盘/周复盘模板.md",
     "04-复盘",
     "03-决策/决策索引.md",
@@ -197,15 +222,12 @@
     "02-实验/实验模板.md",
     "02-实验",
     "01-概念/存储为什么按日分区.md",
-    "01-概念/复权与PIT.md",
     "01-概念/因子IC与NW-t.md",
     "01-概念/回测成本与滑点.md",
     "01-概念",
     "00-总览/项目地图.md",
     "00-总览/学习路线.md",
-    "00-总览/作品集.md",
     "00-总览",
-    "未命名.base",
-    "欢迎.md"
+    "未命名.base"
   ]
 }

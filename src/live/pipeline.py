@@ -404,9 +404,16 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     # ---- 日报 ----
     report_dir = STORE_DIR / "reports" / label
     report_dir.mkdir(parents=True, exist_ok=True)
-    prev_nav = float(snap_now["total_nav"].iloc[-1]) if not snap_now.empty else nav_now
+    # 昨日净值：必须是"日期早于今天"的最后一条快照（同一天重跑时不能拿自己当昨日）
+    prev_nav = nav_now
+    if not snap_now.empty:
+        prior = snap_now[pd.to_datetime(snap_now["date"]) < latest]
+        if len(prior):
+            prev_nav = float(prior["total_nav"].iloc[-1])
     day_pnl = nav_now - prev_nav
     day_ret = (nav_now / prev_nav - 1.0) if prev_nav else 0.0
+    base_nav = float(snap_now["total_nav"].iloc[0]) if not snap_now.empty else nav_now
+    cum_ret = (nav_now / base_nav - 1.0) if base_nav else 0.0
     if len(positions) and "pct_chg" in positions.columns:
         up = int((positions["pct_chg"] > 0).sum())
         down = int((positions["pct_chg"] < 0).sum())
@@ -419,6 +426,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
              f"- 持仓市值: {mv:,.2f}",
              f"- 总净值: {nav_now:,.2f}",
              f"- 今日盈亏: {day_pnl:+,.2f}（{day_ret:+.2%}）",
+             f"- 累计收益: {cum_ret:+.2%}",
              f"- 涨跌家数: {chg_txt}",
              f"- 基准(沪深300): {bench_close:,.2f}",
              f"- 持仓数: {len(positions)}",
