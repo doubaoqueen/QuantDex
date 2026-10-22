@@ -47,6 +47,12 @@ def main() -> None:
     for code, err in failed[:10]:
         print(f"   FAIL {code}: {str(err)[:100]}", flush=True)
 
+    # 基准指数不在股票池里，必须单独更新（否则报告/市场状态一直是旧值）
+    from src.data.snapshot import update_indexes
+    print(">> 更新基准指数（沪深300 / 中证500）...", flush=True)
+    ir = update_indexes(store)
+    print(f">> 指数完成：{len(ir)} 个", flush=True)
+
 
 if __name__ == "__main__":
     main()
