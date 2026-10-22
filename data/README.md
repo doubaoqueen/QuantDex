@@ -1,7 +1,7 @@
 # data/ — Parquet 数据仓库
 
-> 所有抓取数据的本地持久化目录，自 2026-10-19 起**纳入 Git 版本管理**（随仓库提交）。
-> 数据体积会随每日增量更新持续增长（当前约 120 MB），若仓库体量过大可考虑 Release 附件或 Git LFS。
+> 所有抓取数据的本地持久化目录。2026-10-23 起行情改为**按日分区入库**（append-only），
+> `market/daily/` 的每股票文件仅作**本地读缓存**（gitignore，可重建）。
 
 ## 目录结构
 
@@ -9,7 +9,8 @@
 data/store/
 ├── registry.parquet     # 数据注册表：每个数据集的行数/日期范围/数据源/复权口径/更新时间
 ├── market/
-│   ├── daily/{symbol}__{adjust}.parquet    # 日线（adjust: qfq/hfq/none）
+│   ├── daily_by_date/YYYY-MM-DD.parquet    # 日线按日分区（git 入库；每天新增 1 个文件）
+│   ├── daily/{symbol}__{adjust}.parquet    # 日线缓存（gitignore；克隆后 18 脚本重建）
 │   ├── weekly/  monthly/                   # 周线/月线（同上命名）
 │   └── minute/{symbol}__{freq}__{adjust}.parquet
 ├── meta/
