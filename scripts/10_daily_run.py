@@ -31,7 +31,7 @@ def main() -> None:
     if "--skip-update" not in sys.argv:
         store = ParquetStore()
         symbols = universe.pit_union_symbols("000300", store)
-        source = os.environ.get("QUANTDEX_SOURCE", "em")
+        source = os.environ.get("QUANTDEX_SOURCE", "bs")
         allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
         allow_bs = os.environ.get("QUANTDEX_BS_FALLBACK", "1") == "1"
         print(f">> 更新 PIT 历史成员行情（{len(symbols)} 只，增量，source={source}，"
