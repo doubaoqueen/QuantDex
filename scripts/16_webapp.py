@@ -267,10 +267,16 @@ def ops(acc, limit=14):
 
 
 def _spot_work():
-    """先快照；失败/盘中则回退到 baostock 补历史。"""
+    """先更新指数（基准），再快照股票；失败/盘中则回退 baostock 补历史。"""
+    from src.data.snapshot import update_indexes
+    try:
+        update_indexes(_store)
+    except Exception as e:  # noqa: BLE001
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(f"\n[index] 更新失败: {e}\n")
     try:
         r = update_spot_snapshot(_store)
-        if r.get("ok"):
+        if r.get("ok") or "盘中" in str(r.get("reason", "")):
             return
     except Exception as e:  # noqa: BLE001
         with LOG.open("a", encoding="utf-8") as f:

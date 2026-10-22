@@ -46,6 +46,10 @@ def main() -> None:
         print(f">> 行情更新完成：处理 {len(r)} 只（已最新 {n_up}、baostock兜底 {n_bs}），失败 {len(failed)} 只")
         for code, err in failed[:5]:
             print(f"   FAIL {code}: {err}")
+        from src.data.snapshot import update_indexes
+        print(">> 更新基准指数（沪深300 / 中证500）...")
+        ir = update_indexes(store)
+        print(f">> 指数完成：{len(ir)} 个")
     else:
         print(">> 跳过行情更新（--skip-update，使用本地已有数据）")
 

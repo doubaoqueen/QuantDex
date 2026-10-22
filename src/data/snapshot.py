@@ -100,6 +100,16 @@ def update_spot_snapshot(store: ParquetStore | None = None,
             "failed": failed, "ms": ms}
 
 
+def update_indexes(store: ParquetStore | None = None) -> dict:
+    """更新基准指数（沪深300/中证500）——它们不在股票池里，必须单独更新。"""
+    from src.data.market import update_kline_batch
+    store = store or ParquetStore()
+    r = update_kline_batch(["000300", "000905"], asset="index", adjust="none",
+                           source="bs", store=store)
+    r.pop("__failed__", None)
+    return r
+
+
 def freshness(store: ParquetStore | None = None, sample: int = 30) -> dict:
     """数据新鲜度：最近收盘交易日 vs 抽样文件的最新日期。"""
     store = store or ParquetStore()
