@@ -63,6 +63,15 @@ CREATE TABLE IF NOT EXISTS trade_log (
     status TEXT DEFAULT 'filled',
     note TEXT
 );
+CREATE TABLE IF NOT EXISTS daily_ops (
+    date TEXT NOT NULL,
+    account TEXT NOT NULL,
+    action TEXT NOT NULL,
+    status TEXT,
+    summary TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (date, account, action)
+);
 """
 
 _TRADE_COLS = ["signal_date", "fill_date", "symbol", "side", "qty", "price",
@@ -195,6 +204,30 @@ class Ledger:
                          (status, note, trade_id))
 
     # -------------------------------------------------- 备份
+    # -------------------------------------------------- 每日操作记录（一天一条）
+    def record_daily_op(self, date: str, account: str, action: str,
+                        status: str = "done", summary: str = "") -> None:
+        """按 (date, account, action) 去重：同一天重复运行只更新这一条，不新增行。"""
+        conn = self.connect()
+        now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
+            conn.execute(
+                "INSERT INTO daily_ops(date,account,action,status,summary,created_at)"
+                " VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(date,account,action) DO UPDATE SET"
+                " status=excluded.status, summary=excluded.summary,"
+                " created_at=excluded.created_at",
+                (date, account, action, status, summary, now))
+
+    def daily_ops(self, account: str | None = None, limit: int = 30) -> pd.DataFrame:
+        q = "SELECT * FROM daily_ops"
+        args: tuple = ()
+        if account:
+            q += " WHERE account = ?"
+            args = (account,)
+        return pd.read_sql_query(q + " ORDER BY date DESC LIMIT ?",
+                                 self.connect(), params=args + (limit,))
+
     def daily_backup(self) -> Path:
         """每日备份：复制 sqlite 到 backups/，保留最近 _KEEP_BACKUPS 份。"""
         self.connect().commit()

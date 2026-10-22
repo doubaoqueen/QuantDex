@@ -27,6 +27,7 @@ import pandas as pd
 import _bootstrap  # noqa: F401
 from config import STORE_DIR
 from src.data.market import get_kline
+from src.data.snapshot import freshness as data_freshness, update_spot_snapshot
 from src.data.storage import ParquetStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -243,6 +244,56 @@ def job_status():
     return {"running": running, "name": _job["name"], "log": tail}
 
 
+def freshness_info():
+    try:
+        return data_freshness(_store)
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e), "stale": True}
+
+
+def ops(acc, limit=14):
+    conn = _db(acc)
+    if conn is None:
+        return []
+    try:
+        df = pd.read_sql_query(
+            "SELECT date,action,status,summary FROM daily_ops ORDER BY date DESC LIMIT ?",
+            conn, params=(limit,))
+        return df.to_dict("records")
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        conn.close()
+
+
+def _spot_work():
+    """先快照；失败/盘中则回退到 baostock 补历史。"""
+    try:
+        r = update_spot_snapshot(_store)
+        if r.get("ok"):
+            return
+    except Exception as e:  # noqa: BLE001
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(f"\n[spot] 失败，回退 baostock: {e}\n")
+    start_job("update")
+
+
+def start_spot_update():
+    if _job["proc"] is not None and _job["proc"].poll() is None:
+        return {"ok": False, "msg": f"已有任务在跑：{_job['name']}"}
+    threading.Thread(target=_spot_work, daemon=True).start()
+    return {"ok": True, "msg": "已开始检查并更新行情（快照优先，失败自动回退）"}
+
+
+def auto_update_on_start():
+    try:
+        f = freshness_info()
+        if f.get("stale"):
+            start_spot_update()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 PAGE = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
 <title>QuantDex 控制台</title><style>
 body{font-family:"Microsoft YaHei",sans-serif;margin:0;background:#f6f7f9;color:#222}
@@ -265,12 +316,16 @@ input,select{padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:13
 #toast{position:fixed;right:16px;bottom:16px;background:#111827;color:#fff;padding:10px 14px;border-radius:8px;display:none}
 pre{background:#0b1220;color:#c9d1d9;padding:10px;border-radius:8px;max-height:260px;overflow:auto;font-size:12px}
 .badge{padding:2px 8px;border-radius:999px;font-size:12px;color:#fff}
+.notice{padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:13px}
+.notice.ok{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}
+.notice.warn{background:#fffbeb;color:#92400e;border:1px solid #fde68a}
 </style></head><body>
 <header><h1>QuantDex 控制台</h1>
-<button onclick="runJob('update')">更新行情</button>
+<button onclick="updateSpot()">更新行情</button>
 <button onclick="runJob('pipeline')">跑流水线</button>
 <button class="gray" onclick="loadAll()">刷新</button></header>
 <main>
+<div id="fresh" class="notice">正在检查数据新鲜度...</div>
 <div class="cards">
   <div class="card" id="card-large"></div>
   <div class="card" id="card-small"></div>
@@ -293,6 +348,10 @@ pre{background:#0b1220;color:#c9d1d9;padding:10px;border-radius:8px;max-height:2
 </div></section>
 
 <section><h2>市场状态</h2><div id="regime-detail" class="s"></div></section>
+
+<section><h2>每日操作记录（一天一条，去重）</h2>
+<table><thead><tr><th>日期</th><th>账户</th><th>动作</th><th>状态</th><th>摘要</th></tr></thead>
+<tbody id="ops-body"></tbody></table></section>
 
 <section><h2>日报</h2>
 <div class="row"><select id="rpt-acc" onchange="loadReports()"><option value="large">大账户</option><option value="small">小账户</option></select>
@@ -341,10 +400,13 @@ async function loadAll(){
 async function cancelOrder(id){if(!confirm('取消该订单？'))return;const r=await j('/api/orders/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'large',id})});toast(r.msg);loadAll()}
 async function addOrder(){const body={account:document.getElementById('acc').value,symbol:document.getElementById('sym').value,side:document.getElementById('side').value,qty:document.getElementById('qty').value};const r=await j('/api/orders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast(r.msg);loadAll()}
 async function runJob(n){const r=await j('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job:n})});toast(r.msg);pollJob()}
+async function updateSpot(){const r=await j('/api/update',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});toast(r.msg);pollJob()}
+async function loadFreshness(){try{const f=await j('/api/freshness');const el=document.getElementById('fresh');if(f.error){el.textContent='数据状态检查失败：'+f.error;el.className='notice warn';return}el.className='notice '+(f.stale?'warn':'ok');el.textContent='数据：最新收盘 '+f.last_closed+' ｜ 抽样 '+f.up_to_date+'/'+f.sample+' 已更新'+(f.stale?'（需要更新，已自动开始）':'（已最新）')}catch(e){}}
+async function loadOps(){try{const o=await j('/api/ops?account=large');const tb=document.getElementById('ops-body');tb.innerHTML='';(o.rows||[]).forEach(r=>{tb.insertAdjacentHTML('beforeend','<tr><td>'+r.date+'</td><td>large</td><td>'+r.action+'</td><td>'+r.status+'</td><td style="text-align:left">'+(r.summary||'')+'</td></tr>')})}catch(e){}}
 async function pollJob(){try{const s=await j('/api/run/status');document.getElementById('job-log').textContent=s.log||'';if(s.running)setTimeout(pollJob,3000);else loadAll()}catch(e){}}
 async function loadReports(){const acc=document.getElementById('rpt-acc').value;const R=await j('/api/reports?account='+acc);const sel=document.getElementById('rpt-date');sel.innerHTML='';R.dates.forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;sel.appendChild(o)});if(R.dates.length)loadReport()}
 async function loadReport(){const acc=document.getElementById('rpt-acc').value;const d=document.getElementById('rpt-date').value;const r=await j('/api/report?account='+acc+'&date='+d);document.getElementById('rpt-text').textContent=r.text}
-loadAll();setInterval(loadAll,15000);
+loadAll();loadFreshness();setInterval(loadAll,15000);
 </script></body></html>"""
 
 
@@ -378,6 +440,10 @@ class Handler(BaseHTTPRequestHandler):
                                                            q.get("date", [""])[0])})
             if u.path == "/api/run/status":
                 return self._send(200, job_status())
+            if u.path == "/api/freshness":
+                return self._send(200, freshness_info())
+            if u.path == "/api/ops":
+                return self._send(200, {"rows": ops(q.get("account", ["large"])[0])})
             return self._send(404, {"err": "not found"})
         except Exception as e:  # noqa: BLE001
             return self._send(500, {"err": str(e)})
@@ -395,6 +461,8 @@ class Handler(BaseHTTPRequestHandler):
                                                  body.get("qty", 0), body.get("price")))
             if u.path == "/api/run":
                 return self._send(200, start_job(body.get("job", "pipeline")))
+            if u.path == "/api/update":
+                return self._send(200, start_spot_update())
             return self._send(404, {"err": "not found"})
         except Exception as e:  # noqa: BLE001
             return self._send(500, {"err": str(e)})
@@ -405,7 +473,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     host, port = "127.0.0.1", 8765
+    threading.Thread(target=auto_update_on_start, daemon=True).start()
     print(f"QuantDex 控制台: http://{host}:{port}  （Ctrl+C 退出）")
+    print("启动后会自动检查数据新鲜度：过期则先快照、失败回退 baostock")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
