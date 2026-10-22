@@ -238,3 +238,7 @@ data/store/sim/*.sqlite
 data/store/sim/*.sqlite-wal
 data/store/sim/*.sqlite-shm
 data/store/sim/backups/
+
+# 行情本地读缓存（派生数据，可重建：scripts/18_rebuild_daily_cache.py）
+# 入库的行情数据是 data/store/market/daily_by_date/（按日分区，append-only）
+data/store/market/daily/

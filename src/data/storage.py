@@ -107,6 +107,12 @@ class ParquetStore:
         """
         if df is None or len(df) == 0:
             return 0
+        if kind == "daily":
+            try:
+                from src.data.partitions import queue_daily
+                queue_daily(self, df, adjust or "qfq")
+            except Exception:  # noqa: BLE001
+                pass
         if self.exists(kind, name):
             old = self.read(kind, name)
             merged = pd.concat([old, df], ignore_index=True)
@@ -173,6 +179,11 @@ class ParquetStore:
         finally:
             self._reg_suspend = False
             self._flush_registry()
+            try:
+                from src.data.partitions import flush_queue
+                flush_queue(self)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _flush_registry(self) -> None:
         if not self._reg_buf:
