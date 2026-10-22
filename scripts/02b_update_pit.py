@@ -29,7 +29,7 @@ def main() -> None:
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     if limit:
         symbols = symbols[:limit]
-    source = os.environ.get("QUANTDEX_SOURCE", "em")
+    source = os.environ.get("QUANTDEX_SOURCE", "bs")
     allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
     allow_bs = os.environ.get("QUANTDEX_BS_FALLBACK", "1") == "1"
     print(f">> 更新 PIT 行情：{len(symbols)} 只 | source={source} | "
