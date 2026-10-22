@@ -83,13 +83,11 @@ def update_spot_snapshot(store: ParquetStore | None = None,
         for r in d.itertuples(index=False):
             sym = str(r.symbol)
             try:
-                old = store.read("daily", f"{sym}__qfq")
-                old = old[pd.to_datetime(old["date"]) != d0]
                 row = pd.DataFrame([{c: getattr(r, c) for c in cols}])
-                new = pd.concat([old[cols], row], ignore_index=True)
-                new = new.sort_values("date").reset_index(drop=True)
-                store.write(new, "daily", f"{sym}__qfq",
-                            source="akshare/spot_em", date_col="date")
+                # upsert 只传新增行：内部合并到股票缓存，并把 delta 送到按日分区
+                store.upsert(row, "daily", f"{sym}__qfq", keys=["symbol", "date"],
+                             source="akshare/spot_em", date_col="date",
+                             adjust="qfq")
                 updated += 1
             except Exception:  # noqa: BLE001
                 failed += 1
