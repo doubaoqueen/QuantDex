@@ -198,5 +198,6 @@ QuantDex/
 
 - 待办：`TODO.md`
 - 决策日志：`docs/DECISIONS.md`
+- 数据路线图（数据现状盘点 + 补数计划）：`docs/DATA_ROADMAP.md`
 - 各目录说明：`src/data/README.md`、`src/analysis/README.md`、`src/backtest/README.md`、`src/strategies/README.md`、`src/live/README.md`、`scripts/README.md`、`data/README.md`、`tests/README.md`
 - 博客：`docs/blog/第二篇.md`

@@ -240,7 +240,7 @@ def update_kline_batch(
     source: str = "em",
     store: ParquetStore | None = None,
     workers: int = 4,
-    sina_fallback: bool = True,
+    sina_fallback: bool = False,
     bs_fallback: bool = False,
 ) -> dict:
     """
@@ -251,8 +251,11 @@ def update_kline_batch(
       - index / source="bs" 的 baostock 查询在 sources.bs_query 内串行化
         （协议单连接，并发会损坏数据流）；
       - 注册表在 batch_write 内缓冲，全部结束统一写盘一次（避免并发写竞争）。
-    source: "em"(东财，默认) / "sina"(新浪，东财被限流时用，仅个股)。
-    em 模式下个股失败会自动降级新浪重试（报告里记为 sina_fallback:N）。
+    source: "em"(东财) / "bs"(baostock，稳且覆盖退市股，本机默认，见 D-012)
+            / "sina"(新浪，仅个股；依赖 py_mini_racer，本机会段错误，见 D-008)。
+    sina_fallback: 东财失败降级新浪（默认 False——py_mini_racer 段错误会连带
+      整个进程崩溃，确需时显式传 True）。
+    bs_fallback: 东财失败降级 baostock（稳定，推荐开启）。
     返回 {symbol: 新增行数或"uptodate"}，失败标的收集在 __failed__ 中。
     """
     store = store or ParquetStore()
