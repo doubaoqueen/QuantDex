@@ -31,6 +31,23 @@ from src.data.snapshot import freshness as data_freshness, update_spot_snapshot
 from src.data.storage import ParquetStore
 
 ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_DIST = ROOT / "frontend" / "dist"      # Vue3 构建产物（存在则替代内嵌旧页面）
+_MIME = {
+    ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
+    ".png": "image/png", ".jpg": "image/jpeg", ".ico": "image/x-icon",
+    ".woff": "font/woff", ".woff2": "font/woff2", ".map": "application/json",
+}
+
+
+def _serve_static(rel: str):
+    """安全地返回 frontend/dist 下的静态文件；不存在返回 None（回退旧页面）。"""
+    base = FRONTEND_DIST.resolve()
+    p = (base / rel.lstrip("/")).resolve()
+    if not str(p).startswith(str(base)) or not p.is_file():
+        return None
+    ctype = _MIME.get(p.suffix.lower(), "application/octet-stream")
+    return p.read_bytes(), ctype
 ACCOUNTS = {
     "large": {"db": STORE_DIR / "sim" / "ledger.sqlite", "label": "大账户（100万）"},
     "small": {"db": STORE_DIR / "sim" / "ledger_2000.sqlite", "label": "小账户（2000元）"},
@@ -102,6 +119,34 @@ def positions(acc):
         rows.append({"symbol": str(r.symbol), "shares": float(r.shares), "close": px,
                      "pct": chg, "pnl": pnl, "weight": float(r.weight)})
     return rows
+
+
+def nav_history(acc):
+    """净值历史（快照全表）：date/total_nav/cash/benchmark_nav，供前端画净值曲线。"""
+    conn = _db(acc)
+    if conn is None:
+        return {"rows": []}
+    try:
+        df = pd.read_sql_query(
+            "SELECT date, total_nav, cash, benchmark_nav FROM account_snapshot ORDER BY date",
+            conn)
+        return {"rows": df.to_dict("records")}
+    finally:
+        conn.close()
+
+
+def trades(acc, limit=30):
+    """最近成交/订单记录（含 pending/filled/rejected/cancelled），供前端订单面板。"""
+    conn = _db(acc)
+    if conn is None:
+        return {"rows": []}
+    try:
+        df = pd.read_sql_query(
+            "SELECT fill_date, symbol, side, qty, price, status FROM trade_log "
+            "ORDER BY id DESC LIMIT ?", conn, params=(int(limit),))
+        return {"rows": df.to_dict("records")}
+    finally:
+        conn.close()
 
 
 def orders(acc):
@@ -435,9 +480,21 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         try:
             if u.path in ("/", "/index.html"):
+                static = _serve_static("index.html")
+                if static:
+                    return self._send(200, static[0], static[1])
                 return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            if not u.path.startswith("/api/"):
+                static = _serve_static(u.path)      # /assets/*.js|css 等前端产物
+                if static:
+                    return self._send(200, static[0], static[1])
             if u.path == "/api/overview":
                 return self._send(200, overview(q.get("account", ["large"])[0]))
+            if u.path == "/api/nav_history":
+                return self._send(200, nav_history(q.get("account", ["large"])[0]))
+            if u.path == "/api/trades":
+                return self._send(200, trades(q.get("account", ["large"])[0],
+                                               q.get("limit", ["30"])[0]))
             if u.path == "/api/positions":
                 return self._send(200, {"rows": positions(q.get("account", ["large"])[0])})
             if u.path == "/api/orders":
