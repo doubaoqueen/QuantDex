@@ -87,6 +87,7 @@ QuantDex/
 | 定时任务安装 | `13_setup_task.ps1` | 无 | Windows 任务计划 | 无 |
 | **Python 调度器** | `14_scheduler.py` | 无 | 常驻调度（APScheduler） | `pip install apscheduler` |
 | 数据源诊断 | `net_diag.py` / `net_diag_github.py` | 网络 | `*_result.txt` | 无 |
+| **本地控制台（Vue3）** | `16_webapp.py` + `frontend/` | 本地 | http://127.0.0.1:8765 | 无 |
 | **P0 参考数据** | `20_fetch_reference_data.py` | 网络 | 全量证券/申万行业/复权因子 | 00 |
 | **市场状态过滤器回测** | `21_regime_filter_backtest.py` | 本地 | `portfolio_results/regime_filter_*` | 04 |
 | 单标的演示 | `demo_analysis.py` | 本地 | 图 + 回测 | 02 |

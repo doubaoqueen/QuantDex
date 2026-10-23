@@ -245,3 +245,6 @@ data/store/market/daily/
 
 # Obsidian 知识库（个人笔记，不推送）
 quantdex_vault/
+
+# Vue3 前端（frontend/）：依赖不入库；dist 构建产物入库，供 16_webapp.py 直接托管
+frontend/node_modules/
