@@ -87,6 +87,8 @@ QuantDex/
 | 定时任务安装 | `13_setup_task.ps1` | 无 | Windows 任务计划 | 无 |
 | **Python 调度器** | `14_scheduler.py` | 无 | 常驻调度（APScheduler） | `pip install apscheduler` |
 | 数据源诊断 | `net_diag.py` / `net_diag_github.py` | 网络 | `*_result.txt` | 无 |
+| **P0 参考数据** | `20_fetch_reference_data.py` | 网络 | 全量证券/申万行业/复权因子 | 00 |
+| **市场状态过滤器回测** | `21_regime_filter_backtest.py` | 本地 | `portfolio_results/regime_filter_*` | 04 |
 | 单标的演示 | `demo_analysis.py` | 本地 | 图 + 回测 | 02 |
 | 测试 | `tests/run_tests.py` | 无 | 22 passed | 无 |
 
@@ -160,6 +162,8 @@ QuantDex/
 - walk-forward（2022–2026 OOS）：**+44.50%**，年化 8.26%，基准 -15.50%，IR 0.87，MDD -17.16%
 - 市值中性化：turnover_20 IC -0.0499（t -2.23）、vol_20 -0.0466（t -2.06）→ 不是纯小盘代理
 - 影子盘：large 49 持仓/净值 993,674；small 3 笔挂单（600905/002736/600018，2000 元）
+- 行业中性化（D-021）：低换手/低波行业内仍显著（turnover IC -0.032/t -2.47），约一半 IC 来自行业间差异
+- 市场状态过滤器（D-022）：R1/R2 回测均大幅吃收益且不改善 MDD——**不启用**
 - 测试：**22 passed**
 - 决策日志：D-001 ~ D-008（T+1、费用、保真回测、WF、中性化、双账户、分红口径、调度崩溃）
 
