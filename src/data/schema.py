@@ -153,13 +153,24 @@ def standardize_ak_min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
 
 def standardize_bs_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """标准化 baostock 日线（含指数）。"""
+    """标准化 baostock 日线（含指数）。
+
+    baostock 无振幅/涨跌额字段：由当行 OHLC + pct_chg 反推前收盘自算
+    （每行自足，增量抓取不依赖本地历史；无涨跌幅的行仍为 NA）。
+    """
     out = df.rename(columns=BS_DAILY_MAP).copy()
     out["symbol"] = normalize_code(symbol)
     out["date"] = pd.to_datetime(out["date"])
     for c in _NUM_COLS:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
+    p = out["pct_chg"] if "pct_chg" in out.columns else out["close"] * float("nan")
+    prev_close = out["close"] / (1.0 + p / 100.0)
+    prev_close = prev_close.where(p.notna() & (prev_close > 0))
+    if "change" not in out.columns:
+        out["change"] = out["close"] - prev_close
+    if "amplitude" not in out.columns:
+        out["amplitude"] = (out["high"] - out["low"]) / prev_close * 100.0
     for c in DAILY_STD_COLS:
         if c not in out.columns:
             out[c] = pd.NA

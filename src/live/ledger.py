@@ -229,13 +229,16 @@ class Ledger:
                                  self.connect(), params=args + (limit,))
 
     def daily_backup(self) -> Path:
-        """每日备份：复制 sqlite 到 backups/，保留最近 _KEEP_BACKUPS 份。"""
+        """每日备份：复制 sqlite 到 backups/，保留最近 _KEEP_BACKUPS 份。
+
+        文件名带账本 stem（ledger / ledger_2000），避免多账户互相覆盖。
+        """
         self.connect().commit()
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         stamp = _dt.datetime.now().strftime("%Y%m%d")
-        dst = _BACKUP_DIR / f"ledger_{stamp}.sqlite"
+        dst = _BACKUP_DIR / f"{self.path.stem}_{stamp}.sqlite"
         shutil.copyfile(self.path, dst)
-        backups = sorted(_BACKUP_DIR.glob("ledger_*.sqlite"))
+        backups = sorted(_BACKUP_DIR.glob(f"{self.path.stem}_*.sqlite"))
         for old in backups[:-_KEEP_BACKUPS]:
             old.unlink(missing_ok=True)
         return dst

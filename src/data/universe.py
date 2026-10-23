@@ -143,6 +143,48 @@ def fetch_industry(store: ParquetStore | None = None) -> pd.DataFrame:
     return df
 
 
+def fetch_industry_sw(store: ParquetStore | None = None) -> pd.DataFrame:
+    """申万一级行业成分（akshare）：31 个行业逐个拉成分，拼成 symbol→行业映射。
+
+    申万是 A 股量化的标准行业分类（优于东财板块）；东财板块接口对本机连接不稳
+    （RemoteDisconnected，同 D-012 的东财问题），故选申万。
+    成分表带「计入日期」，可作行业归属的近似时间线。
+    限制：只覆盖**当前上市**股票——退市股无行业，PIT 回测做行业中性化时
+    需容忍 NaN 行业（丢弃或归入"未知"）。
+    返回 symbol, name, industry, industry_code, in_date，落盘 meta/industry_sw。
+    """
+    store = store or ParquetStore()
+    info = retry_call(ak.sw_index_first_info, label="sw_first_info")
+    frames = []
+    n = len(info)
+    for i, row in enumerate(info.itertuples(index=False), 1):
+        code = str(getattr(row, "行业代码", row[0])).strip().split(".")[0]  # 801010.SI -> 801010
+        iname = str(getattr(row, "行业名称", row[1])).strip()
+        try:
+            cons = retry_call(ak.index_component_sw, symbol=code,
+                              label=f"sw_cons:{code}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [warn] 行业「{iname}」获取失败: {str(e)[:60]}", flush=True)
+            continue
+        d = cons.rename(columns={"证券代码": "symbol", "证券名称": "name",
+                                 "计入日期": "in_date"})
+        d["symbol"] = d["symbol"].map(normalize_code)
+        d["industry"] = iname
+        d["industry_code"] = code
+        keep = [c for c in ("symbol", "name", "industry", "industry_code", "in_date")
+                if c in d.columns]
+        frames.append(d[keep])
+        time.sleep(REQUEST_INTERVAL)
+        if i % 10 == 0 or i == n:
+            print(f"  申万一级行业 {i}/{n}", flush=True)
+    if not frames:
+        raise RuntimeError("申万行业成分全部获取失败")
+    df = (pd.concat(frames, ignore_index=True)
+            .drop_duplicates("symbol").sort_values("symbol").reset_index(drop=True))
+    store.write(df, "meta", "industry_sw", source="akshare/sw")
+    return df
+
+
 # ---------------------------------------------------------------- 指数成分股
 def fetch_index_constituents(index_code: str = "000300",
                              store: ParquetStore | None = None) -> pd.DataFrame:

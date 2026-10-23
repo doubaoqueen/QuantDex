@@ -131,7 +131,7 @@ QuantDex/
 | `market/weekly|monthly|minute/` | 接口具备，未纳入流水线 | 空 |
 | `financials/baostock/*__dividend.parquet` | 分红（除权日/每股税前红利） | 835 |
 | `financials/baostock/*__balance/income/...` | 财务六件套 | 少量示例 |
-| `meta/` | 股票池、交易日历、PIT 成分、行业 | 5 |
+| `meta/` | 股票池、交易日历、PIT 成分、全量证券(含退市)、申万行业 | 7 |
 | `valuation/ moneyflow/ macro/` | 估值、资金流、宏观 | 少量 |
 | `registry.parquet` | 数据集注册表（名称/行数/日期/来源） | 1800+ 数据集 |
 | `factor_results/` | IC 汇总、分层净值、size_panel、中性化结果 | — |
