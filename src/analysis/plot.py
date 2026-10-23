@@ -38,7 +38,7 @@ def _font(size: int):
     """微软雅黑 -> 黑体 -> 默认字体。"""
     global _FONT_FILE
     if _FONT_FILE is None:
-        for p in (r"C:WindowsFontsmsyh.ttc", r"C:WindowsFontssimhei.ttf"):
+        for p in (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simhei.ttf"):
             if Path(p).exists():
                 _FONT_FILE = p
                 break

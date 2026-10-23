@@ -55,7 +55,6 @@ def main() -> None:
 
     print("")
 
-    push = "--no-push" not in sys.argv
     print("\n>> [账户 large] 影子盘流水线（100 万 / Top50 等权）...")
     run_pipeline(push=push)
 

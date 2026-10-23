@@ -98,9 +98,18 @@
   - 迁移：2,866 个分区 / 1,873,566 行；600519 行数 2134 与原文件一致
   - 更新：`upsert` 只镜像**新增行** → 每天只新增 1 个分区文件
   - 克隆后重建缓存：`python scripts/18_rebuild_daily_cache.py`
-  - 待办：在你的机器上跑一次 `git gc` 压缩旧历史（沙箱无法执行 pack-objects）
+  - [x] 2026-10-24 已执行 `git gc`（348M→325M）；缓存/vault 移出 git 索引（D-019）
 - [ ] 行业分类换源（baostock 行业接口挂起）
 - [ ] 未复权价格 + 现金分红口径
+
+## 数据补全（2026-10-24 规划，详见 docs/DATA_ROADMAP.md）
+
+- [ ] **P0-a 全量证券表（含退市）**：`universe.fetch_bs_securities` 落盘 `meta/securities_all`（接口已有，未落盘）
+- [ ] **P0-b 行业分类换源**：akshare 申万/东财行业 → 解锁行业中性化（D-005 遗留）
+- [ ] **P0-c 复权因子全量**：PIT 并集 949 只 → 自算修复 bs 源 amplitude/change NaN
+- [ ] **P1-a PIT 并集估值**：baostock peTTM/pbTTM/psTTM/totalMV（与日线同源顺路带回）→ 市值中性化换真值 + 估值因子
+- [ ] **P1-b 财务六件套批量**：PIT 并集 949 只（约 2~3 小时可断点续跑，按 pub_date 对齐）→ 解锁基本面因子
+- [x] 数据源口径统一（D-018，2026-10-24）：04 主源 sina→bs、sina_fallback 库级默认 False、02b 文档对齐；27 测试全过
 
 ## 已知边界（不阻塞）
 

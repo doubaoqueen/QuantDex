@@ -4,9 +4,11 @@
 
 用途：
   - 定时任务的第一步（与影子盘流水线解耦：更新失败不影响账户记录）；
-  - 默认走东财（source=em）并**禁用新浪降级**：本机新浪依赖 py_mini_racer(V8)，
-    会原生段错误（已实测），禁用后永不触发。
-  - 可用环境变量切换：QUANTDEX_SOURCE=bs（baostock，无 JS 依赖，较慢但稳）。
+  - 默认走 baostock（source=bs，实测 949 只约 3~5 分钟、失败 0，见 D-012：
+    东财对本机逐只请求失败，含重试约 7.8 秒/只）；
+  - 新浪降级默认禁用（QUANTDEX_SINA_FALLBACK=1 才启用）：其依赖 py_mini_racer(V8)，
+    在本机会原生段错误（D-008）。
+  - 可用环境变量切换：QUANTDEX_SOURCE=em（东财）/ bs（baostock，默认）。
 
 用法：
   python scripts/02b_update_pit.py            # 全量增量

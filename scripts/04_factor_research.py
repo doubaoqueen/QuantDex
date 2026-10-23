@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 第 4 步：因子研究（IC / 分层回测 / 衰减）。
-流程：PIT 历史成分并集 -> 批量(增量)抓前复权日线(新浪，退市股 baostock 补齐)
+流程：PIT 历史成分并集 -> 批量(增量)抓前复权日线(baostock，覆盖退市股)
       -> 构截面因子面板(point-in-time 过滤) -> 有效性检验 -> 结果落盘。
+
+数据源说明：主源 baostock（稳、覆盖已退市股；东财对退市股无数据）。
+不用新浪：其依赖 py_mini_racer(V8)，在本机会原生段错误（DECISIONS D-008）。
 
 用法：
     python scripts/04_factor_research.py               # 沪深300，全部历史成员(需先跑 00 脚本)
@@ -109,17 +112,19 @@ def main() -> None:
     symbols, pit = prepare_symbols(store, index_code, limit)
     print(f">> 股票池 {len(symbols)} 只，更新日线（自 {START_DATE}，可增量重复运行）...")
     r = update_kline_batch(symbols, asset="stock", adjust="qfq",
-                           full_start=START_DATE, source="sina", store=store)
+                           full_start=START_DATE, source="bs", store=store,
+                           sina_fallback=False, bs_fallback=False)
     failed = r.pop("__failed__", [])
-    print(f">> 新浪日线就绪：成功 {len(r)}，失败 {len(failed)}")
+    print(f">> 日线就绪（baostock）：成功 {len(r)}，失败 {len(failed)}")
 
-    # 新浪对已退市股返回空数据（且不计入失败清单），因此不能只依赖 __failed__：
-    # 直接识别「新浪跑完后本地仍无数据」的标的，强制改用 baostock 补齐。
+    # 兜底：主源失败（__failed__）或本地仍无数据的标的，逐只用 baostock 重试。
+    # （旧新浪口径下退市股静默返回空需要此步；baostock 主源下通常只剩个别
+    #   2008 年前退市/合并股——无任何数据源，属已知边界。）
     no_data = [s for s in symbols
                if get_local_last_date(normalize_code(s), "daily", "qfq", store) is None]
     bs_candidates = sorted({c for c, _ in failed} | set(no_data))
     if bs_candidates:
-        print(f">> 用 baostock 补齐退市/无数据标的 {len(bs_candidates)} 只 ...")
+        print(f">> 逐只重试无数据/失败标的 {len(bs_candidates)} 只 ...")
         bs_fail = []
         for i, code in enumerate(bs_candidates, 1):
             try:
