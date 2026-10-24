@@ -149,6 +149,76 @@ def trades(acc, limit=30):
         conn.close()
 
 
+def backtest():
+    """回测/样本外结果（05/06 的 parquet 产物 + 基准），供前端回测面板（替代 15_dashboard）。"""
+    import numpy as np
+
+    try:
+        bench = _store.read("daily", "000300__none").set_index("date")["close"].astype(float)
+        bench.index = pd.to_datetime(bench.index)
+        bench = bench.sort_index()
+
+        def _nav(path):
+            df = pd.read_parquet(path)
+            if "date" in df.columns:
+                df = df.set_index("date")
+            s = df["nav"].astype(float).sort_index()
+            s.index = pd.to_datetime(s.index)
+            return s
+
+        def _stats(nav):
+            r = nav.pct_change().dropna()
+            years = max((nav.index[-1] - nav.index[0]).days / 365.25, 1e-9)
+            total = float(nav.iloc[-1] / nav.iloc[0] - 1)
+            b = bench.reindex(nav.index).ffill().dropna()
+            bt = float(b.iloc[-1] / b.iloc[0] - 1) if len(b) else None
+            return {"total": total,
+                    "ann": float((1 + total) ** (1 / years) - 1),
+                    "mdd": float((nav / nav.cummax() - 1).min()),
+                    "sharpe": float(r.mean() / r.std() * 250 ** 0.5) if r.std() > 0 else None,
+                    "bench_total": bt,
+                    "excess": (total - bt) if bt is not None else None,
+                    "start": str(nav.index[0].date()), "end": str(nav.index[-1].date())}
+
+        def _pack(nav):
+            b = bench[(bench.index >= nav.index[0]) & (bench.index <= nav.index[-1])]
+            bn = (b / b.iloc[0]).reindex(nav.index).ffill()
+            return {"dates": [str(d.date()) for d in nav.index],
+                    "nav": [round(float(v), 4) for v in nav.values],
+                    "bench": [round(float(v), 4) for v in bn.values],
+                    "stats": _stats(nav)}
+
+        out = {"full": _pack(_nav(STORE_DIR / "portfolio_results" / "nav_000300_top50_reb20.parquet")),
+               "oos": _pack(_nav(STORE_DIR / "walkforward_results" / "nav_oos_000300.parquet"))}
+        out["oos_start"] = out["oos"]["dates"][0]
+
+        nav_full = pd.Series(out["full"]["nav"], index=pd.to_datetime(out["full"]["dates"]))
+        sy = {}
+        for y, g in nav_full.groupby(nav_full.index.year):
+            if len(g) > 2:
+                sy[int(y)] = float(g.iloc[-1] / g.iloc[0] - 1)
+        by = {int(y): float((g / g.iloc[0] - 1).iloc[-1])
+              for y, g in bench.groupby(bench.index.year)}
+        out["yearly"] = [{"year": y, "strategy": sy.get(y), "bench": by.get(y)}
+                         for y in sorted(set(sy) | set(by))]
+        fp = STORE_DIR / "walkforward_results" / "folds_000300.parquet"
+        if fp.exists():
+            def _jsonable(v):
+                if v is None:
+                    return None
+                if hasattr(v, "tolist"):
+                    return v.tolist()
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return str(v)
+            out["folds"] = [{k: _jsonable(v) for k, v in r.items()}
+                            for r in pd.read_parquet(fp).to_dict("records")]
+        return out
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 def orders(acc):
     conn = _db(acc)
     if conn is None:
@@ -495,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/trades":
                 return self._send(200, trades(q.get("account", ["large"])[0],
                                                q.get("limit", ["30"])[0]))
+            if u.path == "/api/backtest":
+                return self._send(200, backtest())
             if u.path == "/api/positions":
                 return self._send(200, {"rows": positions(q.get("account", ["large"])[0])})
             if u.path == "/api/orders":

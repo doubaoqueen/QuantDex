@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, provide } from 'vue'
 import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
 import NavChart from './components/NavChart.vue'
+import BacktestPanel from './components/BacktestPanel.vue'
 import PositionsTable from './components/PositionsTable.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
 import RegimeCard from './components/RegimeCard.vue'
@@ -170,6 +171,9 @@ const accLabel = computed(() =>
 
       <!-- 净值曲线 -->
       <NavChart :account="account" :label="accLabel" />
+
+      <!-- 回测与样本外（原 15_dashboard 的职能） -->
+      <BacktestPanel />
 
       <!-- 持仓 + 订单 -->
       <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
