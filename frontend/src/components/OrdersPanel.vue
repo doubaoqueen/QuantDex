@@ -10,14 +10,19 @@ const sym = ref('')
 const side = ref('buy')
 const qty = ref('')
 const price = ref('')
-const tab = ref('pending')       // pending | history
+const tab = ref('pending')       // pending | history | fees
+const feeData = ref({ summary: null, recent: [] })
 const diff = ref({ rows: [], nav: null })
 
 async function loadDiff() {
   diff.value = await api.get(`/api/rebalance_diff?account=${props.account}`)
     .catch(() => ({ rows: [], nav: null }))
 }
-watch(() => [props.account, props.orders], loadDiff, { immediate: true })
+async function loadFees() {
+  feeData.value = await api.get(`/api/fees?account=${props.account}`)
+    .catch(() => ({ summary: null, recent: [] }))
+}
+watch(() => [props.account, props.orders], () => { loadDiff(); loadFees() }, { immediate: true })
 
 async function cancel(id) {
   if (!confirm(`取消订单 #${id}？（该笔调仓将被否决，次日不会执行）`)) return
@@ -73,6 +78,8 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
                 @click="tab='pending'">调仓审批 {{ (orders||[]).length }}</button>
         <button :class="tab==='history' ? 'bg-slate-800 text-white' : 'bg-white'"
                 class="border-l border-slate-300 px-2.5 py-1" @click="tab='history'">成交记录</button>
+        <button :class="tab==='fees' ? 'bg-slate-800 text-white' : 'bg-white'"
+                class="border-l border-slate-300 px-2.5 py-1" @click="tab='fees'">费用</button>
       </div>
     </div>
 
@@ -131,7 +138,7 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
     </div>
 
     <!-- 成交记录 -->
-    <div v-else class="max-h-[200px] overflow-auto">
+    <div v-else-if="tab==='history'" class="max-h-[200px] overflow-auto">
       <table v-if="shownTrades.length" class="tabular w-full text-sm">
         <thead class="bg-slate-50 text-xs text-slate-500">
           <tr><th class="px-2 py-1.5 text-left">日期</th><th class="text-left">代码</th><th>方向</th><th>数量</th><th>价</th><th>状态</th></tr>
@@ -152,6 +159,41 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
         </tbody>
       </table>
       <div v-else class="py-6 text-center text-sm text-slate-400">暂无成交记录</div>
+    </div>
+
+    <!-- 费用统计 -->
+    <div v-else-if="tab==='fees'" class="max-h-[200px] overflow-auto">
+      <template v-if="feeData.summary">
+        <div class="mb-2 grid grid-cols-2 gap-1.5 text-xs">
+          <div class="rounded-lg bg-slate-50 p-2"><div class="text-slate-500">已成交 {{ feeData.summary.n_filled }} 笔 · 成交额</div>
+            <div class="tabular font-semibold">{{ fmt.n(feeData.summary.turnover, 0) }} 元</div></div>
+          <div class="rounded-lg bg-slate-50 p-2"><div class="text-slate-500">费用合计（占成交额）</div>
+            <div class="tabular font-semibold text-rose-600">{{ fmt.n(feeData.summary.total, 2) }} 元
+              <span class="text-[10px] font-normal">({{ (feeData.summary.total/feeData.summary.turnover*100).toFixed(3) }}%)</span></div></div>
+          <div class="rounded-lg bg-slate-50 p-2"><div class="text-slate-500">佣金(含过户/最低5元)</div>
+            <div class="tabular">{{ fmt.n(feeData.summary.commission, 2) }} 元</div></div>
+          <div class="rounded-lg bg-slate-50 p-2"><div class="text-slate-500">印花税（卖出 0.05%）</div>
+            <div class="tabular">{{ fmt.n(feeData.summary.stamp, 2) }} 元</div></div>
+          <div class="rounded-lg bg-slate-50 p-2 col-span-2"><div class="text-slate-500">滑点（估算，成交额×0.05%）</div>
+            <div class="tabular">{{ fmt.n(feeData.summary.slip_est, 2) }} 元</div></div>
+        </div>
+        <table class="tabular w-full text-xs">
+          <thead class="bg-slate-50 text-slate-500">
+            <tr><th class="px-2 py-1 text-left">日期</th><th class="text-left">代码</th><th>方向</th><th>金额</th><th>费用</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(t, i) in feeData.recent" :key="i" class="border-t border-slate-100">
+              <td class="px-2 py-1 text-slate-500">{{ t.fill_date }}</td>
+              <td class="font-medium">{{ t.symbol }}</td>
+              <td class="text-center" :class="t.side==='buy' ? 'text-red-600' : 'text-emerald-600'">{{ t.side==='buy' ? '买' : '卖' }}</td>
+              <td class="text-right">{{ fmt.n(t.amount, 0) }}</td>
+              <td class="text-right">{{ fmt.n(t.fee + t.stamp_duty, 2) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="mt-1 text-[11px] text-slate-400">统计区间 {{ feeData.summary.first_date }} ~ {{ feeData.summary.last_date }}；回测口径的历史成本见决策日志 D-002/D-004</div>
+      </template>
+      <div v-else class="py-6 text-center text-sm text-slate-400">暂无已成交订单（无费用产生）</div>
     </div>
 
     <!-- 人工挂单 -->
