@@ -2,7 +2,17 @@
 import { ref, computed } from 'vue'
 import { fmt } from '../api.js'
 
-const props = defineProps({ rows: Array, account: String, alerts: Array })
+const props = defineProps({ rows: Array, account: String, alerts: Array, orders: Array })
+
+// 尚未建仓但已有待成交买单（如新账户周末挂单、待下个开盘撮合）→ 展示"即将持仓"
+const pendingBuys = computed(() =>
+  (props.orders || []).filter(o => o.side === 'buy' && o.status === 'pending'))
+const showUpcoming = computed(() =>
+  !(props.rows || []).length && pendingBuys.value.length > 0)
+const buyTotal = computed(() =>
+  pendingBuys.value.reduce((s, o) => s + Number(o.qty) * Number(o.price), 0))
+const fillDate = computed(() =>
+  pendingBuys.value.length ? pendingBuys.value[0].fill_date : '')
 
 const sortKey = ref('weight')
 const sortAsc = ref(false)
@@ -56,18 +66,9 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
 
 <template>
   <div class="h-full rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
-    <!-- 持仓预警：距持有期高点回撤 ≥10%（仅提醒；处置类规则已被回测否定 D-026） -->
-    <div v-if="alerts && alerts.length" class="mb-2 flex flex-wrap items-center gap-1.5">
-      <span class="text-xs font-medium text-rose-700">持仓预警</span>
-      <span v-for="a in alerts" :key="a.symbol" class="tabular rounded-full px-2 py-0.5 text-xs"
-            :class="a.level==='重度' ? 'bg-rose-600 text-white' : 'bg-amber-100 text-amber-800'"
-            :title="`持有自 ${a.held_since} · 高点 ${fmt.n(a.peak)} → 现价 ${fmt.n(a.close)}`">
-        {{ a.symbol }} 距持有期高点 {{ (a.dd_peak*100).toFixed(1) }}%
-      </span>
-    </div>
     <div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-sm font-semibold">持仓</span>
-      <span class="text-xs text-slate-400">{{ account === 'large' ? '大账户' : '小账户' }} · {{ (rows||[]).length }} 只</span>
+      <span class="text-xs text-slate-400">{{ account === 'large' ? '大账户' : account === 'small' ? '小账户' : '红利账户' }} · {{ (rows||[]).length }} 只</span>
       <span class="ml-auto text-xs">
         <span class="text-red-600">涨 {{ upDown.up }}</span>
         <span class="mx-1 text-slate-300">/</span>
@@ -78,7 +79,52 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
       <input v-model="filter" placeholder="筛选代码…"
              class="w-28 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none" />
     </div>
-    <div class="max-h-[420px] overflow-auto rounded-lg border border-slate-100">
+
+    <!-- 持仓预警：距持有期高点回撤 ≥10%（仅提醒；处置类规则已被回测否定 D-026） -->
+    <div v-if="alerts && alerts.length" class="mb-2 flex flex-wrap items-center gap-1.5">
+      <span class="text-xs font-medium text-rose-700">持仓预警</span>
+      <span v-for="a in alerts" :key="a.symbol" class="tabular rounded-full px-2 py-0.5 text-xs"
+            :class="a.level==='重度' ? 'bg-rose-600 text-white' : 'bg-amber-100 text-amber-800'"
+            :title="`持有自 ${a.held_since} · 高点 ${fmt.n(a.peak)} → 现价 ${fmt.n(a.close)}`">
+        {{ a.symbol }} 距持有期高点 {{ (a.dd_peak*100).toFixed(1) }}%
+      </span>
+    </div>
+
+    <!-- 即将持仓：账户尚未建仓、有待成交买单（新账户 T+1 建仓期） -->
+    <div v-if="showUpcoming">
+      <div class="mb-2 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-800">
+        该账户尚未建仓：<b>{{ pendingBuys.length }}</b> 笔买入挂单将于
+        <b>{{ fillDate }}</b> 开盘按开盘价撮合（T+1 口径）。以下为目标组合预览（参考权重=金额占比，成交后转为实际持仓）：
+      </div>
+      <div class="max-h-[380px] overflow-auto rounded-lg border border-slate-100">
+        <table class="tabular w-full text-sm">
+          <thead class="sticky top-0 bg-slate-50 text-xs text-slate-500">
+            <tr><th class="px-3 py-2 text-left">代码</th><th>数量</th><th>参考价</th><th>参考金额</th><th>参考权重</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="o in [...pendingBuys].sort((a,b)=>b.qty*b.price-a.qty*a.price)" :key="o.id"
+                class="border-t border-slate-100">
+              <td class="px-3 py-1.5 font-medium">{{ o.symbol }}</td>
+              <td class="text-right text-slate-500">{{ fmt.n(o.qty, 0) }}</td>
+              <td class="text-right">{{ fmt.n(o.price) }}</td>
+              <td class="text-right">{{ fmt.n(o.qty * o.price, 0) }}</td>
+              <td class="text-right">
+                <div class="flex items-center justify-end gap-1.5">
+                  <div class="h-1.5 w-14 overflow-hidden rounded-full bg-slate-200">
+                    <div class="h-full rounded-full bg-rose-400"
+                         :style="{ width: ((o.qty*o.price/buyTotal*100)) + '%' }"></div>
+                  </div>
+                  <span class="w-12 text-slate-500">{{ (o.qty*o.price/buyTotal*100).toFixed(1) }}%</span>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 已建仓：正常持仓表 -->
+    <div v-else class="max-h-[420px] overflow-auto rounded-lg border border-slate-100">
       <table class="tabular w-full text-sm">
         <thead class="sticky top-0 bg-slate-50 text-xs text-slate-500">
           <tr>
