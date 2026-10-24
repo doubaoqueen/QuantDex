@@ -551,4 +551,30 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
           f"待成交 {len(pending_after) if not dry_run else 0} 笔，净值 {nav_now:,.2f}）")
     return {"date": str(latest.date()), "nav": nav_now, "fills": fill_results,
             "pending": len(pending_after) if not dry_run else 0,
-            "report": str(report_path), "emailed": bool(push and not already_reported)}
+            "report": str(report_path), "report_text": report,
+            "new_report": not already_reported,
+            "emailed": bool(push and not already_reported),
+            "day_ret": day_ret, "cum_ret": cum_ret}
+
+
+def combine_reports(day: str, parts: list[dict]) -> str:
+    """把多账户日报合并为一封邮件正文（D-030）。
+
+    parts: [{"title": 账户标题, "text": 单账户日报全文,
+             "nav": 净值, "day_ret": 当日收益率, "cum_ret": 累计收益率}, ...]
+    """
+    lines = [f"# QuantDex 影子盘日报 {day}", "", "## 账户速览", ""]
+    for p in parts:
+        if p.get("nav") is None:
+            lines.append(f"- **{p['title']}**（暂无数据）")
+        else:
+            lines.append(f"- **{p['title']}** 净值 {p['nav']:,.2f}"
+                         f"（今日 {p.get('day_ret') or 0.0:+.2%}"
+                         f" / 累计 {p.get('cum_ret') or 0.0:+.2%}）")
+    lines.append("")
+    for p in parts:
+        lines.append(f"{'=' * 16} {p['title']} {'=' * 16}")
+        # 去掉单账户报告的首行标题（避免与合并标题重复）
+        lines.append(p["text"].split("\n", 1)[-1].lstrip("\n"))
+        lines.append("")
+    return "\n".join(lines)
