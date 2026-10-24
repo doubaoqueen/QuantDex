@@ -195,3 +195,24 @@ def test_report_email_sent_once_per_day():
     for suffix in ("", "-wal", "-shm"):
         Path(str(tmp_db) + suffix).unlink(missing_ok=True)
     shutil.rmtree(report_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- 合并日报（D-030）
+def test_combine_reports_merges_sections_and_summary():
+    from src.live.pipeline import combine_reports
+
+    parts = [
+        {"title": "大账户（100万）",
+         "text": "# 影子盘日报[large] 2026-10-26\n## 账户\n- 总净值: 984,028.68",
+         "nav": 984028.68, "day_ret": 0.0038, "cum_ret": -0.016},
+        {"title": "红利账户（100万）",
+         "text": "# 影子盘日报[div] 2026-10-26\n## 账户\n- 总净值: 1,000,000.00",
+         "nav": 1000000.0, "day_ret": 0.0, "cum_ret": 0.0},
+    ]
+    body = combine_reports("2026-10-26", parts)
+    assert "账户速览" in body
+    assert "984,028.68" in body and "今日 +0.38%" in body
+    assert "大账户（100万）" in body and "红利账户（100万）" in body
+    # 单账户原首行标题不应重复出现
+    assert "# 影子盘日报[" not in body
+    assert "2026-10-26" in body  # 合并标题含日期（单账户首行标题已被去除）
