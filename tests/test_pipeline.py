@@ -152,3 +152,46 @@ def test_pending_not_due_stays_pending():
     finally:
         led.close()
         _cleanup()
+
+
+# ---------------------------------------------------------------- 日报邮件去重（D-029）
+def test_report_email_sent_once_per_day():
+    """同一交易日的重复运行不得重复推送邮件（周末重跑/幂等重跑静默）。"""
+    import shutil
+
+    from src.data import universe
+    from src.data.storage import ParquetStore
+    from src.analysis.factors import build_factor_panel
+    from src.live import notifier
+    from src.live.pipeline import run_pipeline
+
+    store = ParquetStore()
+    symbols = ["600519", "000001"]
+    panel = build_factor_panel(store, symbols, start="20250601")
+
+    tmp_db = Path("data/store/sim/_test_dup.sqlite")
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(tmp_db) + suffix).unlink(missing_ok=True)
+    report_dir = Path("data/store/reports/zz_test_dup")
+    # 先清掉上次失败运行可能残留的报告（测试自身必须幂等）
+    shutil.rmtree(report_dir, ignore_errors=True)
+
+    sent = []
+    orig_cfg, orig_send = notifier.is_configured, notifier.send_report
+    notifier.is_configured = lambda: True
+    notifier.send_report = lambda *a, **k: sent.append(a[0])
+    try:
+        r1 = run_pipeline(push=True, db_path=tmp_db, label="zz_test_dup",
+                          _panel=panel, capital=1_000_000)
+        r2 = run_pipeline(push=True, db_path=tmp_db, label="zz_test_dup",
+                          _panel=panel, capital=1_000_000)
+    finally:
+        notifier.is_configured, notifier.send_report = orig_cfg, orig_send
+
+    assert r1["emailed"] is True, "首次生成日报应推送"
+    assert r2["emailed"] is False, "同日重复运行不得重复推送"
+    assert len(sent) == 1, f"邮件应只发 1 封，实际 {len(sent)}"
+
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(tmp_db) + suffix).unlink(missing_ok=True)
+    shutil.rmtree(report_dir, ignore_errors=True)
