@@ -190,6 +190,38 @@ def rebalance_diff(acc):
     return {"rows": rows, "nav": nav}
 
 
+def fees(acc):
+    """费用统计（影子盘真实账本，仅已成交订单）。
+
+    fee 列 = 佣金(含最低5元) + 过户费（pipeline._trade_fee 合并记录）；
+    印花税单独一列；滑点不入库，按成交额 × 0.0005 估算（与撮合口径一致）。
+    """
+    conn = _db(acc)
+    if conn is None:
+        return {"summary": None, "recent": []}
+    try:
+        df = pd.read_sql_query(
+            "SELECT fill_date, symbol, side, qty, price, amount, fee, stamp_duty "
+            "FROM trade_log WHERE status='filled' ORDER BY id", conn)
+    finally:
+        conn.close()
+    if df.empty:
+        return {"summary": None, "recent": []}
+    slip = float(df["amount"].sum()) * 0.0005
+    summary = {
+        "n_filled": int(len(df)),
+        "turnover": float(df["amount"].sum()),
+        "commission": float(df["fee"].sum()),
+        "stamp": float(df["stamp_duty"].sum()),
+        "slip_est": slip,
+        "total": float(df["fee"].sum()) + float(df["stamp_duty"].sum()) + slip,
+        "first_date": str(df["fill_date"].iloc[0]),
+        "last_date": str(df["fill_date"].iloc[-1]),
+    }
+    recent = df.tail(10).iloc[::-1].to_dict("records")
+    return {"summary": summary, "recent": recent}
+
+
 def position_alerts(acc):
     """持仓预警：距持有期最高收盘回撤 <= -10% 的标的。
 
@@ -663,6 +695,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, backtest(q.get("account", ["large"])[0]))
             if u.path == "/api/rebalance_diff":
                 return self._send(200, rebalance_diff(q.get("account", ["large"])[0]))
+            if u.path == "/api/fees":
+                return self._send(200, fees(q.get("account", ["large"])[0]))
             if u.path == "/api/position_alerts":
                 return self._send(200, position_alerts(q.get("account", ["large"])[0]))
             if u.path == "/api/positions":
