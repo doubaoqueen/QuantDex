@@ -22,7 +22,6 @@
 | 11 | `11_neutralize_factors.py` | 因子市值中性化检验（IC/NW-t 前后对比） | ✅ |
 | 12 | `12_fetch_dividends.py` | 分红送配增量抓取（baostock，可断点续跑） | ✅ |
 | 14 | `14_scheduler.py` | **Python 原生调度器（APScheduler）**：每天 19:00 运行 02b + 10，需常驻；`--run-now` 立即跑一次 | ✅ |
-| 15 | `15_dashboard.py` | 生成单页效果看板（净值/回撤/年度/10万变多少）→ `data/store/dashboard/` | ✅ |
 | 16 | `16_webapp.py` | **本地可视化控制台**（零依赖）：账户/持仓/涨跌/待成交/人工挂单/市场状态/日报/后台任务 | ✅ |
 | 17 | `17_migrate_to_daily_partitions.py` | 存储迁移：per-symbol 日线 → 按日分区（一次性） | ✅ |
 | 18 | `18_rebuild_daily_cache.py` | 从按日分区重建本地股票缓存（新克隆后运行） | ✅ |
