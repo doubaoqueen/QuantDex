@@ -53,8 +53,13 @@ const theme = computed(() => {
     greenV: Math.min(Math.abs(avgDown) / 0.02, 1)
   }
 })
-const redOpacity = computed(() => (theme.value.red > 0.001 ? 0.16 + 0.30 * theme.value.redV : 0))
-const greenOpacity = computed(() => (theme.value.green > 0.001 ? 0.16 + 0.30 * theme.value.greenV : 0))
+// 切账户时数据未到之前，主题先平滑退到中性，避免"僵住后猛跳"
+const themeSuppress = ref(false)
+const themeView = computed(() => themeSuppress.value
+  ? { red: 0, green: 0, redV: 0, greenV: 0 }
+  : theme.value)
+const redOpacity = computed(() => (themeView.value.red > 0.001 ? 0.16 + 0.30 * themeView.value.redV : 0))
+const greenOpacity = computed(() => (themeView.value.green > 0.001 ? 0.16 + 0.30 * themeView.value.greenV : 0))
 
 // ---------------------------------------------------------------- 数据
 async function loadAccountScoped() {
@@ -101,7 +106,8 @@ onUnmounted(() => clearInterval(timer))
 function switchAccount(acc) {
   if (account.value === acc) return
   account.value = acc
-  loadAccountScoped()
+  themeSuppress.value = true
+  loadAccountScoped().finally(() => { themeSuppress.value = false })
 }
 
 const accLabel = computed(() =>
@@ -109,15 +115,15 @@ const accLabel = computed(() =>
 </script>
 
 <template>
-  <!-- 主题背景：红色层从顶部、绿色层从底部，高度=涨/跌市值占比，透明度=鲜艳度 -->
-  <div class="theme-layer top-0" :style="{
-    height: (theme.red * 100).toFixed(1) + '%',
-    background: `linear-gradient(180deg, rgba(224,49,49,1), rgba(224,49,49,0.55))`,
+  <!-- 主题背景：软边渐变（末端渐隐到 0）+ scaleY 占比 + 透明度=鲜艳度，全程 GPU 合成 -->
+  <div class="theme-layer" :style="{
+    transform: `scaleY(${themeView.red.toFixed(4)})`,
+    background: 'linear-gradient(180deg, rgba(224,49,49,0.9) 0%, rgba(224,49,49,0.32) 55%, rgba(224,49,49,0) 100%)',
     opacity: redOpacity
   }"></div>
-  <div class="theme-layer bottom-0" :style="{
-    height: (theme.green * 100).toFixed(1) + '%',
-    background: `linear-gradient(0deg, rgba(5,150,105,1), rgba(5,150,105,0.55))`,
+  <div class="theme-layer theme-layer--bottom" :style="{
+    transform: `scaleY(${themeView.green.toFixed(4)})`,
+    background: 'linear-gradient(0deg, rgba(5,150,105,0.9) 0%, rgba(5,150,105,0.32) 55%, rgba(5,150,105,0) 100%)',
     opacity: greenOpacity
   }"></div>
 
@@ -147,10 +153,10 @@ const accLabel = computed(() =>
         </div>
       </div>
       <!-- 市场温度条：红/绿宽度 = 持仓涨/跌市值占比 -->
-      <div class="flex h-1.5 w-full" :title="`红 ${fmt.pct(theme.red,1)} / 绿 ${fmt.pct(theme.green,1)}（持仓市值占比）`">
-        <div class="transition-all duration-1000" :style="{ width: (theme.red*100)+'%', background: `rgb(224,49,49,${0.55+0.45*theme.redV})` }"></div>
+      <div class="flex h-1.5 w-full" :title="`红 ${fmt.pct(themeView.red,1)} / 绿 ${fmt.pct(themeView.green,1)}（持仓市值占比）`">
+        <div class="temp-seg" :style="{ width: (themeView.red*100)+'%', backgroundColor: `rgb(224,49,49,${0.55+0.45*themeView.redV})` }"></div>
         <div class="flex-1 bg-slate-200"></div>
-        <div class="transition-all duration-1000" :style="{ width: (theme.green*100)+'%', background: `rgb(5,150,105,${0.55+0.45*theme.greenV})` }"></div>
+        <div class="temp-seg" :style="{ width: (themeView.green*100)+'%', backgroundColor: `rgb(5,150,105,${0.55+0.45*themeView.greenV})` }"></div>
       </div>
     </header>
 
