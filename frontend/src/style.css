@@ -1,12 +1,23 @@
 @import "tailwindcss";
 
-/* 主题色动效：背景红/绿层随持仓涨跌过渡 */
+/* 主题色动效：背景红/绿层随持仓涨跌过渡（GPU 合成层，软边渐变） */
 .theme-layer {
   position: fixed;
-  left: 0; right: 0;
+  left: 0; right: 0; top: 0;
+  height: 100vh;
   pointer-events: none;
-  transition: height 1.4s ease, opacity 1.4s ease, background 1.4s ease;
+  transform-origin: top center;
+  transition: transform 1.8s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 1.8s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, opacity;
   z-index: -1;
+}
+.theme-layer--bottom { transform-origin: bottom center; }
+
+/* 温度条分段：宽度与颜色同步缓动 */
+.temp-seg {
+  transition: width 1.8s cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 1.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 html { scroll-behavior: smooth; }

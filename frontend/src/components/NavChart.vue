@@ -36,7 +36,8 @@ async function render() {
         { type: 'category', data: dates, gridIndex: 1, axisLabel: { fontSize: 10, color: '#94a3b8' } }
       ],
       yAxis: [
-        { gridIndex: 0, scale: true, axisLabel: { fontSize: 10, color: '#94a3b8' }, splitLine: { lineStyle: { color: '#eef2f7' } } },
+        { gridIndex: 0, scale: true, max: v => v.max * 1.03, min: v => v.min * 0.97,
+          axisLabel: { fontSize: 10, color: '#94a3b8' }, splitLine: { lineStyle: { color: '#eef2f7' } } },
         { gridIndex: 1, max: 0, axisLabel: { fontSize: 10, color: '#94a3b8', formatter: v => v + '%' }, splitLine: { lineStyle: { color: '#eef2f7' } } }
       ],
       series: [
