@@ -76,8 +76,8 @@ QuantDex/
 | **行情更新（PIT 全量）** | `02b_update_pit.py` | 网络 | `market/daily/*` | 00 |
 | 财务/估值/资金流/宏观 | `03_fetch_alternative.py` | 网络 | `financials/`、`valuation/` 等 | 01 |
 | **因子抓取 + 检验** | `04_factor_research.py` | 网络+本地 | `factor_results/` | 00/01 |
-| **组合回测** | `05_portfolio_backtest.py` | 本地 | `portfolio_results/` + 图 | 04 |
-| **walk-forward** | `06_walkforward.py` | 本地 | `walkforward_results/` | 04 |
+| **组合回测** | `05_portfolio_backtest.py`（第4参可传 `dividend`） | 本地 | `portfolio_results/`（div 版带 `_div` 后缀） | 04 |
+| **walk-forward** | `06_walkforward.py`（第2参可传 `dividend`） | 本地 | `walkforward_results/` | 04 |
 | 账本演示 | `07_ledger_demo.py` | 本地 | 临时账本（不碰生产） | 无 |
 | **影子盘流水线** | `08_daily_pipeline.py` | 本地 | 账本 + `reports/` + 邮件 | 02b/04 |
 | 邮件连通测试 | `09_test_mail.py` | 网络 | 测试邮件 | `.env` |

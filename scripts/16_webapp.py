@@ -232,8 +232,10 @@ def position_alerts(acc):
     return {"rows": rows}
 
 
-def backtest():
-    """回测/样本外结果（05/06 的 parquet 产物 + 基准），供前端回测面板（替代 15_dashboard）。"""
+def backtest(acc="large"):
+    """回测/样本外结果（05/06 的 parquet 产物 + 基准），供前端回测面板。
+
+    账户 div 对应红利版产物（*_div 后缀，05/06 以 dividend 策略生成），其余为现行版。"""
     import numpy as np
 
     try:
@@ -271,8 +273,11 @@ def backtest():
                     "bench": [round(float(v), 4) for v in bn.values],
                     "stats": _stats(nav)}
 
-        out = {"full": _pack(_nav(STORE_DIR / "portfolio_results" / "nav_000300_top50_reb20.parquet")),
-               "oos": _pack(_nav(STORE_DIR / "walkforward_results" / "nav_oos_000300.parquet"))}
+        suffix = "_div" if acc == "div" else ""
+        out = {"strategy": ("红利版：低换手+低波+股息率" if suffix else
+                            "现行版：低换手+低波+反转"),
+               "full": _pack(_nav(STORE_DIR / "portfolio_results" / f"nav_000300_top50_reb20{suffix}.parquet")),
+               "oos": _pack(_nav(STORE_DIR / "walkforward_results" / f"nav_oos_000300{suffix}.parquet"))}
         out["oos_start"] = out["oos"]["dates"][0]
 
         nav_full = pd.Series(out["full"]["nav"], index=pd.to_datetime(out["full"]["dates"]))
@@ -284,7 +289,7 @@ def backtest():
               for y, g in bench.groupby(bench.index.year)}
         out["yearly"] = [{"year": y, "strategy": sy.get(y), "bench": by.get(y)}
                          for y in sorted(set(sy) | set(by))]
-        fp = STORE_DIR / "walkforward_results" / "folds_000300.parquet"
+        fp = STORE_DIR / "walkforward_results" / f"folds_000300{suffix}.parquet"
         if fp.exists():
             def _jsonable(v):
                 if v is None:
@@ -655,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, trades(q.get("account", ["large"])[0],
                                                q.get("limit", ["30"])[0]))
             if u.path == "/api/backtest":
-                return self._send(200, backtest())
+                return self._send(200, backtest(q.get("account", ["large"])[0]))
             if u.path == "/api/rebalance_diff":
                 return self._send(200, rebalance_diff(q.get("account", ["large"])[0]))
             if u.path == "/api/position_alerts":
