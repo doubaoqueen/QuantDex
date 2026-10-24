@@ -26,7 +26,8 @@ from src.data.storage import ParquetStore
 from src.data import financials, universe
 from src.data.market import get_kline
 from src.analysis.factors import build_factor_panel
-from src.strategies.multi_factor import (turnover_lowvol_dividend_topn,
+from src.strategies.multi_factor import (topk_dropout_topn,
+                                         turnover_lowvol_dividend_topn,
                                          turnover_lowvol_reversal_topn)
 from src.backtest.portfolio import run_portfolio_backtest
 
@@ -51,8 +52,14 @@ def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
 def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo,
               dates: pd.DatetimeIndex, strategy: str = "corrected"):
     top_n, reb = combo
-    fn = turnover_lowvol_dividend_topn if strategy == "dividend" else turnover_lowvol_reversal_topn
-    W = fn(panel, top_n=top_n, rebalance_days=reb)
+    if strategy == "dividend":
+        W = turnover_lowvol_dividend_topn(panel, top_n=top_n, rebalance_days=reb)
+    elif strategy == "topkdrop":
+        W = topk_dropout_topn(panel,
+                              [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+                              topk=top_n, n_drop=5, rebalance_days=reb)
+    else:
+        W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=reb)
     p = prices.loc[dates]
     W = W[W.index.isin(p.index)]
     if W.empty:
@@ -192,7 +199,7 @@ def main() -> None:
 
     out = STORE_DIR / "walkforward_results"
     out.mkdir(parents=True, exist_ok=True)
-    suffix = "_div" if strategy == "dividend" else ""
+    suffix = {"dividend": "_div", "topkdrop": "_tk"}.get(strategy, "")
     fold_df.to_parquet(out / f"folds_{index_code}{suffix}.parquet", index=False)
     nav_oos.rename("nav").to_frame().to_parquet(out / f"nav_oos_{index_code}{suffix}.parquet")
     print()

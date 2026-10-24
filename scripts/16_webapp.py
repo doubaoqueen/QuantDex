@@ -306,9 +306,19 @@ def backtest(acc="large"):
                     "bench": [round(float(v), 4) for v in bn.values],
                     "stats": _stats(nav)}
 
-        suffix = "_div" if acc == "div" else ""
-        out = {"strategy": ("红利版：低换手+低波+股息率" if suffix else
-                            "现行版：低换手+低波+反转"),
+        # 账户 -> 回测产物映射（D-032）：
+        #   large=现行版；topk=TopkDropout 版(_tk)；div=红利版(_div)；
+        #   small 无独立回测（3只整手执行验证组合）——展示现行版并明确标注"参考"
+        acc2suffix = {"topk": "_tk", "div": "_div"}
+        acc2name = {
+            "topk": "TopkDropout 版：同现行因子+换手上界（n_drop=5/期）",
+            "div": "红利版：低换手+低波+股息率",
+        }
+        suffix = acc2suffix.get(acc, "")
+        name = acc2name.get(acc, "现行版：低换手+低波+反转")
+        if acc == "small":
+            name = "参考：现行版（小账户为 3 只整手执行验证，无独立历史回测）"
+        out = {"strategy": name,
                "full": _pack(_nav(STORE_DIR / "portfolio_results" / f"nav_000300_top50_reb20{suffix}.parquet")),
                "oos": _pack(_nav(STORE_DIR / "walkforward_results" / f"nav_oos_000300{suffix}.parquet"))}
         out["oos_start"] = out["oos"]["dates"][0]
