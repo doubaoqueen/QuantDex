@@ -426,10 +426,12 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                 f"fills={filled_n} pending={pend_n} nav={nav_now:,.2f}")
         except Exception as e:  # noqa: BLE001
             print(f"[daily_ops] 记录失败: {e}")
+        # 先取待成交列表再关连接：close 后再调用会重开连接且永不关闭（Windows 文件锁）
+        pending_after = led.pending_orders()
         led.daily_backup()
         led.close()
-
-    pending_after = led.pending_orders() if not dry_run else pd.DataFrame()
+    else:
+        pending_after = pd.DataFrame()
 
     # ---- 日报 ----
     report_dir = STORE_DIR / "reports" / label
@@ -525,14 +527,19 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                   "涨停买不进/跌停卖不出/停牌记为拒单。数据更新由 02/04 负责。"]
     report = "\n".join(lines)
     report_path = report_dir / f"{latest.date()}.md"
+    # 该交易日是否已生成过日报（重复运行/周末重跑）——决定是否重复推送邮件
+    already_reported = report_path.exists()
     if not dry_run:
         report_path.write_text(report, encoding="utf-8")
 
     print(report)
     if not dry_run:
         print(f"\n报表已写入: {report_path}")
-        # 邮件推送（配置了 SMTP 才发；失败不影响主流程）
-        if push:
+        # 邮件推送：每个交易日的日报只推一次（D-029）——
+        # 重跑/歇市重跑静默更新报告但不重发；若上次运行失败未生成报告，本次补跑仍会推送
+        if push and already_reported:
+            print(f"[notifier] {latest.date()} 日报此前已推送，跳过重复发送")
+        elif push:
             try:
                 from src.live.notifier import is_configured, send_report
                 if is_configured():
@@ -544,4 +551,4 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
           f"待成交 {len(pending_after) if not dry_run else 0} 笔，净值 {nav_now:,.2f}）")
     return {"date": str(latest.date()), "nav": nav_now, "fills": fill_results,
             "pending": len(pending_after) if not dry_run else 0,
-            "report": str(report_path)}
+            "report": str(report_path), "emailed": bool(push and not already_reported)}
