@@ -51,6 +51,7 @@ def _serve_static(rel: str):
 ACCOUNTS = {
     "large": {"db": STORE_DIR / "sim" / "ledger.sqlite", "label": "大账户（100万）"},
     "small": {"db": STORE_DIR / "sim" / "ledger_2000.sqlite", "label": "小账户（2000元）"},
+    "div": {"db": STORE_DIR / "sim" / "ledger_div.sqlite", "label": "红利账户（100万）"},
 }
 LOG = STORE_DIR / "logs" / "webapp_run.log"
 _store = ParquetStore()

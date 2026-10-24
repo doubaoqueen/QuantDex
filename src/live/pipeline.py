@@ -27,12 +27,13 @@ import pandas as pd
 
 from config import STORE_DIR
 from src.analysis.factors import build_factor_panel
-from src.data import universe
+from src.data import financials, universe
 from src.data.market import get_kline
 from src.data.storage import ParquetStore
 from src.live.ledger import Ledger
 from src.risk.risk import apply_risk
-from src.strategies.multi_factor import turnover_lowvol_reversal_topn
+from src.strategies.multi_factor import (turnover_lowvol_dividend_topn,
+                                         turnover_lowvol_reversal_topn)
 
 FEE = 0.00025       # 券商佣金率（单边）
 SLIP = 0.0005       # 滑点（单边，按成交额）
@@ -54,11 +55,18 @@ def _board_limit(symbol: str) -> float:
 
 
 # ---------------------------------------------------------------- 数据准备
-def _load_panel(store: ParquetStore, index_code: str) -> pd.DataFrame:
+def _load_panel(store: ParquetStore, index_code: str,
+                with_dividend: bool = False) -> pd.DataFrame:
     pit = universe.load_pit_constituents(index_code, store)
     symbols = universe.pit_union_symbols(index_code, store)
+    div = None
+    if with_dividend:
+        try:
+            div = financials.load_dividend_panel(store, symbols)
+        except Exception as e:  # noqa: BLE001
+            print(f"[dividend] 分红面板加载失败，dy_ttm 将全为空: {e}")
     return build_factor_panel(store, symbols, start="20180101",
-                              pit_constituents=pit)
+                              pit_constituents=pit, dividend_panel=div)
 
 
 def _load_state(led: Ledger) -> tuple[float, dict[str, float], str | None]:
@@ -264,12 +272,19 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                  push: bool = True,
                  db_path=None, label: str = "large",
                  max_positions: int | None = None,
+                 strategy: str = "corrected",
                  _panel: pd.DataFrame | None = None) -> dict:
     store = ParquetStore()
-    panel = _panel if _panel is not None else _load_panel(store, index_code)
+    panel = (_panel if _panel is not None
+             else _load_panel(store, index_code,
+                              with_dividend=(strategy == "dividend")))
     latest = pd.Timestamp(panel["date"].max())
-    W = turnover_lowvol_reversal_topn(panel, top_n=top_n,
-                                      rebalance_days=rebalance)
+    if strategy == "dividend":
+        W = turnover_lowvol_dividend_topn(panel, top_n=top_n,
+                                          rebalance_days=rebalance)
+    else:
+        W = turnover_lowvol_reversal_topn(panel, top_n=top_n,
+                                          rebalance_days=rebalance)
 
     led = Ledger(db_path)
     # 1) 撮合到期订单（T+1 开盘价）

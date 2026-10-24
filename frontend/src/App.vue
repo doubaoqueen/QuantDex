@@ -11,9 +11,13 @@ import ReportViewer from './components/ReportViewer.vue'
 import OpsTable from './components/OpsTable.vue'
 import JobLog from './components/JobLog.vue'
 
+const accounts = [
+  { key: 'large', label: '大账户（100万）' },
+  { key: 'small', label: '小账户（2000元）' },
+  { key: 'div', label: '红利账户（100万）' }
+]
 const account = ref('large')          // 当前选中账户，驱动全部面板与主题色
-const overviewL = ref(null)
-const overviewS = ref(null)
+const overviews = ref({})             // key -> overview
 const regime = ref(null)
 const positions = ref([])
 const orders = ref([])
@@ -75,7 +79,7 @@ async function loadAccountScoped() {
     api.get(`/api/position_alerts?account=${acc}`).catch(() => ({ rows: [] }))
   ])
   if (acc !== account.value) return          // 切换竞态保护
-  if (acc === 'large') overviewL.value = ov; else overviewS.value = ov
+  overviews.value = { ...overviews.value, [acc]: ov }
   positions.value = pos.rows || []
   orders.value = ord.rows || []
   trades.value = trd.rows || []
@@ -84,16 +88,14 @@ async function loadAccountScoped() {
 }
 
 async function loadCommon() {
-  const [l, s, rg, fr] = await Promise.all([
-    api.get('/api/overview?account=large').catch(() => null),
-    api.get('/api/overview?account=small').catch(() => null),
+  const [rg, fr, ...ovs] = await Promise.all([
     api.get('/api/regime').catch(() => null),
-    api.get('/api/freshness').catch(() => null)
+    api.get('/api/freshness').catch(() => null),
+    ...accounts.map(a => api.get(`/api/overview?account=${a.key}`).catch(() => null))
   ])
-  overviewL.value = l
-  overviewS.value = s
   regime.value = rg
   freshness.value = fr
+  overviews.value = Object.fromEntries(accounts.map((a, i) => [a.key, ovs[i]]))
 }
 
 async function loadAll() {
@@ -115,7 +117,7 @@ function switchAccount(acc) {
 }
 
 const accLabel = computed(() =>
-  account.value === 'large' ? '大账户（100万）' : '小账户（2000元）')
+  accounts.find(a => a.key === account.value)?.label || '')
 </script>
 
 <template>
@@ -140,10 +142,10 @@ const accLabel = computed(() =>
           QuantDex 控制台
         </h1>
         <div class="flex overflow-hidden rounded-lg border border-slate-300 text-sm">
-          <button :class="account==='large' ? 'bg-slate-800 text-white' : 'bg-white'"
-                  class="px-3 py-1.5" @click="switchAccount('large')">大账户</button>
-          <button :class="account==='small' ? 'bg-slate-800 text-white' : 'bg-white'"
-                  class="border-l border-slate-300 px-3 py-1.5" @click="switchAccount('small')">小账户</button>
+          <button v-for="a in accounts" :key="a.key"
+                  :class="account===a.key ? 'bg-slate-800 text-white' : 'bg-white'"
+                  class="border-l border-slate-300 first:border-l-0 px-3 py-1.5"
+                  @click="switchAccount(a.key)">{{ a.key === 'large' ? '大账户' : a.key === 'small' ? '小账户' : '红利' }}</button>
         </div>
         <span class="text-xs text-slate-500">{{ accLabel }}</span>
         <div class="ml-auto flex items-center gap-2">
@@ -167,8 +169,10 @@ const accLabel = computed(() =>
     <main class="mx-auto max-w-[1400px] space-y-4 px-4 py-4">
       <!-- 账户卡 + 市场状态 -->
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <OverviewCards :large="overviewL" :small="overviewS" :selected="account"
-                       @select="switchAccount" />
+        <div class="lg:col-span-2">
+          <OverviewCards :accounts="accounts" :overviews="overviews" :selected="account"
+                         @select="switchAccount" />
+        </div>
         <RegimeCard :regime="regime" />
       </div>
 

@@ -67,6 +67,25 @@ def turnover_lowvol_reversal_topn(
         top_n=top_n, rebalance_days=rebalance_days)
 
 
+def turnover_lowvol_dividend_topn(
+    panel: pd.DataFrame,
+    top_n: int = 50,
+    rebalance_days: int = 20,
+) -> pd.DataFrame:
+    """红利版策略（2026-10-24 检验，D-027）：低换手 + 低波 + 股息率 等权合成。
+
+    需要面板含 dy_ttm 列（build_factor_panel 传 dividend_panel 时生成）。
+    检验结论（2018-2026 PIT + 保真回测 + walk-forward）：
+      全周期 +74.15%/MDD -25.75%（现行 +30.35%/-29.88%）；
+      样本外(2022-2026) +82.33%/MDD -13.17%（现行 +42.39%/-17.16%），年换手 702%。
+    以前瞻验证为目的，以第三影子账户(div)运行，与现行策略并行对比。
+    """
+    return composite_topn(
+        panel,
+        [("turnover_20", -1), ("vol_20", -1), ("dy_ttm", +1)],
+        top_n=top_n, rebalance_days=rebalance_days)
+
+
 def momentum_lowvol_topn(
     panel: pd.DataFrame,
     top_n: int = 50,
