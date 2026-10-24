@@ -13,8 +13,9 @@ const onResize = () => chart?.resize()
 async function load() {
   const r = await api.get('/api/backtest').catch(e => ({ error: String(e) }))
   data.value = r
+  await nextTick()               // 等 v-if 打开、图表容器挂载后再渲染
   if (r && r.error) {
-    // 接口出错（多为旧版本页面对话/瞬时故障）：稍后自动重试
+    // 接口出错（多为旧版本页面/瞬时故障）：稍后自动重试
     setTimeout(load, 5000)
   } else {
     render()
@@ -23,7 +24,12 @@ async function load() {
 
 function render() {
   const d = data.value
-  if (!d || d.error || !chart) return
+  if (!d || d.error) return
+  // 懒初始化：数据到位后 v-if 才渲染图表容器，此时才 init（避免对 null dom 初始化中断数据加载）
+  if (!chart) {
+    if (!el.value) return
+    chart = echarts.init(el.value)
+  }
   const sec = d[view.value]
   const s = sec.stats
   const opt = {
@@ -50,10 +56,8 @@ function render() {
   chart.setOption(opt, true)
 }
 
-onMounted(async () => {
-  await nextTick()
-  chart = echarts.init(el.value)
-  load()
+onMounted(() => {
+  load()                          // 数据先行；图表在数据到位、容器挂载后懒初始化
   timer = setInterval(load, 60000)
   window.addEventListener('resize', onResize)
 })
