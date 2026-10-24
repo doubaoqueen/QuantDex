@@ -185,7 +185,7 @@ const accLabel = computed(() =>
       <!-- 持仓 + 订单 -->
       <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div class="xl:col-span-2">
-          <PositionsTable :rows="positions" :account="account" :alerts="alerts" />
+          <PositionsTable :rows="positions" :account="account" :alerts="alerts" :orders="orders" />
         </div>
         <OrdersPanel :orders="orders" :trades="trades" :account="account"
                      @changed="loadAccountScoped" />
