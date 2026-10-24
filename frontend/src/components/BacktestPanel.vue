@@ -1,8 +1,9 @@
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import { api, fmt } from '../api.js'
 
+const props = defineProps({ account: String })
 const data = ref(null)
 const view = ref('full')            // full | oos
 const el = ref(null)
@@ -11,7 +12,7 @@ let timer = null
 const onResize = () => chart?.resize()
 
 async function load() {
-  const r = await api.get('/api/backtest').catch(e => ({ error: String(e) }))
+  const r = await api.get(`/api/backtest?account=${props.account}`).catch(e => ({ error: String(e) }))
   data.value = r
   await nextTick()               // 等 v-if 打开、图表容器挂载后再渲染
   if (r && r.error) {
@@ -61,6 +62,7 @@ onMounted(() => {
   timer = setInterval(load, 60000)
   window.addEventListener('resize', onResize)
 })
+watch(() => props.account, load)
 onUnmounted(() => {
   clearInterval(timer)
   window.removeEventListener('resize', onResize)
@@ -72,6 +74,7 @@ onUnmounted(() => {
   <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
     <div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-sm font-semibold">回测 · 样本外</span>
+      <span v-if="data && data.strategy" class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{{ data.strategy }}</span>
       <div class="flex overflow-hidden rounded-lg border border-slate-300 text-xs">
         <button :class="view==='full' ? 'bg-slate-800 text-white' : 'bg-white'" class="px-2.5 py-1"
                 @click="view='full'; render()">全周期</button>

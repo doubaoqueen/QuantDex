@@ -11,7 +11,8 @@
   - 参数稳定性统计；
   - "全样本最优参数"（作弊口径）与 walk-forward 的差距 —— 量化过拟合的真实代价。
 
-用法: python scripts/06_walkforward.py [000300]
+用法: python scripts/06_walkforward.py [000300] [corrected|dividend]
+  dividend = 红利版（低换手+低波+股息率，D-027），产物文件带 _div 后缀
 """
 import sys
 
@@ -22,10 +23,11 @@ import _bootstrap  # noqa: F401
 
 from config import STORE_DIR
 from src.data.storage import ParquetStore
-from src.data import universe
+from src.data import financials, universe
 from src.data.market import get_kline
 from src.analysis.factors import build_factor_panel
-from src.strategies.multi_factor import turnover_lowvol_reversal_topn
+from src.strategies.multi_factor import (turnover_lowvol_dividend_topn,
+                                         turnover_lowvol_reversal_topn)
 from src.backtest.portfolio import run_portfolio_backtest
 
 START_DATE = "20180101"
@@ -47,9 +49,10 @@ def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
 
 
 def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo,
-              dates: pd.DatetimeIndex):
+              dates: pd.DatetimeIndex, strategy: str = "corrected"):
     top_n, reb = combo
-    W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=reb)
+    fn = turnover_lowvol_dividend_topn if strategy == "dividend" else turnover_lowvol_reversal_topn
+    W = fn(panel, top_n=top_n, rebalance_days=reb)
     p = prices.loc[dates]
     W = W[W.index.isin(p.index)]
     if W.empty:
@@ -62,12 +65,16 @@ def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo,
 
 def main() -> None:
     index_code = sys.argv[1] if len(sys.argv) > 1 else "000300"
+    strategy = sys.argv[2] if len(sys.argv) > 2 else "corrected"
     store = ParquetStore()
     pit = universe.load_pit_constituents(index_code, store)
     symbols = universe.pit_union_symbols(index_code, store)
-    print(f">> 构建 PIT 因子面板（{index_code}，{len(symbols)} 只）...")
+    div_panel = None
+    if strategy == "dividend":
+        div_panel = financials.load_dividend_panel(store, symbols)
+    print(f">> 构建 PIT 因子面板（{index_code}，{len(symbols)} 只，strategy={strategy}）...")
     panel = build_factor_panel(store, symbols, start=START_DATE,
-                               pit_constituents=pit)
+                               pit_constituents=pit, dividend_panel=div_panel)
     prices = panel.pivot(index="date", columns="symbol", values="close").sort_index()
     print(f"   面板 {panel['date'].min().date()} ~ {panel['date'].max().date()}，"
           f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
@@ -93,7 +100,7 @@ def main() -> None:
         # ---- 训练段参数选择 ----
         best, best_ir = None, -np.inf
         for combo in GRID:
-            res = run_combo(panel, prices, combo, train_dates)
+            res = run_combo(panel, prices, combo, train_dates, strategy)
             if res is None:
                 continue
             m = metrics_of(res, bench_ret)
@@ -103,7 +110,7 @@ def main() -> None:
             continue
 
         # ---- 样本外评估 ----
-        res_oos = run_combo(panel, prices, best, test_dates)
+        res_oos = run_combo(panel, prices, best, test_dates, strategy)
         if res_oos is None:
             continue
         m_oos = metrics_of(res_oos, bench_ret)
@@ -151,7 +158,7 @@ def main() -> None:
     # ---- 全样本最优（作弊口径）对比 ----
     best_all, best_all_ir = None, -np.inf
     for combo in GRID:
-        res = run_combo(panel, prices, combo, all_dates)
+        res = run_combo(panel, prices, combo, all_dates, strategy)
         if res is None:
             continue
         m = metrics_of(res, bench_ret)
@@ -160,7 +167,7 @@ def main() -> None:
     if best_all is not None:
         mask = all_dates >= pd.Timestamp(f"{TEST_YEARS[0]}-01-01")
         oos2_dates = all_dates[mask]
-        res2 = run_combo(panel, prices, best_all, oos2_dates)
+        res2 = run_combo(panel, prices, best_all, oos2_dates, strategy)
         m2 = metrics_of(res2, bench_ret) if res2 is not None else {}
         print()
         print("== 全样本最优 vs walk-forward（作弊对照）==")
@@ -173,8 +180,9 @@ def main() -> None:
 
     out = STORE_DIR / "walkforward_results"
     out.mkdir(parents=True, exist_ok=True)
-    fold_df.to_parquet(out / f"folds_{index_code}.parquet", index=False)
-    nav_oos.rename("nav").to_frame().to_parquet(out / f"nav_oos_{index_code}.parquet")
+    suffix = "_div" if strategy == "dividend" else ""
+    fold_df.to_parquet(out / f"folds_{index_code}{suffix}.parquet", index=False)
+    nav_oos.rename("nav").to_frame().to_parquet(out / f"nav_oos_{index_code}{suffix}.parquet")
     print()
     print(f">> 结果已保存到 {out}")
 

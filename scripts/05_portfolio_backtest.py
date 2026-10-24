@@ -15,11 +15,12 @@ import pandas as pd
 
 from config import STORE_DIR
 from src.data.storage import ParquetStore
-from src.data import universe
+from src.data import financials, universe
 from src.data.market import get_kline
 from src.analysis.factors import build_factor_panel
 from src.analysis.plot import plot_backtest
 from src.strategies.multi_factor import (momentum_lowvol_topn,
+                                         turnover_lowvol_dividend_topn,
                                          turnover_lowvol_reversal_topn)
 from src.backtest.portfolio import portfolio_performance, run_portfolio_backtest
 
@@ -42,9 +43,21 @@ def main() -> None:
           f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
 
     strategy = sys.argv[4] if len(sys.argv) > 4 else "corrected"
+    div_panel = None
+    if strategy == "dividend":
+        try:
+            div_panel = financials.load_dividend_panel(store, symbols)
+        except Exception as e:  # noqa: BLE001
+            print(f"   [warn] 分红面板加载失败: {e}")
+            strategy = "corrected"
+    if div_panel is not None:
+        panel = build_factor_panel(store, symbols, start=START_DATE,
+                                   pit_constituents=pit, dividend_panel=div_panel)
     print(f">> 策略[{strategy}]：每 {rebalance} 交易日调仓，Top {top_n} 等权")
     if strategy == "legacy":
         W = momentum_lowvol_topn(panel, top_n=top_n, rebalance_days=rebalance)
+    elif strategy == "dividend":
+        W = turnover_lowvol_dividend_topn(panel, top_n=top_n, rebalance_days=rebalance)
     else:
         W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=rebalance)
     print(f"   信号日 {len(W)} 个，覆盖标的 {W.shape[1]} 只")
@@ -93,7 +106,7 @@ def main() -> None:
 
     out = STORE_DIR / "portfolio_results"
     out.mkdir(parents=True, exist_ok=True)
-    tag = f"{index_code}_top{top_n}_reb{rebalance}"
+    tag = f"{index_code}_top{top_n}_reb{rebalance}" + ("_div" if strategy == "dividend" else "")
     res["nav"].rename("nav").to_frame().to_parquet(out / f"nav_{tag}.parquet")
     W.to_parquet(out / f"weights_{tag}.parquet")
 

@@ -180,7 +180,7 @@ const accLabel = computed(() =>
       <NavChart :account="account" :label="accLabel" />
 
       <!-- 回测与样本外（原 15_dashboard 的职能） -->
-      <BacktestPanel />
+      <BacktestPanel :account="account" />
 
       <!-- 持仓 + 订单 -->
       <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
