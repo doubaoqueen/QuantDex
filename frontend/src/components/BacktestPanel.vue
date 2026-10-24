@@ -11,8 +11,14 @@ let timer = null
 const onResize = () => chart?.resize()
 
 async function load() {
-  data.value = await api.get('/api/backtest').catch(() => null)
-  render()
+  const r = await api.get('/api/backtest').catch(e => ({ error: String(e) }))
+  data.value = r
+  if (r && r.error) {
+    // 接口出错（多为旧版本页面对话/瞬时故障）：稍后自动重试
+    setTimeout(load, 5000)
+  } else {
+    render()
+  }
 }
 
 function render() {
@@ -145,7 +151,13 @@ onUnmounted(() => {
       </div>
     </div>
     <div v-else class="py-10 text-center text-sm text-slate-400">
-      暂无回测数据（先运行 scripts/05 与 scripts/06）
+      <template v-if="data && data.error">
+        回测数据加载失败（{{ data.error }}）<span class="live-dot">· 自动重试中</span>
+      </template>
+      <template v-else>
+        暂无回测数据——先运行 <code class="rounded bg-slate-100 px-1">scripts/05</code> 与
+        <code class="rounded bg-slate-100 px-1">scripts/06</code> 生成结果
+      </template>
     </div>
   </div>
 </template>

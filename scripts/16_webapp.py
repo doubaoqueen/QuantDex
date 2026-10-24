@@ -149,6 +149,46 @@ def trades(acc, limit=30):
         conn.close()
 
 
+def rebalance_diff(acc):
+    """调仓审批视图：待成交订单 -> 当前权重 vs 调整后权重 对比。
+
+    目标权重按订单参考价（信号日收盘）近似：市值 = 持仓股数×最新收盘 ± 订单金额。
+    """
+    conn = _db(acc)
+    if conn is None:
+        return {"rows": [], "nav": None}
+    try:
+        pend = pd.read_sql_query(
+            "SELECT id, symbol, side, qty, price, amount, fill_date FROM trade_log "
+            "WHERE status='pending' ORDER BY symbol", conn)
+        last_pos = pd.read_sql_query(
+            "SELECT symbol, shares, close FROM positions "
+            "WHERE date=(SELECT MAX(date) FROM positions)", conn)
+        snap = pd.read_sql_query(
+            "SELECT total_nav FROM account_snapshot ORDER BY date DESC LIMIT 1", conn)
+    finally:
+        conn.close()
+    nav = float(snap["total_nav"].iloc[0]) if len(snap) else None
+    if pend.empty or not nav:
+        return {"rows": [], "nav": nav}
+    mv = {str(r.symbol): float(r.shares) * float(r.close)
+          for r in last_pos.itertuples(index=False)}
+    rows = []
+    for o in pend.itertuples(index=False):
+        sym = str(o.symbol)
+        cur_mv = mv.get(sym, 0.0)
+        delta = float(o.amount) if o.side == "buy" else -float(o.amount)
+        tgt_mv = max(cur_mv + delta, 0.0)
+        rows.append({
+            "id": int(o.id), "symbol": sym, "side": o.side,
+            "qty": float(o.qty), "price": float(o.price), "fill_date": o.fill_date,
+            "cur_weight": cur_mv / nav,
+            "tgt_weight": tgt_mv / nav,
+            "delta_weight": (tgt_mv - cur_mv) / nav,
+        })
+    return {"rows": rows, "nav": nav}
+
+
 def backtest():
     """回测/样本外结果（05/06 的 parquet 产物 + 基准），供前端回测面板（替代 15_dashboard）。"""
     import numpy as np
@@ -537,11 +577,14 @@ loadAll();loadFreshness();setInterval(loadAll,15000);
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, code, obj, ctype="application/json; charset=utf-8"):
+    def _send(self, code, obj, ctype="application/json; charset=utf-8",
+              cache=None):
         body = obj if isinstance(obj, bytes) else json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if cache:
+            self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(body)
 
@@ -552,12 +595,15 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 static = _serve_static("index.html")
                 if static:
-                    return self._send(200, static[0], static[1])
-                return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                    # 入口页不缓存：保证发版后刷新即得新版（assets 文件名带哈希可长缓存）
+                    return self._send(200, static[0], static[1], cache="no-cache")
+                return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8",
+                                  cache="no-cache")
             if not u.path.startswith("/api/"):
                 static = _serve_static(u.path)      # /assets/*.js|css 等前端产物
                 if static:
-                    return self._send(200, static[0], static[1])
+                    return self._send(200, static[0], static[1],
+                                       cache="public, max-age=604800")
             if u.path == "/api/overview":
                 return self._send(200, overview(q.get("account", ["large"])[0]))
             if u.path == "/api/nav_history":
@@ -567,6 +613,8 @@ class Handler(BaseHTTPRequestHandler):
                                                q.get("limit", ["30"])[0]))
             if u.path == "/api/backtest":
                 return self._send(200, backtest())
+            if u.path == "/api/rebalance_diff":
+                return self._send(200, rebalance_diff(q.get("account", ["large"])[0]))
             if u.path == "/api/positions":
                 return self._send(200, {"rows": positions(q.get("account", ["large"])[0])})
             if u.path == "/api/orders":
