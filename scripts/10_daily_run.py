@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-每日一键：更新 PIT 历史成员行情 → 影子盘流水线（两个账户：大盘 / 小资金）。
+每日一键：更新 PIT 历史成员行情 → 影子盘流水线（三个账户）。
 
 账户：
-  - large：100 万虚拟，Top50 等权，用于观察策略/大盘
-  - small：2000 元虚拟，整手小组合（最多 3 只），作为未来实盘建仓模拟
-    → data/store/sim/ledger_2000.sqlite，日报 reports/small/
+  - large：100 万虚拟，现行策略（低换手+低波+反转 Top50 等权）
+  - small：2000 元虚拟，整手小组合（最多 3 只），实盘建仓模拟
+  - div  ：100 万虚拟，红利版（低换手+低波+股息率，D-027）——与现行策略并行对比
+    → data/store/sim/ledger_div.sqlite，日报 reports/div/
 
 用法：
-    python scripts/10_daily_run.py              # 完整每日流程（两个账户 + 邮件）
+    python scripts/10_daily_run.py              # 完整每日流程（三个账户 + 邮件）
     python scripts/10_daily_run.py --no-push    # 不发送邮件
-
-建议 Windows 任务计划每天 19:00 运行本脚本（收盘后）。
 """
 import sys
 
@@ -62,6 +61,11 @@ def main() -> None:
     run_pipeline(capital=2000.0, push=push,
                  db_path=STORE_DIR / "sim" / "ledger_2000.sqlite",
                  label="small", max_positions=3)
+
+    print("\n>> [账户 div] 影子盘流水线（100 万 / 红利版：低换手+低波+股息率）...")
+    run_pipeline(push=push,
+                 db_path=STORE_DIR / "sim" / "ledger_div.sqlite",
+                 label="div", strategy="dividend")
 
 
 if __name__ == "__main__":

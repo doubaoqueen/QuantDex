@@ -42,6 +42,7 @@ FACTOR_DESC = {
     "rsi_14": "14日RSI（>70超买、<30超卖）",
     "ma60_bias": "收盘价相对60日均线的偏离度（乖离，过大易回归）",
     "amihud_20": "Amihud非流动性 |收益|/成交额 的20日均值（越大越缺乏流动性）",
+    "dy_ttm": "股息率：过去365日每股分红(除权日已过)/现价（红利风格）",
 }
 
 
@@ -95,6 +96,7 @@ def build_factor_panel(
     factor_names: list[str] | None = None,
     adjust: str = "qfq",
     pit_constituents: pd.DataFrame | None = None,
+    dividend_panel: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     读取多标的日线 -> 算原始因子 -> 拼成长表 -> 每个交易日截面 rank(pct)。
@@ -105,9 +107,19 @@ def build_factor_panel(
     pit_constituents: 传入 point-in-time 成分表（universe.load_pit_constituents 的输出）
     时，面板只保留「当天确实是该指数成分」的 (date, symbol) 行——消除幸存者偏差。
     判定口径：in_date <= date < out_date，out_date 为空视为至今仍是成分。
+
+    dividend_panel: 传入分红面板（financials.load_dividend_panel 输出：
+    date=除权日, symbol, dividend=每股税前红利）时，追加计算股息率因子 dy_ttm
+    （过去 365 日已除权分红 / 现价；除权日未到的分红不进窗口，无前视）。
     """
     factor_names = factor_names or FACTOR_NAMES
-    keep = ["date", "symbol", "close", "ret", *factor_names]
+    extra = ["dy_ttm"] if dividend_panel is not None else []
+    keep = ["date", "symbol", "close", "ret", *factor_names, *extra]
+    div_by_sym: dict = {}
+    if dividend_panel is not None:
+        d = dividend_panel.copy()
+        d["date"] = pd.to_datetime(d["date"])
+        div_by_sym = {str(k): g for k, g in d.groupby("symbol")}
     frames = []
 
     for sym in symbols:
@@ -119,6 +131,14 @@ def build_factor_panel(
         df = store.read("daily", name,
                         columns=["date", "symbol", "close", "amount", "turnover"])
         raw = compute_raw_factors(df)
+        if code in div_by_sym:
+            g = div_by_sym[code]
+            s = g.groupby("date")["dividend"].sum().sort_index()
+            daily = s.reindex(pd.DatetimeIndex(raw["date"])).fillna(0.0)
+            ttm = daily.rolling("365D").sum()
+            raw["dy_ttm"] = ttm.to_numpy() / raw["close"].to_numpy()
+        elif extra:
+            raw["dy_ttm"] = np.nan
         frames.append(raw[keep])
 
     if not frames:
@@ -142,7 +162,8 @@ def build_factor_panel(
         panel = panel.reset_index(drop=True)
 
     # 截面 rank：同一天所有股票横向排名为百分位（一次 groupby 完成全部因子）
-    panel[factor_names] = panel.groupby("date")[factor_names].rank(pct=True)
+    rank_cols = [*factor_names, *extra]
+    panel[rank_cols] = panel.groupby("date")[rank_cols].rank(pct=True)
 
     panel = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
     return panel
