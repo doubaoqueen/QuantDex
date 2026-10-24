@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import { fmt } from '../api.js'
 
-const props = defineProps({ rows: Array, account: String })
+const props = defineProps({ rows: Array, account: String, alerts: Array })
 
 const sortKey = ref('weight')
 const sortAsc = ref(false)
@@ -56,6 +56,15 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
 
 <template>
   <div class="h-full rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+    <!-- 持仓预警：距持有期高点回撤 ≥10%（仅提醒；处置类规则已被回测否定 D-026） -->
+    <div v-if="alerts && alerts.length" class="mb-2 flex flex-wrap items-center gap-1.5">
+      <span class="text-xs font-medium text-rose-700">持仓预警</span>
+      <span v-for="a in alerts" :key="a.symbol" class="tabular rounded-full px-2 py-0.5 text-xs"
+            :class="a.level==='重度' ? 'bg-rose-600 text-white' : 'bg-amber-100 text-amber-800'"
+            :title="`持有自 ${a.held_since} · 高点 ${fmt.n(a.peak)} → 现价 ${fmt.n(a.close)}`">
+        {{ a.symbol }} 距持有期高点 {{ (a.dd_peak*100).toFixed(1) }}%
+      </span>
+    </div>
     <div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-sm font-semibold">持仓</span>
       <span class="text-xs text-slate-400">{{ account === 'large' ? '大账户' : '小账户' }} · {{ (rows||[]).length }} 只</span>
