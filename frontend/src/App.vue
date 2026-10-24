@@ -19,6 +19,7 @@ const positions = ref([])
 const orders = ref([])
 const trades = ref([])
 const ops = ref([])
+const alerts = ref([])
 const freshness = ref(null)
 const toast = ref('')
 let toastTimer = null
@@ -65,12 +66,13 @@ const greenOpacity = computed(() => (themeView.value.green > 0.001 ? 0.16 + 0.30
 // ---------------------------------------------------------------- 数据
 async function loadAccountScoped() {
   const acc = account.value
-  const [ov, pos, ord, trd, op] = await Promise.all([
+  const [ov, pos, ord, trd, op, al] = await Promise.all([
     api.get(`/api/overview?account=${acc}`).catch(() => null),
     api.get(`/api/positions?account=${acc}`).catch(() => ({ rows: [] })),
     api.get(`/api/orders?account=${acc}`).catch(() => ({ rows: [] })),
     api.get(`/api/trades?account=${acc}`).catch(() => ({ rows: [] })),
-    api.get(`/api/ops?account=${acc}`).catch(() => ({ rows: [] }))
+    api.get(`/api/ops?account=${acc}`).catch(() => ({ rows: [] })),
+    api.get(`/api/position_alerts?account=${acc}`).catch(() => ({ rows: [] }))
   ])
   if (acc !== account.value) return          // 切换竞态保护
   if (acc === 'large') overviewL.value = ov; else overviewS.value = ov
@@ -78,6 +80,7 @@ async function loadAccountScoped() {
   orders.value = ord.rows || []
   trades.value = trd.rows || []
   ops.value = op.rows || []
+  alerts.value = al.rows || []
 }
 
 async function loadCommon() {
@@ -178,7 +181,7 @@ const accLabel = computed(() =>
       <!-- 持仓 + 订单 -->
       <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div class="xl:col-span-2">
-          <PositionsTable :rows="positions" :account="account" />
+          <PositionsTable :rows="positions" :account="account" :alerts="alerts" />
         </div>
         <OrdersPanel :orders="orders" :trades="trades" :account="account"
                      @changed="loadAccountScoped" />

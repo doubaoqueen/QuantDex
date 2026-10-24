@@ -189,6 +189,48 @@ def rebalance_diff(acc):
     return {"rows": rows, "nav": nav}
 
 
+def position_alerts(acc):
+    """持仓预警：距持有期最高收盘回撤 <= -10% 的标的。
+
+    仅提醒、不自动处置——处置类规则（减半/清仓/条件式）已被回测否定（D-026）：
+    该策略属低波/低换手横截面组合，个股止损系统性卖在低点、回撤却不改善。
+    """
+    conn = _db(acc)
+    if conn is None:
+        return {"rows": []}
+    try:
+        pos = pd.read_sql_query(
+            "SELECT symbol, shares, close FROM positions "
+            "WHERE date=(SELECT MAX(date) FROM positions)", conn)
+        first = pd.read_sql_query(
+            "SELECT symbol, MIN(date) AS first_date FROM positions GROUP BY symbol", conn)
+    finally:
+        conn.close()
+    first_map = {str(r.symbol): pd.Timestamp(r.first_date)
+                 for r in first.itertuples(index=False)}
+    rows = []
+    for r in pos.itertuples(index=False):
+        sym = str(r.symbol)
+        try:
+            k = get_kline(sym, adjust="qfq", store=_store)
+            s = pd.Series(k["close"].astype(float).values,
+                          index=pd.to_datetime(k["date"])).sort_index()
+            since = s[s.index >= first_map.get(sym, s.index[0])]
+            if len(since) < 2:
+                continue
+            peak, last = float(since.max()), float(since.iloc[-1])
+            dd = last / peak - 1.0
+            if dd <= -0.10:
+                rows.append({"symbol": sym, "close": last, "peak": peak,
+                             "dd_peak": dd,
+                             "held_since": str(first_map.get(sym, pd.NaT))[:10],
+                             "level": "重度" if dd <= -0.15 else "预警"})
+        except Exception:  # noqa: BLE001
+            continue
+    rows.sort(key=lambda x: x["dd_peak"])
+    return {"rows": rows}
+
+
 def backtest():
     """回测/样本外结果（05/06 的 parquet 产物 + 基准），供前端回测面板（替代 15_dashboard）。"""
     import numpy as np
@@ -615,6 +657,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, backtest())
             if u.path == "/api/rebalance_diff":
                 return self._send(200, rebalance_diff(q.get("account", ["large"])[0]))
+            if u.path == "/api/position_alerts":
+                return self._send(200, position_alerts(q.get("account", ["large"])[0]))
             if u.path == "/api/positions":
                 return self._send(200, {"rows": positions(q.get("account", ["large"])[0])})
             if u.path == "/api/orders":

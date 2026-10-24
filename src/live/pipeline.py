@@ -353,12 +353,20 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             led.add_pending(orders_df)
 
     # 5) 持仓表（最新收盘价） + 快照 + 日报
+    first_held = {}
+    try:
+        allpos = led.positions()
+        first_held = allpos.groupby(allpos["symbol"].astype(str))["date"].min().to_dict()
+    except Exception:  # noqa: BLE001
+        pass
     pos_rows = []
     for s, sh in new_shares.items():
         if sh <= 0:
             continue
         px = prices_close.get(s)
         prev_px = None
+        peak = None
+        dd_peak = None
         try:
             df = get_kline(s, adjust="qfq", store=store)
             k2 = df[pd.to_datetime(df["date"]) <= latest]
@@ -366,12 +374,19 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                 px = float(k2["close"].iloc[-1])
             if len(k2) >= 2:
                 prev_px = float(k2["close"].iloc[-2])
+            fd = first_held.get(str(s))
+            if fd is not None and len(k2):
+                k3 = k2[pd.to_datetime(k2["date"]) >= pd.Timestamp(fd)]["close"].astype(float)
+                if len(k3) >= 2 and float(k3.max()) > 0:
+                    peak = float(k3.max())
+                    dd_peak = float(k3.iloc[-1]) / peak - 1.0
         except Exception:  # noqa: BLE001
             px = px or 0.0
         chg = (px / prev_px - 1.0) if (prev_px and px) else None
         pnl = (px - prev_px) * sh if (prev_px and px) else 0.0
         pos_rows.append({"symbol": s, "shares": sh, "close": px,
                          "prev_close": prev_px, "pct_chg": chg, "pnl": pnl,
+                         "peak": peak, "dd_peak": dd_peak,
                          "weight": (sh * px) / nav_now if nav_now else 0.0})
     positions = pd.DataFrame(pos_rows)
     if len(positions):
@@ -468,6 +483,19 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             lines.append(f"| {r.symbol} | {r.side} | {r.qty:.0f} | {r.price:.2f} |")
     else:
         lines.append("- 无")
+
+    # 持仓预警：距持有期高点回撤 >=10%（仅提醒；个股止损类规则回测为负贡献，见 D-026）
+    alert_rows = sorted(
+        (r for r in pos_rows
+         if r.get("dd_peak") is not None and r["dd_peak"] <= -0.10),
+        key=lambda r: r["dd_peak"])
+    if alert_rows:
+        lines += ["", "## 持仓预警（距持有期高点回撤 ≥10%，仅提醒不自动处置）",
+                  "| 代码 | 现价 | 持有期高点 | 回撤 |", "|---|---|---|---|"]
+        for r in alert_rows:
+            lines.append(f"| {r['symbol']} | {r['close']:.2f} | {r['peak']:.2f} |"
+                         f" {r['dd_peak']:+.1%} |")
+        lines.append("> 去留由 20 日调仓的分数重排决定；人工否决请用控制台「调仓审批」。")
 
     if len(positions):
         lines += ["", "## 前 10 大持仓",
