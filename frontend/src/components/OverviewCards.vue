@@ -4,11 +4,11 @@ import { fmt } from '../api.js'
 const props = defineProps({ accounts: Array, overviews: Object, selected: String })
 const emit = defineEmits(['select'])
 
-const shortName = { large: '大账户', small: '小账户', div: '红利' }
+const shortName = { large: '大账户', small: '小账户', div: '红利', topk: '换手' }
 </script>
 
 <template>
-  <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
     <div v-for="a in accounts" :key="a.key"
          class="cursor-pointer rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur transition"
          :class="selected === a.key ? 'ring-2 ring-sky-500' : 'hover:ring-1 hover:ring-slate-300'"

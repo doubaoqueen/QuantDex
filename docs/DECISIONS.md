@@ -339,3 +339,41 @@
 - 若届时实施：轻量版优先（因子注册表 dict[str, 公式/lambda] + 微型求值器），
   不引入 Qlib 本体。对应 vault/01-概念/Qlib七课.md 借鉴清单第 3 条。
 - 复核：触发条件出现时。
+
+### D-031 对标 qlib 三件套：表达式工厂 + TopkDropout 账户 + 实验存档（2026-10-24）
+背景：用户完成 qlib 七课调研后下达整合工程；四项见解（表达式/换手/因子产能/
+Recorder）全部落地，现有手写因子保留不割。
+
+① 表达式引擎 `src/analysis/expr.py`（~180 行零依赖）：因子=字符串公式，
+  语法与 qlib 同形（Ref/Mean/Std/Corr/Greater...；Ref n>0 过去、n<0 未来只许标签），
+  ±inf 自动转 NaN。**维护铁律（用户决策）：新因子一律写表达式进
+  `expr_factors.py`，不再手写 pandas**。AlphaLite32 因子库（K线6/动量4/波动3/
+  均线3/位置3/量能4/换手3/量价2/流动性2/结构2）——真数据优势：含真实换手率。
+  检验（22_factor_factory.py，PIT 面板 2018-2026）：9/32 显著（|t20|>2），
+  最强 TSTD20（换手率波动）IC20 -0.064/t -2.85——**不在现有 9 因子里的新信息**；
+  显著因子全部为负向"冷门"家族，与已知风格一致。⚠️ 本筛选是全样本 IC，
+  挑因子进策略必须先过 walk-forward（反转因子的教训）。
+
+② TopkDropout 第 4 影子账户（用户决策：新开而非改现有）：
+  `topk_dropout_topn` 严格按 qlib 语义（换出≤n_drop/期、防卖高买低）适配
+  权重矩阵接口；与 large **同因子**，唯一变量=换手机制——干净 A/B。
+  保真回测（2018-2026）：topkdrop **+53.22%/MDD -26.46%/成本 51,806 元/
+  年换手 ~274%** vs 现行 strict +30.35%/-29.88%/119,372 元/1215%——
+  **换手砍 77%、收益 +23pp、回撤更浅**。用户"换手逻辑是否合理"的疑问
+  被实验坐实：strict 全量 diff 无换手上界，边缘股排名抖动反复进出。
+  账户 topk（ledger_topk.sqlite）已入 10_daily_run/webapp/前端，
+  与现行并行前瞻验证；**不切换现有账户**（维持 D-010 立场）。
+
+③ 实验存档 Recorder 轻量版 `src/analysis/experiments.py`：
+  record(name,params,metrics,notes,artifacts) → JSON（含 git commit），
+  list_experiments() 对比；05/06/22 已自动挂钩。不用 MLflow（单人 JSON+git 够用）。
+  qlib Recorder 的本质是"看不见的后勤"——价值在三个月后找回实验配置。
+
+④ 模型判断（第 1 课补充，用户问设备是否够）：qlib 模型≠LLM，是 LightGBM/
+  GRU 级小型回归器；用户设备（14600KF+32G+5070）绰绰有余。**结论：值得做，
+  排期在表达式工厂之后**——用显著因子做特征、LightGBM 打分、WF 每年重训，
+  样本外打赢等权打分才上线。本轮不实施。
+
+修复：expr tokenizer 科学计数法（1e-9 被拆成 e 标识符）；pipeline close 后
+重开连接的上轮遗漏在测试中暴露并已修。测试 32 项全过。
+- 复核：topk 账户与 large 并行（11-20 同窗口）；显著表达式因子入选策略前过 WF。

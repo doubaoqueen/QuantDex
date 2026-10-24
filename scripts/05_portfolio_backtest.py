@@ -20,6 +20,7 @@ from src.data.market import get_kline
 from src.analysis.factors import build_factor_panel
 from src.analysis.plot import plot_backtest
 from src.strategies.multi_factor import (momentum_lowvol_topn,
+                                         topk_dropout_topn,
                                          turnover_lowvol_dividend_topn,
                                          turnover_lowvol_reversal_topn)
 from src.backtest.portfolio import portfolio_performance, run_portfolio_backtest
@@ -58,6 +59,10 @@ def main() -> None:
         W = momentum_lowvol_topn(panel, top_n=top_n, rebalance_days=rebalance)
     elif strategy == "dividend":
         W = turnover_lowvol_dividend_topn(panel, top_n=top_n, rebalance_days=rebalance)
+    elif strategy == "topkdrop":
+        W = topk_dropout_topn(panel,
+                              [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+                              topk=top_n, n_drop=5, rebalance_days=rebalance)
     else:
         W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=rebalance)
     print(f"   信号日 {len(W)} 个，覆盖标的 {W.shape[1]} 只")
@@ -106,9 +111,22 @@ def main() -> None:
 
     out = STORE_DIR / "portfolio_results"
     out.mkdir(parents=True, exist_ok=True)
-    tag = f"{index_code}_top{top_n}_reb{rebalance}" + ("_div" if strategy == "dividend" else "")
+    suffix = "_div" if strategy == "dividend" else ("_tk" if strategy == "topkdrop" else "")
+    tag = f"{index_code}_top{top_n}_reb{rebalance}" + suffix
     res["nav"].rename("nav").to_frame().to_parquet(out / f"nav_{tag}.parquet")
     W.to_parquet(out / f"weights_{tag}.parquet")
+
+    try:
+        from src.analysis.experiments import record
+        record("portfolio_backtest",
+               params={"index": index_code, "top_n": top_n, "rebalance": rebalance,
+                       "strategy": strategy},
+               metrics={k: (float(v) if isinstance(v, (int, float)) else v)
+                        for k, v in perf.items()},
+               notes="05 保真口径（佣金含最低5元/印花/过户/滑点/涨跌停停牌跳过）",
+               artifacts=[f"portfolio_results/nav_{tag}.parquet"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[experiments] 记录失败: {e}")
 
     # 复用 plot.plot_backtest：构造其所需列
     plot_df = pd.DataFrame({"date": res["dates"], "nav": res["nav"].values,

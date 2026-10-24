@@ -32,7 +32,8 @@ from src.data.market import get_kline
 from src.data.storage import ParquetStore
 from src.live.ledger import Ledger
 from src.risk.risk import apply_risk
-from src.strategies.multi_factor import (turnover_lowvol_dividend_topn,
+from src.strategies.multi_factor import (topk_dropout_topn,
+                                         turnover_lowvol_dividend_topn,
                                          turnover_lowvol_reversal_topn)
 
 FEE = 0.00025       # 券商佣金率（单边）
@@ -282,6 +283,11 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     if strategy == "dividend":
         W = turnover_lowvol_dividend_topn(panel, top_n=top_n,
                                           rebalance_days=rebalance)
+    elif strategy == "topkdrop":
+        # 与 corrected 相同因子，仅换手机制不同（TopkDropout）——干净 A/B（D-031）
+        W = topk_dropout_topn(panel,
+                              [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+                              topk=top_n, n_drop=5, rebalance_days=rebalance)
     else:
         W = turnover_lowvol_reversal_topn(panel, top_n=top_n,
                                           rebalance_days=rebalance)

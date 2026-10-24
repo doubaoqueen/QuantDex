@@ -51,7 +51,7 @@ QuantDex/
 │   ├── data/        # 数据层：storage 仓库 / sources 数据源 / market 行情 /
 │   │                #   schema 代码与复权 / universe 股票池与PIT / financials 财务分红 /
 │   │                #   valuation 估值 / moneyflow 资金流 / macro 宏观 / quality 质检
-│   ├── analysis/    # 指标/因子/因子检验/报告/绘图(Pillow)
+│   ├── analysis/    # 指标/因子(手写+表达式工厂)/因子检验/实验存档/报告/绘图
 │   ├── strategies/  # 双均线 / 多因子(动量+低波、低换手+低波+反转)
 │   ├── backtest/    # engine 单标的 / portfolio 组合 / metrics
 │   ├── risk/        # 单票上限/总仓/回撤断路器
@@ -90,6 +90,7 @@ QuantDex/
 | **本地控制台（Vue3）** | `16_webapp.py` + `frontend/` | 本地 | http://127.0.0.1:8765 | 无 |
 | **P0 参考数据** | `20_fetch_reference_data.py` | 网络 | 全量证券/申万行业/复权因子 | 00 |
 | **市场状态过滤器回测** | `21_regime_filter_backtest.py` | 本地 | `portfolio_results/regime_filter_*` | 04 |
+| **表达式因子工厂检验** | `22_factor_factory.py` | 本地 | `factor_results/expr_ic_summary.parquet` | 00 |
 | 单标的演示 | `demo_analysis.py` | 本地 | 图 + 回测 | 02 |
 | 测试 | `tests/run_tests.py` | 无 | 22 passed | 无 |
 

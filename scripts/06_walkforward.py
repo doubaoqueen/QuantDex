@@ -178,6 +178,18 @@ def main() -> None:
         print(f"  walk-forward 样本外: IR={ir:.2f}, 年化={ann:.2%}")
         print("  → 两者差距 = 参数过拟合的真实代价")
 
+    try:
+        from src.analysis.experiments import record
+        record("walkforward",
+               params={"index": index_code, "strategy": strategy,
+                       "test_years": TEST_YEARS, "grid": str(GRID)},
+               metrics={"oos_total": total, "oos_ann": ann, "oos_ir": ir,
+                        "oos_mdd": mdd, "n_folds": len(folds)},
+               notes="06 walk-forward 样本外（每年仅用此前数据选参）",
+               artifacts=[f"walkforward_results/folds_{index_code}{suffix if (suffix := '_div' if strategy == 'dividend' else '') else ''}.parquet"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[experiments] 记录失败: {e}")
+
     out = STORE_DIR / "walkforward_results"
     out.mkdir(parents=True, exist_ok=True)
     suffix = "_div" if strategy == "dividend" else ""

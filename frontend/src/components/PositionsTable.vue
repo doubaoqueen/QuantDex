@@ -68,7 +68,7 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
   <div class="h-full rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
     <div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-sm font-semibold">持仓</span>
-      <span class="text-xs text-slate-400">{{ account === 'large' ? '大账户' : account === 'small' ? '小账户' : '红利账户' }} · {{ (rows||[]).length }} 只</span>
+      <span class="text-xs text-slate-400">{{ ({large:'大账户',small:'小账户',div:'红利账户',topk:'换手账户'})[account] }} · {{ (rows||[]).length }} 只</span>
       <span class="ml-auto text-xs">
         <span class="text-red-600">涨 {{ upDown.up }}</span>
         <span class="mx-1 text-slate-300">/</span>

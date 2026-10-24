@@ -86,6 +86,69 @@ def turnover_lowvol_dividend_topn(
         top_n=top_n, rebalance_days=rebalance_days)
 
 
+def _daily_score(panel: pd.DataFrame, factors: list[tuple[str, int]]) -> pd.DataFrame:
+    """逐日截面打分（方向调整后 rank 均值），返回 date×symbol 的 score 宽表。"""
+    cols = [f for f, _ in factors]
+    missing = [c for c in cols if c not in panel.columns]
+    if missing:
+        raise KeyError(f"面板缺少因子列: {missing}")
+    p = panel[["date", "symbol", *cols]].dropna().copy()
+    score = None
+    for f, direction in factors:
+        r = p[f] if direction > 0 else (1.0 - p[f])
+        score = r if score is None else score + r
+    p["score"] = score / len(factors)
+    return p.pivot(index="date", columns="symbol", values="score")
+
+
+def topk_dropout_topn(
+    panel: pd.DataFrame,
+    factors: list[tuple[str, int]],
+    topk: int = 50,
+    n_drop: int = 5,
+    rebalance_days: int = 20,
+) -> pd.DataFrame:
+    """TopkDropout 选股（对标 qlib TopkDropoutStrategy，D-031）。
+
+    与 composite_topn 的区别：strict 重排名每次调仓把"跌出 topk"的全部卖出，
+    边缘股票反复进出（年换手 1215% 的直接原因）；TopkDropout 每期**最多换出
+    n_drop 只**——持仓∪候选合并按分数排序，卖出垫底 n_drop 中仍持有的
+    （防"卖高买低"），买入同数量最高分新标的。换手上界 = n_drop/topk = 10%/期。
+
+    qlib 原语义（signal_strategy.py L170-231，用户已对照源码验证）：
+      today = 分数最高的 (n_drop + topk - len(held)) 只非持仓股
+      comb  = 持仓 ∪ today，按分数降序
+      sell  = 持仓 ∩ comb 垫底 n_drop
+      buy   = today 前 (len(sell) + topk - len(held)) 只
+    输出 W 矩阵（index=调仓日，1/len(held) 等权），供组合引擎 T+1 执行。
+    """
+    score_piv = _daily_score(panel, factors)
+    dates = np.sort(score_piv.index.unique())
+    reb_dates = dates[::max(1, rebalance_days)]
+    held: list = []
+    rows: dict = {}
+    for d in reb_dates:
+        if d not in score_piv.index:
+            continue
+        s = score_piv.loc[d].dropna().sort_values(ascending=False)
+        if not held:
+            held = list(s.index[:topk])
+        else:
+            held_valid = [x for x in held if x in s.index]
+            n_slot = max(0, n_drop + topk - len(held_valid))
+            today = [x for x in s.index if x not in held_valid][:n_slot]
+            comb = s.reindex(held_valid + today).sort_values(ascending=False)
+            sell_set = set(comb.index[-n_drop:]) if len(comb) > n_drop else set()
+            sell = [x for x in held_valid if x in sell_set]
+            buy = today[: len(sell) + topk - len(held_valid)]
+            held = [x for x in held_valid if x not in set(sell)] + buy
+        if held:
+            rows[pd.Timestamp(d)] = pd.Series(1.0 / len(held), index=held)
+    W = pd.DataFrame(rows).T.fillna(0.0)
+    W.index.name = "date"
+    return W
+
+
 def momentum_lowvol_topn(
     panel: pd.DataFrame,
     top_n: int = 50,

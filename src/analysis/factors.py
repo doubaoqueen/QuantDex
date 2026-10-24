@@ -97,6 +97,7 @@ def build_factor_panel(
     adjust: str = "qfq",
     pit_constituents: pd.DataFrame | None = None,
     dividend_panel: pd.DataFrame | None = None,
+    expr_factors: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """
     读取多标的日线 -> 算原始因子 -> 拼成长表 -> 每个交易日截面 rank(pct)。
@@ -111,9 +112,14 @@ def build_factor_panel(
     dividend_panel: 传入分红面板（financials.load_dividend_panel 输出：
     date=除权日, symbol, dividend=每股税前红利）时，追加计算股息率因子 dy_ttm
     （过去 365 日已除权分红 / 现价；除权日未到的分红不进窗口，无前视）。
+
+    expr_factors: 传入表达式因子字典（{因子名: 表达式}，见 expr_factors.EXPR_FACTORS）
+    时，按表达式引擎逐标的计算并一并截面 rank——表达式只用 Ref(x, n>0)，无前视。
     """
     factor_names = factor_names or FACTOR_NAMES
     extra = ["dy_ttm"] if dividend_panel is not None else []
+    if expr_factors:
+        extra = [*extra, *expr_factors.keys()]
     keep = ["date", "symbol", "close", "ret", *factor_names, *extra]
     div_by_sym: dict = {}
     if dividend_panel is not None:
@@ -121,6 +127,8 @@ def build_factor_panel(
         d["date"] = pd.to_datetime(d["date"])
         div_by_sym = {str(k): g for k, g in d.groupby("symbol")}
     frames = []
+
+    _EXPR_FIELDS = ("open", "high", "low", "close", "volume", "amount", "turnover")
 
     for sym in symbols:
         code = normalize_code(sym)
@@ -137,8 +145,21 @@ def build_factor_panel(
             daily = s.reindex(pd.DatetimeIndex(raw["date"])).fillna(0.0)
             ttm = daily.rolling("365D").sum()
             raw["dy_ttm"] = ttm.to_numpy() / raw["close"].to_numpy()
-        elif extra:
+        elif extra and "dy_ttm" in extra:
             raw["dy_ttm"] = np.nan
+        if expr_factors:
+            from src.analysis.expr import evaluate
+            # 表达式需要 OHLCV 全字段：补读（列裁剪只对基础读取生效）
+            full = store.read("daily", name,
+                              columns=list(_EXPR_FIELDS))
+            fields = {c: full[c] for c in _EXPR_FIELDS if c in full.columns}
+            for fname, expr in expr_factors.items():
+                try:
+                    v = evaluate(expr, fields)
+                    raw[fname] = v.to_numpy()
+                except Exception as e:  # noqa: BLE001
+                    raw[fname] = np.nan
+                    print(f"[expr] {code} 因子 {fname} 计算失败: {e}")
         frames.append(raw[keep])
 
     if not frames:

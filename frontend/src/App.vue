@@ -14,7 +14,8 @@ import JobLog from './components/JobLog.vue'
 const accounts = [
   { key: 'large', label: '大账户（100万）' },
   { key: 'small', label: '小账户（2000元）' },
-  { key: 'div', label: '红利账户（100万）' }
+  { key: 'div', label: '红利账户（100万）' },
+  { key: 'topk', label: 'TopkDropout（100万）' }
 ]
 const account = ref('large')          // 当前选中账户，驱动全部面板与主题色
 const overviews = ref({})             // key -> overview
@@ -145,7 +146,7 @@ const accLabel = computed(() =>
           <button v-for="a in accounts" :key="a.key"
                   :class="account===a.key ? 'bg-slate-800 text-white' : 'bg-white'"
                   class="border-l border-slate-300 first:border-l-0 px-3 py-1.5"
-                  @click="switchAccount(a.key)">{{ a.key === 'large' ? '大账户' : a.key === 'small' ? '小账户' : '红利' }}</button>
+                  @click="switchAccount(a.key)">{{ ({large:'大账户',small:'小账户',div:'红利',topk:'换手'})[a.key] }}</button>
         </div>
         <span class="text-xs text-slate-500">{{ accLabel }}</span>
         <div class="ml-auto flex items-center gap-2">
