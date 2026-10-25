@@ -131,7 +131,8 @@ const accLabel = computed(() =>
 const currentStrategy = computed(() =>
   accounts.find(a => a.key === account.value)?.strategy || '')
 const menuOpen = ref(false)   // 兼容保留
-const openGroup = ref(null)   // 触屏点击兜底（桌面端以 hover 为主）
+const openGroup = ref(null)   // 触屏点击兜底：一级菜单
+const subOpen = ref(null)     // 触屏点击兜底：二级菜单
 
 // 巧思：账户行背景色 = 盈亏状态（A 股习惯：盈利红 / 亏损绿 / 未开仓灰）
 function rowCls(o) {
@@ -169,32 +170,53 @@ function cumText(o) {
           <span class="live-dot inline-block h-2.5 w-2.5 rounded-full bg-sky-500"></span>
           QuantDex 控制台
         </h1>
-        <nav class="flex flex-wrap items-center gap-1">
-          <div v-for="g in strategyGroups" :key="g.name" class="group relative">
-            <button class="rounded-lg px-2.5 py-1.5 text-sm font-medium transition"
-                    :class="isGroupActive(g) ? 'bg-slate-800 text-white' : 'hover:bg-slate-100'"
-                    @click="openGroup = openGroup === g.name ? null : g.name">
-              {{ shortStrategy(g.name) }}
-            </button>
-            <div v-if="openGroup === g.name" class="fixed inset-0 z-30" @click="openGroup = null"></div>
-            <div class="invisible absolute left-0 z-40 mt-1.5 w-[19rem] -translate-y-1 rounded-xl border border-slate-200 bg-white p-2 opacity-0 shadow-2xl transition-all duration-150
-                        group-hover:visible group-hover:translate-y-0 group-hover:opacity-100"
-                 :class="openGroup === g.name ? 'visible translate-y-0 opacity-100' : ''">
-              <div class="px-2 pb-1 pt-1.5 text-[11px] font-medium tracking-wide text-slate-400">
-                {{ g.name }}
-              </div>
-              <button v-for="a in g.accs" :key="a.key"
-                      @click="switchAccount(a.key); openGroup = null"
-                      class="mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm text-white shadow-sm transition hover:brightness-110"
-                      :class="rowCls(overviews[a.key])">
-                <span class="flex items-center gap-1.5 font-medium">
-                  <span class="w-4">{{ account === a.key ? '✓' : '' }}</span>{{ a.label }}
+        <div class="group relative">
+          <button class="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm hover:border-sky-400"
+                  @click="openGroup = openGroup ? null : 'root'">
+            <span>{{ shortStrategy(currentStrategy) }}</span>
+            <span class="text-xs text-slate-500">{{ accLabel }}</span>
+            <span class="text-[10px] text-slate-400 transition-transform duration-200"
+                  :class="(openGroup || menuOpen) && 'rotate-180'">▼</span>
+          </button>
+          <!-- 一级：全部策略（悬停触发按钮或面板内均保持展开） -->
+          <div v-if="openGroup === 'root'" class="fixed inset-0 z-30" @click="openGroup = null; subOpen = null"></div>
+          <div class="invisible absolute left-0 z-40 mt-1.5 w-52 -translate-y-1 rounded-xl border border-slate-200 bg-white p-1.5 opacity-0 shadow-2xl transition-all duration-150
+                      group-hover:visible group-hover:translate-y-0 group-hover:opacity-100"
+               :class="openGroup === 'root' ? 'visible translate-y-0 opacity-100' : ''">
+            <div v-for="g in strategyGroups" :key="g.name" class="group/sub relative">
+              <button class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition"
+                      :class="isGroupActive(g) ? 'bg-slate-100 font-semibold' : 'hover:bg-slate-50'"
+                      @click="subOpen = subOpen === g.name ? null : g.name">
+                <span class="flex items-center gap-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full"
+                        :class="isGroupActive(g) ? 'bg-sky-500' : 'bg-slate-300'"></span>
+                  {{ shortStrategy(g.name) }}
                 </span>
-                <span class="tabular text-xs font-semibold">{{ cumText(overviews[a.key]) }}</span>
+                <span class="text-[10px] text-slate-400"
+                      :class="subOpen === g.name && 'text-sky-500'">▸</span>
               </button>
+              <!-- 二级：该策略的账户（悬停策略行向右弹出） -->
+              <div class="invisible absolute left-full top-0 z-40 ml-1.5 w-64 -translate-x-1 rounded-xl border border-slate-200 bg-white p-2 opacity-0 shadow-2xl transition-all duration-150
+                          group-hover/sub:visible group-hover/sub:translate-x-0 group-hover/sub:opacity-100"
+                   :class="subOpen === g.name ? 'visible translate-x-0 opacity-100' : ''">
+                <div class="px-2 pb-1 pt-1.5 text-[11px] font-medium tracking-wide text-slate-400">
+                  {{ g.name }}
+                </div>
+                <button v-for="a in g.accs" :key="a.key"
+                        @click="switchAccount(a.key); openGroup = null; subOpen = null"
+                        class="mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm text-white shadow-sm transition hover:brightness-110"
+                        :class="rowCls(overviews[a.key])">
+                  <span class="flex items-center gap-1.5 font-medium">
+                    <span class="w-4">{{ account === a.key ? '✓' : '' }}</span>{{ a.label }}
+                  </span>
+                  <span class="tabular text-xs font-semibold">{{ cumText(overviews[a.key]) }}</span>
+                </button>
+              </div>
             </div>
+            <div class="px-3 pb-1 pt-1 text-[10px] text-slate-400">悬停策略查看账户 · 行色=盈亏</div>
           </div>
-        </nav>
+        </div>
+
         <span class="hidden text-xs text-slate-500 md:inline">{{ accLabel }}</span>
                 <div class="ml-auto flex items-center gap-2">
           <span v-if="freshness && !freshness.error"
