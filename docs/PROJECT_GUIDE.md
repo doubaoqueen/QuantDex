@@ -110,7 +110,7 @@ QuantDex/
 
 ### 研究层
 - **05_portfolio_backtest.py**：组合/截面回测。命令 `python scripts/05_portfolio_backtest.py [指数] [TopN] [调仓日] [corrected|legacy]`。当前结果（开盘执行口径 D-034）：+39.81%（2018–2026）、MDD -29.26%。
-- **06_walkforward.py**：逐年训练选参 → 样本外。当前 OOS +44.50%、年化 8.26%、IR 0.87、MDD -17.16%。
+- **06_walkforward.py**：逐年训练选参 → 样本外。开盘口径（D-034）：OOS +32.30%、年化 6.21%、IR 0.71、MDD -14.48%。
 - **11_neutralize_factors.py**：市值中性化（市值代理 = 成交额/(换手率/100)）。结论：turnover/vol 中性化后仍显著；amihud 翻正。
 - **demo_analysis.py**：单标的质检→概览→分年度→双均线回测→出图。
 
