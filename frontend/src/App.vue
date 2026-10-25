@@ -12,11 +12,20 @@ import OpsTable from './components/OpsTable.vue'
 import JobLog from './components/JobLog.vue'
 
 const accounts = [
-  { key: 'large', label: '大账户（100万）' },
-  { key: 'small', label: '小账户（2000元）' },
-  { key: 'div', label: '红利账户（100万）' },
-  { key: 'topk', label: 'TopkDropout（100万）' }
+  { key: 'large', label: '大账户（100万）', strategy: '现行版 · 低换手+低波+反转' },
+  { key: 'small', label: '小账户（2000元 · 执行验证）', strategy: '现行版 · 低换手+低波+反转' },
+  { key: 'div', label: '红利账户（100万）', strategy: '红利版 · +股息率' },
+  { key: 'topk', label: '换手账户（100万）', strategy: 'TopkDropout · 换手上界' }
 ]
+// 按策略分组：同策略可有多个账户（下拉分组展示）
+const strategyGroups = (() => {
+  const seen = new Map()
+  for (const a of accounts) {
+    if (!seen.has(a.strategy)) seen.set(a.strategy, [])
+    seen.get(a.strategy).push(a)
+  }
+  return [...seen.entries()].map(([name, accs]) => ({ name, accs }))
+})()
 const account = ref('large')          // 当前选中账户，驱动全部面板与主题色
 const overviews = ref({})             // key -> overview
 const regime = ref(null)
@@ -142,13 +151,16 @@ const accLabel = computed(() =>
           <span class="live-dot inline-block h-2.5 w-2.5 rounded-full bg-sky-500"></span>
           QuantDex 控制台
         </h1>
-        <div class="flex overflow-hidden rounded-lg border border-slate-300 text-sm">
-          <button v-for="a in accounts" :key="a.key"
-                  :class="account===a.key ? 'bg-slate-800 text-white' : 'bg-white'"
-                  class="border-l border-slate-300 first:border-l-0 px-3 py-1.5"
-                  @click="switchAccount(a.key)">{{ ({large:'大账户',small:'小账户',div:'红利',topk:'换手'})[a.key] }}</button>
-        </div>
-        <span class="text-xs text-slate-500">{{ accLabel }}</span>
+        <select :value="account" @change="switchAccount($event.target.value)"
+                class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium
+                       focus:border-sky-500 focus:outline-none">
+          <optgroup v-for="g in strategyGroups" :key="g.name" :label="g.name">
+            <option v-for="a in g.accs" :key="a.key" :value="a.key">{{ a.label }}</option>
+          </optgroup>
+        </select>
+        <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+          {{ accounts.find(a => a.key === account)?.strategy }}
+        </span>
         <div class="ml-auto flex items-center gap-2">
           <span v-if="freshness && !freshness.error"
                 class="rounded-full px-2.5 py-1 text-xs"
