@@ -223,6 +223,108 @@ def fees(acc):
     return {"summary": summary, "recent": recent}
 
 
+_CAND_CACHE = {"t": 0.0, "acc": None, "data": None}
+
+
+def candidates(acc):
+    """候选池（海选）：该账户策略在最新交易日对全部 PIT 成分打分的前 15 名。
+
+    分数与流水线同口径（截面 rank 合成）；标注持仓中/待成交/备选#N。
+    为速度只取每标的最近 420 行计算（滚动窗口足够），结果缓存 15 分钟。
+    """
+    import time as _t
+    now = _t.time()
+    if _CAND_CACHE["acc"] == acc and now - _CAND_CACHE["t"] < 900:
+        return _CAND_CACHE["data"]
+    import numpy as np
+    from src.data import financials, universe
+    from src.data.market import get_kline
+    from src.analysis.factors import compute_raw_factors
+
+    store = _store
+    is_div = (acc == "div")
+    symbols = universe.pit_union_symbols("000300", store)
+    div_by = {}
+    if is_div:
+        try:
+            dpanel = financials.load_dividend_panel(store, symbols)
+            dpanel["date"] = pd.to_datetime(dpanel["date"])
+            div_by = {str(k): g for k, g in dpanel.groupby("symbol")}
+        except Exception:  # noqa: BLE001
+            is_div = False
+    recs = []
+    for sym in symbols:
+        try:
+            k = get_kline(str(sym), adjust="qfq", store=store)
+        except Exception:  # noqa: BLE001
+            continue
+        if k is None or len(k) < 70:
+            continue
+        raw = compute_raw_factors(k.tail(420).reset_index(drop=True))
+        last = raw.iloc[-1]
+        if not all(np.isfinite(last[c]) for c in ("turnover_20", "vol_20", "rev_5")):
+            continue
+        rec = {"symbol": str(sym), "close": float(last["close"]),
+               "turnover_20": float(last["turnover_20"]),
+               "vol_20": float(last["vol_20"]), "rev_5": float(last["rev_5"])}
+        if is_div:
+            g = div_by.get(str(sym))
+            if g is None:
+                continue
+            sdiv = g.groupby("date")["dividend"].sum().sort_index()
+            daily = sdiv.reindex(pd.DatetimeIndex(raw["date"])).fillna(0.0)
+            ttm = float(daily.rolling("365D").sum().iloc[-1])
+            if not ttm > 0:
+                continue
+            rec["dy_ttm"] = ttm / rec["close"]
+        recs.append(rec)
+
+    df = pd.DataFrame(recs)
+    for c in ("turnover_20", "vol_20", "rev_5"):
+        df[c] = df[c].rank(pct=True)
+    if is_div:
+        df["dy_ttm"] = df["dy_ttm"].rank(pct=True)
+        df["score"] = ((1 - df["turnover_20"]) + (1 - df["vol_20"]) + df["dy_ttm"]) / 3
+    else:
+        df["score"] = ((1 - df["turnover_20"]) + (1 - df["vol_20"]) + (1 - df["rev_5"])) / 3
+    df = df.sort_values("score", ascending=False).head(15).reset_index(drop=True)
+
+    held, pend, cash = set(), set(), None
+    conn = _db(acc)
+    if conn is not None:
+        try:
+            pos = pd.read_sql_query(
+                "SELECT symbol FROM positions WHERE date=(SELECT MAX(date) FROM positions)", conn)
+            held = set(pos["symbol"].astype(str))
+            po = pd.read_sql_query(
+                "SELECT symbol FROM trade_log WHERE status='pending'", conn)
+            pend = set(po["symbol"].astype(str))
+            sn = pd.read_sql_query(
+                "SELECT cash FROM account_snapshot ORDER BY date DESC LIMIT 1", conn)
+            cash = float(sn["cash"].iloc[0]) if len(sn) else None
+        finally:
+            conn.close()
+    try:
+        k0 = get_kline("000300", adjust="none", store=store)
+        latest = str(pd.to_datetime(k0["date"]).max().date())
+    except Exception:  # noqa: BLE001
+        latest = None
+    rows = []
+    for i, r in df.iterrows():
+        status = ("持仓中" if r["symbol"] in held
+                  else "待成交" if r["symbol"] in pend else f"备选 #{i + 1}")
+        rows.append({"rank": i + 1, "symbol": r["symbol"],
+                     "score": round(float(r["score"]), 4),
+                     "close": round(float(r["close"]), 2),
+                     "lot_cost": round(float(r["close"]) * 100, 0),
+                     "status": status})
+    out = {"strategy": ("红利版：低换手+低波+股息率" if is_div else
+                        "现行版：低换手+低波+反转"),
+           "date": latest, "cash": cash, "rows": rows}
+    _CAND_CACHE.update(t=now, acc=acc, data=out)
+    return out
+
+
 def position_alerts(acc):
     """持仓预警：距持有期最高收盘回撤 <= -10% 的标的。
 
@@ -708,6 +810,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, rebalance_diff(q.get("account", ["large"])[0]))
             if u.path == "/api/fees":
                 return self._send(200, fees(q.get("account", ["large"])[0]))
+            if u.path == "/api/candidates":
+                return self._send(200, candidates(q.get("account", ["large"])[0]))
             if u.path == "/api/position_alerts":
                 return self._send(200, position_alerts(q.get("account", ["large"])[0]))
             if u.path == "/api/positions":

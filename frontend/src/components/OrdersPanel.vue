@@ -12,6 +12,17 @@ const qty = ref('')
 const price = ref('')
 const tab = ref('pending')       // pending | history | fees
 const feeData = ref({ summary: null, recent: [] })
+const cands = ref(null)
+const candsLoading = ref(false)
+
+async function loadCands() {
+  if (candsLoading.value) return
+  candsLoading.value = true
+  try {
+    cands.value = await api.get(`/api/candidates?account=${props.account}`)
+  } catch { cands.value = { rows: [] } }
+  candsLoading.value = false
+}
 const diff = ref({ rows: [], nav: null })
 
 async function loadDiff() {
@@ -80,6 +91,9 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
                 class="border-l border-slate-300 px-2.5 py-1" @click="tab='history'">成交记录</button>
         <button :class="tab==='fees' ? 'bg-slate-800 text-white' : 'bg-white'"
                 class="border-l border-slate-300 px-2.5 py-1" @click="tab='fees'">费用</button>
+        <button :class="tab==='cands' ? 'bg-slate-800 text-white' : 'bg-white'"
+                class="border-l border-slate-300 px-2.5 py-1"
+                @click="tab='cands'; loadCands()">候选池</button>
       </div>
     </div>
 
@@ -194,6 +208,43 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
         <div class="mt-1 text-[11px] text-slate-400">统计区间 {{ feeData.summary.first_date }} ~ {{ feeData.summary.last_date }}；回测口径的历史成本见决策日志 D-002/D-004</div>
       </template>
       <div v-else class="py-6 text-center text-sm text-slate-400">暂无已成交订单（无费用产生）</div>
+    </div>
+
+    <!-- 候选池：全池海选前15名 + 备选状态 -->
+    <div v-else-if="tab==='cands'" class="max-h-[240px] overflow-auto">
+      <div v-if="candsLoading" class="py-8 text-center text-sm text-slate-400">
+        <span class="live-dot">●</span> 全池打分计算中（首次约半分钟，之后 15 分钟内秒开）…
+      </div>
+      <template v-else-if="cands && cands.rows && cands.rows.length">
+        <div class="mb-1 text-[11px] text-slate-400">
+          {{ cands.strategy }} · 截至 {{ cands.date }} · 全池海选前 15 名
+          <span v-if="cands.cash != null">· 可用现金 {{ fmt.n(cands.cash, 0) }} 元</span>
+          ——备选可直接在下方人工挂单
+        </div>
+        <table class="tabular w-full text-xs">
+          <thead class="sticky top-0 bg-slate-50 text-slate-500">
+            <tr><th class="px-2 py-1.5 text-left">#</th><th class="text-left">代码</th>
+                <th>分数</th><th>现价</th><th>一手成本</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in cands.rows" :key="r.symbol" class="border-t border-slate-100">
+              <td class="px-2 py-1.5 text-slate-400">{{ r.rank }}</td>
+              <td class="font-medium">{{ r.symbol }}</td>
+              <td class="text-right">{{ r.score.toFixed(3) }}</td>
+              <td class="text-right">{{ fmt.n(r.close) }}</td>
+              <td class="text-right" :class="cands.cash != null && r.lot_cost > cands.cash ? 'text-rose-500' : ''">
+                {{ fmt.n(r.lot_cost, 0) }}</td>
+              <td class="text-center">
+                <span class="rounded-full px-2 py-0.5 text-[11px]"
+                      :class="r.status==='持仓中' ? 'bg-sky-100 text-sky-700' :
+                              r.status==='待成交' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'">
+                  {{ r.status }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
+      <div v-else class="py-6 text-center text-sm text-slate-400">暂无候选数据</div>
     </div>
 
     <!-- 人工挂单 -->
