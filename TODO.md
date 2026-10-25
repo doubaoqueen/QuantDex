@@ -57,7 +57,8 @@
 - [x] **add_order 资金/持仓校验**（D-034）：买查可用现金（扣已挂买单占用）、卖查可用持仓（扣已挂卖单）
 - [x] **安全修复**（D-034）：/api/report 路径遍历（account 白名单+date 正则）；POST 门禁（Content-Type 必须 JSON+Origin 同源，防跨站表单 CSRF）
 - [x] **卫生**（D-034）：分区写失败 except-pass 改告警、partitions.py 死代码删除、_chartdbg 等 4 个临时脚本与 _legacy_old_naming 清理、115 行内嵌旧页面移除、requirements 版本锁定（当前实测环境）、TODO 邮箱脱敏
-- [ ] 数据出 git（325MB/4876 文件，按日分区日增 1 小文件可续；>1GB 前迁 Release/LFS）
+- [x] **数据出 git**（2026-10-26 D-035，用户决策 B）：data/ 移出+全历史清除（仓库 327MB→1.6MB）+强推；备份=23 脚本 zip（先行已落 backups/）+全量 bundle
+- [ ] 例行：**每月 `python scripts/23_backup_data.py`**（数据唯一备份手段；`--upload` 可传 GitHub Release）
 
 ## P1 — 多策略路线（2026-10-24 调研，详见 vault/02-实验/多策略扩展调研）
 

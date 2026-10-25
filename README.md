@@ -128,6 +128,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 
 ```
+# 【数据不在仓库里】克隆后按下面三步自建数据（D-035：git 只携带架构）
 # 第 0 步：下载历史指数成分表（point-in-time，消除幸存者偏差）
 python scripts/00_fetch_pit_constituents.py
 
@@ -147,6 +148,8 @@ python scripts/demo_analysis.py 600519
 
 第 0 步下载 **point-in-time 历史指数成分表**（消除幸存者偏差的地基数据）；
 第 2、3 步都可**重复运行**：已有数据只抓取最新部分（upsert 按日期去重），不会重复堆积。
+
+> 数据备份（本地保管，D-035）：`python scripts/23_backup_data.py`（建议每月一次）
 
 > 测试：`python tests/run_tests.py`（回归测试：引擎成本/T+1 口径、组合引擎权重漂移、风控、模拟盘账本）。
 
