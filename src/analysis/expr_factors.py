@@ -95,3 +95,38 @@ def evaluate_all(fields: dict, names: list[str] | None = None) -> dict[str, "obj
     for name in (names or EXPR_NAMES):
         out[name] = evaluate(EXPR_FACTORS[name]["expr"], fields)
     return out
+
+# ============================================================
+# 批次 2（AL2_*，2026-10-26）：面向"强大策略家族"的补充因子
+# 每个因子标注服务的策略家族；Ref 全部为正（无前视）
+# ============================================================
+EXPR_FACTORS.update({
+    "AL2_52W":      {"expr": "$close / Max($high, 120) - 1",
+                     "desc": "距半年高点（52周高点锚定效应，George-Hwang）", "family": "动量"},
+    "AL2_MOM121":   {"expr": "Ref($close, 20) / Ref($close, 120) - 1",
+                     "desc": "跳过近20日的120日动量（12-1动量的日频版）", "family": "动量"},
+    "AL2_MAX20":    {"expr": "Max($close / Ref($close, 1) - 1, 20)",
+                     "desc": "20日内最大单日涨幅（彩票偏好 MAX 效应，越高越差）", "family": "情绪"},
+    "AL2_MIN20":    {"expr": "Min($close / Ref($close, 1) - 1, 20)",
+                     "desc": "20日内最差单日（尾部风险）", "family": "风险"},
+    "AL2_SKEW20":   {"expr": "Skew($close / Ref($close, 1) - 1, 20)",
+                     "desc": "20日收益偏度（偏度溢价：负偏股票溢价）", "family": "风险"},
+    "AL2_KURT20":   {"expr": "Kurt($close / Ref($close, 1) - 1, 20)",
+                     "desc": "20日收益峰度（肥尾程度）", "family": "风险"},
+    "AL2_VS_R":     {"expr": "Std($close / Ref($close, 1) - 1, 5) / (Std($close / Ref($close, 1) - 1, 60) + 1e-9)",
+                     "desc": "短长期波动比（波动突变）", "family": "风险"},
+    "AL2_SHARPE20": {"expr": "Mean($close / Ref($close, 1) - 1, 20) / (Std($close / Ref($close, 1) - 1, 20) + 1e-9)",
+                     "desc": "20日滚动夏普（趋势质量）", "family": "动量"},
+    "AL2_ATR20":    {"expr": "Mean(($high - $low) / $close, 20)",
+                     "desc": "20日平均日内振幅（ATR 比率版）", "family": "风险"},
+    "AL2_GPV20":    {"expr": "Std($open / Ref($close, 1) - 1, 20)",
+                     "desc": "隔夜跳空波动（情绪过夜外溢）", "family": "情绪"},
+    "AL2_TREND_T":  {"expr": "Mean($turnover, 5) / (Mean($turnover, 60) + 1e-9)",
+                     "desc": "换手趋势（关注升温/降温）", "family": "换手"},
+    "AL2_CORR60":   {"expr": "Corr($close / Ref($close, 1) - 1, $volume, 60)",
+                     "desc": "60日量价相关（长窗确认）", "family": "量价"},
+    "AL2_VSPIKE":   {"expr": "$volume / (Mean($volume, 20) + 1e-9)",
+                     "desc": "当日量比异常（放量突变）", "family": "量能"},
+    "AL2_DONCH20":  {"expr": "($close - Min($low, 20)) / (Max($high, 20) - Min($low, 20) + 1e-9)",
+                     "desc": "20日唐奇安区间位置（突破系统核心）", "family": "动量"},
+})

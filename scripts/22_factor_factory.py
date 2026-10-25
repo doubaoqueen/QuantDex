@@ -86,10 +86,16 @@ def main() -> None:
               flush=True)
 
     out = pd.DataFrame(rows)
-    out = out.reindex(out["t20"].abs().sort_values(ascending=False).index)
     out_dir = STORE_DIR / "factor_results"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(out_dir / "expr_ic_summary.parquet", index=False)
+    # 合并历史结果（同因子新结果覆盖旧结果），避免分批筛选互相覆盖
+    summary_path = out_dir / "expr_ic_summary.parquet"
+    if summary_path.exists():
+        old = pd.read_parquet(summary_path)
+        out = pd.concat([old[~old["factor"].isin(out["factor"])], out],
+                        ignore_index=True)
+    out = out.reindex(out["t20"].abs().sort_values(ascending=False).index)
+    out.to_parquet(summary_path, index=False)
 
     n_sig = int((out["t20"].abs() > 2).sum())
     print()

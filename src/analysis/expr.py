@@ -9,7 +9,7 @@
 语法（与 qlib 同形，子集）：
     $field        基础字段（open/high/low/close/volume/amount/turnover）
     Ref(x, n)     n>0 引用 n 天前（过去），n<0 引用未来（**只许出现在标签**）
-    Mean/Sum/Std/Max/Min(x, n)   滚动窗口
+    Mean/Sum/Std/Max/Min/Skew/Kurt(x, n)   滚动窗口
     Delta(x, n)   x - Ref(x, n)
     Corr(x, y, n) 滚动相关
     Greater/Less(a, b)  逐元素取大/取小（b 可为常数）
@@ -77,6 +77,8 @@ _FUNCS = {
     "Min": lambda x, n: _rolling(x, n, "min"),
     "Delta": lambda x, n: x - x.shift(int(n)),
     "Corr": _corr,
+    "Skew": lambda x, n: x.rolling(int(n)).skew(),
+    "Kurt": lambda x, n: x.rolling(int(n)).kurt(),
     "Greater": _greater, "Less": _less,
     "Abs": lambda x: x.abs(),
     "Log": lambda x: np.log(x.where(x > 0)),
