@@ -1,9 +1,10 @@
-# QuantDex 运行依赖（Python 3.11+）
-pandas>=2.0
-numpy>=1.26
-baostock>=0.9.4
-akshare>=1.19
-pyarrow>=15.0
-pillow>=10
-requests>=2.31
-apscheduler>=3.10   # Python 原生调度器（可选，scripts/14_scheduler.py）
+# QuantDex 运行依赖（Python 3.11，版本锁定=当前实测环境，D-034）
+pandas==3.0.6
+numpy==2.4.6
+baostock==0.9.4
+akshare==1.19.1
+pyarrow==26.0.0
+pillow==12.3.0
+requests==2.34.2
+# apscheduler 可选（scripts/14_scheduler.py 常驻调度；任务计划方案不需要）
+# apscheduler>=3.10

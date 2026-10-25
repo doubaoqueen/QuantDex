@@ -68,6 +68,7 @@ def main() -> None:
     print(f"   信号日 {len(W)} 个，覆盖标的 {W.shape[1]} 只")
 
     prices = panel.pivot(index="date", columns="symbol", values="close").sort_index()
+    opens = panel.pivot(index="date", columns="symbol", values="open").sort_index()  # D-034 开盘执行
     print(f"   价格矩阵 {prices.shape[0]} 交易日 × {prices.shape[1]} 只")
 
     bench_ret = None
@@ -85,7 +86,8 @@ def main() -> None:
     res = run_portfolio_backtest(
         W, prices, fee=0.00025, min_fee=5.0, slippage=0.0005,
         stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
-        init_capital=1_000_000.0, benchmark_returns=bench_ret)
+        init_capital=1_000_000.0, benchmark_returns=bench_ret,
+        open_prices=opens)  # T+1 开盘执行=影子盘口径
     print(f"   保真约束：跳过 {res['n_skipped']} 笔（涨停买不进/跌停卖不出/停牌）")
     c = res["costs"]
     print(f"   成本合计 {c['total']:,.2f} 元（佣金 {c['commission']:,.0f} "

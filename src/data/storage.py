@@ -111,8 +111,8 @@ class ParquetStore:
             try:
                 from src.data.partitions import queue_daily
                 queue_daily(self, df, adjust or "qfq")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001  分区写失败不阻断主数据，但必须可见
+                print(f"[partitions] 按日分区写入失败(缓存仍更新,分区缺失!): {e}")
         if self.exists(kind, name):
             old = self.read(kind, name)
             merged = pd.concat([old, df], ignore_index=True)
@@ -182,8 +182,8 @@ class ParquetStore:
             try:
                 from src.data.partitions import flush_queue
                 flush_queue(self)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                print(f"[partitions] 分区 flush 失败(分区可能缺失!): {e}")
 
     def _flush_registry(self) -> None:
         if not self._reg_buf:

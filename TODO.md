@@ -10,7 +10,7 @@
 - [x] **P0-3 影子盘成交口径统一 T+1**（已完成 2026-10-20）
   - 两段式：T 日收盘挂单（pending，fill_date=T+1）→ T+1 开盘价撮合；涨停买不进/跌停卖不出/停牌 → rejected_*
   - 实测：49 笔挂单 → 次日开盘全部成交，净值 993,674.68，幂等通过；测试覆盖 4 种撮合状态
-- [ ] 旧命名文件已移入 `data/store/_legacy_old_naming/`（确认后删除）
+- [x] 旧命名文件已删除（2026-10-26 D-034）
 - [x] `requirements.txt` 补 `requests`（00 脚本依赖）；版本锁定/依赖清单待补
 
 ## P0 — 数据与流水线
@@ -22,7 +22,7 @@
 - [x] **邮件推送**（SMTP，2026-10-20 联调通过）
   - `src/live/notifier.py`：纯文本邮件；配置走环境变量或 `.env`（已 gitignore）
   - 流水线生成日报后自动发送；`08/10 --no-push` 可关闭；`09_test_mail.py` 测试连通性
-  - 已实测发送成功（3521601975@qq.com）
+  - 已实测发送成功（（QQ 邮箱，地址略））
 - [x] **每日一键脚本 `scripts/10_daily_run.py`**：更新 PIT 全量行情 → 流水线 → 邮件
   - Windows 任务计划示例：
     `schtasks /Create /TN "QuantDex Daily" /SC DAILY /ST 19:00 /TR "D:\conda\miniconda3\envs\QuantDex\python.exe D:\MeineArbeit\QuantDex\scripts\10_daily_run.py" /F`
@@ -49,6 +49,15 @@
   - [x] Phase 2-a 回测/walk-forward 对比页（2026-10-24 上线，15_dashboard 同日退役 D-024）
   - [x] Phase 2-b 调仓审批视图（2026-10-24，D-025）：权重对比+逐条/全部否决（opt-out 语义）；opt-in 模式待影子盘满 8 周再评估
   - [ ] Phase 2（候选）：盘中实时行情（只显示不落库）、opt-in 审批模式（可选切换）
+
+## P0 — 架构（外部评审 2026-10-26）
+
+- [ ] **策略注册表**（评审指出：策略名/账本/回测后缀/前端标签散在 webapp.ACCOUNTS、acc2suffix、candidates if、multi_factor、App.vue 五处）——做一张中央注册表（strategy key → 因子/账本/回测后缀/标签），加策略只改一处。**加第 5 账户（模型层）前必须做**
+- [x] **回测/实盘口径对齐**（2026-10-26，D-034）：引擎新增 T+1 开盘执行（open_prices），05/06 全部切换，涨跌停判定随执行价（开盘口径容差 0.1% 与 pipeline 一致；收盘容差 0.6%→0.2%）
+- [x] **add_order 资金/持仓校验**（D-034）：买查可用现金（扣已挂买单占用）、卖查可用持仓（扣已挂卖单）
+- [x] **安全修复**（D-034）：/api/report 路径遍历（account 白名单+date 正则）；POST 门禁（Content-Type 必须 JSON+Origin 同源，防跨站表单 CSRF）
+- [x] **卫生**（D-034）：分区写失败 except-pass 改告警、partitions.py 死代码删除、_chartdbg 等 4 个临时脚本与 _legacy_old_naming 清理、115 行内嵌旧页面移除、requirements 版本锁定（当前实测环境）、TODO 邮箱脱敏
+- [ ] 数据出 git（325MB/4876 文件，按日分区日增 1 小文件可续；>1GB 前迁 Release/LFS）
 
 ## P1 — 多策略路线（2026-10-24 调研，详见 vault/02-实验/多策略扩展调研）
 

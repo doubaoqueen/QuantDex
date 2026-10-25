@@ -49,7 +49,7 @@ def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
     return {"ann": ann, "ir": ir, "mdd": mdd, "total": float(nav.iloc[-1] - 1)}
 
 
-def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo,
+def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, opens: pd.DataFrame, combo,
               dates: pd.DatetimeIndex, strategy: str = "corrected"):
     top_n, reb = combo
     if strategy == "dividend":
@@ -67,7 +67,8 @@ def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, combo,
     return run_portfolio_backtest(
         W, p, fee=0.00025, min_fee=5.0, slippage=0.0005,
         stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
-        init_capital=1_000_000.0)
+        init_capital=1_000_000.0,
+        open_prices=opens.reindex(p.index))  # D-034 开盘执行
 
 
 def main() -> None:
@@ -83,6 +84,7 @@ def main() -> None:
     panel = build_factor_panel(store, symbols, start=START_DATE,
                                pit_constituents=pit, dividend_panel=div_panel)
     prices = panel.pivot(index="date", columns="symbol", values="close").sort_index()
+    opens = panel.pivot(index="date", columns="symbol", values="open").sort_index()  # D-034 开盘执行
     print(f"   面板 {panel['date'].min().date()} ~ {panel['date'].max().date()}，"
           f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
 
@@ -107,7 +109,7 @@ def main() -> None:
         # ---- 训练段参数选择 ----
         best, best_ir = None, -np.inf
         for combo in GRID:
-            res = run_combo(panel, prices, combo, train_dates, strategy)
+            res = run_combo(panel, prices, opens, combo, train_dates, strategy)
             if res is None:
                 continue
             m = metrics_of(res, bench_ret)
@@ -117,7 +119,7 @@ def main() -> None:
             continue
 
         # ---- 样本外评估 ----
-        res_oos = run_combo(panel, prices, best, test_dates, strategy)
+        res_oos = run_combo(panel, prices, opens, best, test_dates, strategy)
         if res_oos is None:
             continue
         m_oos = metrics_of(res_oos, bench_ret)
@@ -165,7 +167,7 @@ def main() -> None:
     # ---- 全样本最优（作弊口径）对比 ----
     best_all, best_all_ir = None, -np.inf
     for combo in GRID:
-        res = run_combo(panel, prices, combo, all_dates, strategy)
+        res = run_combo(panel, prices, opens, combo, all_dates, strategy)
         if res is None:
             continue
         m = metrics_of(res, bench_ret)
@@ -174,7 +176,7 @@ def main() -> None:
     if best_all is not None:
         mask = all_dates >= pd.Timestamp(f"{TEST_YEARS[0]}-01-01")
         oos2_dates = all_dates[mask]
-        res2 = run_combo(panel, prices, best_all, oos2_dates, strategy)
+        res2 = run_combo(panel, prices, opens, best_all, oos2_dates, strategy)
         m2 = metrics_of(res2, bench_ret) if res2 is not None else {}
         print()
         print("== 全样本最优 vs walk-forward（作弊对照）==")

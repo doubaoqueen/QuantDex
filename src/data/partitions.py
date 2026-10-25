@@ -95,7 +95,6 @@ def migrate_from_symbols(store, verbose: bool = True) -> dict:
     allrows = pd.concat(frames, ignore_index=True)
     if verbose:
         print(f"   合并 {len(allrows)} 行，写分区...", flush=True)
-    days = write_days(allrows.drop(columns=["adjust"]).assign(adjust=allrows["adjust"])) if False else None
     # 按日写（保留 adjust 列）
     PART_DIR.mkdir(parents=True, exist_ok=True)
     n_days = 0

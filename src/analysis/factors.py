@@ -120,7 +120,7 @@ def build_factor_panel(
     extra = ["dy_ttm"] if dividend_panel is not None else []
     if expr_factors:
         extra = [*extra, *expr_factors.keys()]
-    keep = ["date", "symbol", "close", "ret", *factor_names, *extra]
+    keep = ["date", "symbol", "open", "close", "ret", *factor_names, *extra]
     div_by_sym: dict = {}
     if dividend_panel is not None:
         d = dividend_panel.copy()
@@ -137,7 +137,7 @@ def build_factor_panel(
             continue
         # 列裁剪：因子只需要日期/代码/收盘/成交额/换手率，Parquet 列存只读这几列
         df = store.read("daily", name,
-                        columns=["date", "symbol", "close", "amount", "turnover"])
+                        columns=["date", "symbol", "open", "close", "amount", "turnover"])
         raw = compute_raw_factors(df)
         if code in div_by_sym:
             g = div_by_sym[code]

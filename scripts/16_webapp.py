@@ -503,6 +503,28 @@ def add_order(acc, symbol, side, qty, price=None):
     try:
         amount = px * qty
         fee = max(amount * 0.00025, 5.0) + amount * 0.00001
+        # 资金/持仓校验（D-034，外部评审指出）：买查现金（扣已挂买单占用），卖查持仓（扣已挂卖单）
+        snap = pd.read_sql_query(
+            "SELECT cash FROM account_snapshot ORDER BY date DESC LIMIT 1", conn)
+        cash = float(snap["cash"].iloc[0]) if len(snap) else 0.0
+        pend = pd.read_sql_query(
+            "SELECT symbol, side, amount, qty FROM trade_log WHERE status='pending'", conn)
+        if side == "buy":
+            committed = float(pend[pend["side"] == "buy"]["amount"].sum()) if len(pend) else 0.0
+            need = amount + fee + amount * 0.0005
+            if need > cash - committed + 1e-6:
+                return {"ok": False,
+                        "msg": f"现金不足：需 {need:,.0f} 元，可用 {cash - committed:,.0f} 元（含已挂单占用）"}
+        else:
+            held = pd.read_sql_query(
+                "SELECT shares FROM positions WHERE symbol=? "
+                "AND date=(SELECT MAX(date) FROM positions)", conn, params=(symbol,))
+            have = float(held["shares"].iloc[0]) if len(held) else 0.0
+            committed_q = float(pend[(pend["side"] == "sell") &
+                                     (pend["symbol"] == symbol)]["qty"].sum()) if len(pend) else 0.0
+            if qty > have - committed_q + 1e-6:
+                return {"ok": False,
+                        "msg": f"持仓不足：卖 {qty} 股，可用 {have - committed_q:.0f} 股（含已挂卖单）"}
         conn.execute(
             "INSERT INTO trade_log(signal_date,fill_date,symbol,side,qty,price,amount,"
             "fee,stamp_duty,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -563,6 +585,12 @@ def reports(acc):
 
 
 def report_text(acc, date):
+    """读日报文本。account 必须在注册表内、date 必须是 YYYY-MM-DD——防路径遍历（D-034）。"""
+    import re as _re
+    if acc not in ACCOUNTS:
+        return "未找到日报（账户不存在）"
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(date or "")):
+        return "未找到日报（日期非法）"
     p = STORE_DIR / "reports" / acc / f"{date}.md"
     return p.read_text(encoding="utf-8") if p.exists() else "未找到日报"
 
@@ -652,121 +680,7 @@ def auto_update_on_start():
         pass
 
 
-PAGE = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
-<title>QuantDex 控制台</title><style>
-body{font-family:"Microsoft YaHei",sans-serif;margin:0;background:#f6f7f9;color:#222}
-header{background:#1f2937;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px}
-header h1{font-size:17px;margin:0;flex:1}
-button{cursor:pointer;border:0;border-radius:6px;padding:7px 12px;font-size:13px;background:#2563eb;color:#fff}
-button.gray{background:#6b7280} button.red{background:#dc2626}
-main{max-width:1200px;margin:16px auto;padding:0 14px}
-.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px}
-.card{flex:1;min-width:220px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px}
-.card .s{color:#6b7280;font-size:12px} .card .v{font-size:22px;font-weight:700;margin-top:4px}
-section{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:14px}
-h2{font-size:15px;margin:0 0 10px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:6px 8px;border-bottom:1px solid #f0f0f0;text-align:right}
-th:first-child,td:first-child{text-align:left}
-.red{color:#dc2626}.green{color:#059669}
-input,select{padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:13px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-#toast{position:fixed;right:16px;bottom:16px;background:#111827;color:#fff;padding:10px 14px;border-radius:8px;display:none}
-pre{background:#0b1220;color:#c9d1d9;padding:10px;border-radius:8px;max-height:260px;overflow:auto;font-size:12px}
-.badge{padding:2px 8px;border-radius:999px;font-size:12px;color:#fff}
-.notice{padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:13px}
-.notice.ok{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}
-.notice.warn{background:#fffbeb;color:#92400e;border:1px solid #fde68a}
-</style></head><body>
-<header><h1>QuantDex 控制台</h1>
-<button onclick="updateSpot()">更新行情</button>
-<button onclick="runJob('pipeline')">跑流水线</button>
-<button class="gray" onclick="loadAll()">刷新</button></header>
-<main>
-<div id="fresh" class="notice">正在检查数据新鲜度...</div>
-<div class="cards">
-  <div class="card" id="card-large"></div>
-  <div class="card" id="card-small"></div>
-  <div class="card" id="card-regime"></div>
-</div>
-
-<section><h2>持仓 <span id="pos-title" class="s"></span></h2>
-<table><thead><tr><th>代码</th><th>股数</th><th>现价</th><th>涨跌幅</th><th>当日盈亏</th><th>权重</th></tr></thead>
-<tbody id="pos-body"></tbody></table></section>
-
-<section><h2>待成交订单（可人工取消）</h2>
-<table><thead><tr><th>代码</th><th>方向</th><th>数量</th><th>参考价</th><th>成交日</th><th>操作</th></tr></thead>
-<tbody id="ord-body"></tbody></table>
-<div class="row" style="margin-top:10px">
-  <select id="acc"><option value="large">大账户</option><option value="small">小账户</option></select>
-  <input id="sym" placeholder="代码 如 600519" size="10">
-  <select id="side"><option value="buy">买入</option><option value="sell">卖出</option></select>
-  <input id="qty" placeholder="数量(100倍)" size="10">
-  <button onclick="addOrder()">人工挂单</button>
-</div></section>
-
-<section><h2>市场状态</h2><div id="regime-detail" class="s"></div></section>
-
-<section><h2>每日操作记录（一天一条，去重）</h2>
-<table><thead><tr><th>日期</th><th>账户</th><th>动作</th><th>状态</th><th>摘要</th></tr></thead>
-<tbody id="ops-body"></tbody></table></section>
-
-<section><h2>日报</h2>
-<div class="row"><select id="rpt-acc" onchange="loadReports()"><option value="large">大账户</option><option value="small">小账户</option></select>
-<select id="rpt-date" onchange="loadReport()"></select></div>
-<pre id="rpt-text" style="margin-top:10px;max-height:340px"></pre></section>
-
-<section><h2>后台任务日志</h2><pre id="job-log"></pre></section>
-</main><div id="toast"></div>
-<script>
-const fmt=(v,d=2)=>v==null?'-':Number(v).toLocaleString(undefined,{maximumFractionDigits:d});
-const pct=v=>v==null?'-':(v*100).toFixed(2)+'%';
-const cls=v=>v>0?'red':(v<0?'green':'');
-function toast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2500)}
-async function j(u,o){const r=await fetch(u,o);return await r.json()}
-function card(id,o){const el=document.getElementById(id);if(!o||o.empty){el.innerHTML='<div class="s">'+id+'：暂无数据</div>';return}
- const pnl=o.day_pnl||0;
- el.innerHTML='<div class="s">'+o.label+(o.date?' · '+o.date:'')+'</div>'+
- '<div class="v">'+fmt(o.nav)+' 元</div>'+
- '<div class="s">现金 '+fmt(o.cash)+' · 持仓 '+o.positions+' · 待成交 '+o.pending+'</div>'+
- '<div class="s '+cls(pnl)+'">今日 '+(pnl>=0?'+':'')+fmt(pnl)+'（'+(o.prev_nav?pct(o.nav/o.prev_nav-1):'-')+'）</div>'+
- '<div class="s '+cls(o.cum_ret)+'">累计 '+pct(o.cum_ret)+'</div>'}
-async function loadAll(){
- const [L,S,R]=await Promise.all([j('/api/overview?account=large'),j('/api/overview?account=small'),j('/api/regime')]);
- card('card-large',L);card('card-small',S);
- const g=document.getElementById('card-regime');
- const light=(R.above60&&R.above200)?'#059669':((R.above200)?'#f59e0b':'#dc2626');
- g.innerHTML='<div class="s">市场状态 · '+R.date+'</div><div class="v"><span class="badge" style="background:'+light+'">'+(R.above60&&R.above200?'偏强':(R.above200?'震荡':'偏弱'))+'</span></div>'+
- '<div class="s">沪深300 '+fmt(R.close)+' · MA20 '+fmt(R.ma20)+' · MA60 '+fmt(R.ma60)+' · MA200 '+fmt(R.ma200)+'</div>'+
- '<div class="s">近20日 '+pct(R.ret20)+' · 近60日 '+pct(R.ret60)+' · 回撤 '+pct(R.dd)+'</div>'+
- '<div class="s">站上MA60 的股票比例 '+(R.breadth==null?'-':pct(R.breadth))+'</div>';
- document.getElementById('regime-detail').innerHTML=
-  '站上 MA20：'+(R.above20?'是':'否')+' ｜ 站上 MA60：'+(R.above60?'是':'否')+' ｜ 站上 MA200：'+(R.above200?'是':'否')+
-  '<br>近120日 '+pct(R.ret120)+' ｜ 距一年高点 '+pct(R.dd)+' ｜ 宽度 '+pct(R.breadth);
- const acc=document.getElementById('acc').value;
- const P=await j('/api/positions?account=large');
- document.getElementById('pos-title').textContent='（大账户）';
- const tb=document.getElementById('pos-body');tb.innerHTML='';
- (P.rows||[]).sort((a,b)=>b.weight-a.weight).slice(0,30).forEach(r=>{
-  tb.insertAdjacentHTML('beforeend','<tr><td>'+r.symbol+'</td><td>'+r.shares+'</td><td>'+fmt(r.close)+'</td>'+
-   '<td class="'+cls(r.pct)+'">'+pct(r.pct)+'</td><td class="'+cls(r.pnl)+'">'+fmt(r.pnl,0)+'</td><td>'+pct(r.weight)+'</td></tr>')});
- const O=await j('/api/orders?account=large');
- const ob=document.getElementById('ord-body');ob.innerHTML='';
- (O.rows||[]).forEach(o=>{ob.insertAdjacentHTML('beforeend','<tr><td>'+o.symbol+'</td><td>'+o.side+'</td><td>'+o.qty+'</td><td>'+fmt(o.price)+'</td><td>'+o.fill_date+'</td>'+
-  '<td><button class="red" onclick="cancelOrder('+o.id+')">取消</button></td></tr>')});
- loadReports();
-}
-async function cancelOrder(id){if(!confirm('取消该订单？'))return;const r=await j('/api/orders/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'large',id})});toast(r.msg);loadAll()}
-async function addOrder(){const body={account:document.getElementById('acc').value,symbol:document.getElementById('sym').value,side:document.getElementById('side').value,qty:document.getElementById('qty').value};const r=await j('/api/orders/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast(r.msg);loadAll()}
-async function runJob(n){const r=await j('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job:n})});toast(r.msg);pollJob()}
-async function updateSpot(){const r=await j('/api/update',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});toast(r.msg);pollJob()}
-async function loadFreshness(){try{const f=await j('/api/freshness');const el=document.getElementById('fresh');if(f.error){el.textContent='数据状态检查失败：'+f.error;el.className='notice warn';return}el.className='notice '+(f.stale?'warn':'ok');el.textContent='数据：最新收盘 '+f.last_closed+' ｜ 抽样 '+f.up_to_date+'/'+f.sample+' 已更新'+(f.stale?'（需要更新，已自动开始）':'（已最新）')}catch(e){}}
-async function loadOps(){try{const o=await j('/api/ops?account=large');const tb=document.getElementById('ops-body');tb.innerHTML='';(o.rows||[]).forEach(r=>{tb.insertAdjacentHTML('beforeend','<tr><td>'+r.date+'</td><td>large</td><td>'+r.action+'</td><td>'+r.status+'</td><td style="text-align:left">'+(r.summary||'')+'</td></tr>')})}catch(e){}}
-async function pollJob(){try{const s=await j('/api/run/status');document.getElementById('job-log').textContent=s.log||'';if(s.running)setTimeout(pollJob,3000);else loadAll()}catch(e){}}
-async function loadReports(){const acc=document.getElementById('rpt-acc').value;const R=await j('/api/reports?account='+acc);const sel=document.getElementById('rpt-date');sel.innerHTML='';R.dates.forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;sel.appendChild(o)});if(R.dates.length)loadReport()}
-async function loadReport(){const acc=document.getElementById('rpt-acc').value;const d=document.getElementById('rpt-date').value;const r=await j('/api/report?account='+acc+'&date='+d);document.getElementById('rpt-text').textContent=r.text}
-loadAll();loadFreshness();setInterval(loadAll,15000);
-</script></body></html>"""
+PAGE = ""  # 旧内嵌页面已移除（dist 随 git 提交，见 D-034）
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -790,8 +704,8 @@ class Handler(BaseHTTPRequestHandler):
                 if static:
                     # 入口页不缓存：保证发版后刷新即得新版（assets 文件名带哈希可长缓存）
                     return self._send(200, static[0], static[1], cache="no-cache")
-                return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8",
-                                  cache="no-cache")
+                return self._send(503, "前端未构建：请运行 cd frontend && npm run build".encode("utf-8"),
+                                  "text/plain; charset=utf-8")
             if not u.path.startswith("/api/"):
                 static = _serve_static(u.path)      # /assets/*.js|css 等前端产物
                 if static:
@@ -837,6 +751,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+        # 防 CSRF（D-034）：表单/simple request 的 Content-Type 不是 application/json；
+        # 跨站 JSON 请求需预检（本服务不回 CORS 头即被拦）。Origin 若存在必须同源。
+        ctype = self.headers.get("Content-Type", "")
+        origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
+        if not ctype.split(";")[0].strip() == "application/json":
+            return self._send(403, {"err": "forbidden: Content-Type 必须为 application/json"})
+        if origin and not origin.startswith("http://127.0.0.1:8765"):
+            return self._send(403, {"err": "forbidden: 跨源请求被拒绝"})
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
         try:

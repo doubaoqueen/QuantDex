@@ -4,8 +4,13 @@
 
 约定（与单标的向量化引擎口径一致，无未来函数）：
 - 输入 weights：index=信号日（收盘，T），columns=symbols，值=目标权重（Σ≤1，剩余为现金）；
-- 信号在 T 收盘生成，**T+1 收盘执行**（trade_lag=1）：当日先按旧持仓吃满 t-1→t 收益，
-  再在收盘按目标权重调仓并扣费，新权重从 t 收盘起生效；
+- 信号在 T 收盘生成，**T+1 执行**（trade_lag=1）。两种执行价（D-034）：
+  · open_prices=None（默认）：T+1 **收盘**执行——当日先按旧持仓吃满 t-1→t 收益，
+    再在收盘按目标权重调仓并扣费（历史口径，向后兼容）；
+  · open_prices 传入开盘价矩阵：T+1 **开盘**执行——与影子盘 pipeline 口径一致
+    （旧持仓吃隔夜 open/prev_close，调仓在开盘成交，新持仓吃当日 open→close）；
+  涨跌停判定随执行价：收盘口径用收盘涨跌幅（容差 limit_tol），开盘口径用
+  开盘相对昨收的涨跌幅（容差 0.1%，与 pipeline 相同）；
 - 收益：组合日收益 = Σ w_eff * r_close；两次调仓之间权重按个股收益自然漂移；
 - 成本：逐笔佣金（含**最低佣金 5 元/笔**）+ 过户费 + 滑点 + 卖出印花税；
 - 保真约束（limit_skip=True）：执行日**停牌**跳过该标的调仓；**涨停买不进/跌停卖不出**
@@ -47,6 +52,8 @@ def run_portfolio_backtest(
     dividends: pd.DataFrame | None = None,
     init_capital: float = 1.0,
     verbose: bool = False,
+    open_prices: pd.DataFrame | None = None,
+    limit_tol: float = 0.002,
 ) -> dict:
     """目标权重矩阵 -> 组合回测结果。
 
@@ -67,6 +74,13 @@ def run_portfolio_backtest(
     dates = px.index
     rets = px.pct_change().fillna(0.0).replace([np.inf, -np.inf], 0.0)
     prev_raw = px_raw.shift(1)
+    # 开盘执行模式（D-034）：隔夜 open/prev_close 与日内 close/open 两段收益
+    exec_at_open = open_prices is not None
+    if exec_at_open:
+        op = open_prices[cols].sort_index().reindex(dates).ffill()
+        ret_on = (op / px.shift(1) - 1.0).fillna(0.0).replace([np.inf, -np.inf], 0.0)
+        ret_intra = (px / op - 1.0).fillna(0.0).replace([np.inf, -np.inf], 0.0)
+        op_raw = open_prices[cols].sort_index().reindex(dates)
 
     # 分红：{日期: Series(symbol->每股分红)}
     div_by_date = None
@@ -114,7 +128,7 @@ def run_portfolio_backtest(
                 nav *= 1.0 + div_frac
                 nav_s[t] = nav
 
-        if i > 0:
+        if i > 0 and (not exec_at_open or t not in eff):
             r = rets.iloc[i].to_numpy()
             port_r = float((w_hold * r).sum())
             nav *= 1.0 + port_r
@@ -127,9 +141,9 @@ def run_portfolio_backtest(
         if t in eff and i > 0:
             w_target = W.loc[eff[t]].to_numpy().astype(float).copy()
 
-            # 保真约束：停牌跳过、涨停买不进、跌停卖不出
+            # 保真约束：停牌跳过、涨停买不进、跌停卖不出（D-034：随执行价切换判定基准）
             if limit_skip:
-                raw_t = px_raw.loc[t]
+                raw_t = (op_raw.loc[t] if exec_at_open else px_raw.loc[t])
                 raw_prev = prev_raw.loc[t]
                 for k, sym in enumerate(cols):
                     if abs(w_target[k] - w_hold[k]) < 1e-12:
@@ -142,15 +156,34 @@ def run_portfolio_backtest(
                     p0 = raw_prev.get(sym)
                     if pd.isna(p0) or p0 <= 0:
                         continue
-                    chg = raw_t.get(sym) / p0 - 1.0
+                    chg = float(raw_t.get(sym)) / float(p0) - 1.0
                     lim = _board_limit(sym)
-                    tol = 0.006  # 涨跌停判断容差：涨幅需落在 ±(10%±0.6%) 内
-                    if w_target[k] > w_hold[k] and abs(chg - lim) <= tol:
-                        w_target[k] = w_hold[k]           # 涨停买不进
+                    tol = 0.001 if exec_at_open else limit_tol  # 开盘口径与 pipeline 相同
+                    if w_target[k] > w_hold[k] and chg >= lim - tol:
+                        w_target[k] = w_hold[k]           # 开盘/收盘触涨停：买不进
                         n_skipped += 1
-                    elif w_target[k] < w_hold[k] and abs(chg + lim) <= tol:
-                        w_target[k] = w_hold[k]           # 跌停卖不出
+                    elif w_target[k] < w_hold[k] and chg <= -lim + tol:
+                        w_target[k] = w_hold[k]           # 开盘/收盘触跌停：卖不出
                         n_skipped += 1
+
+            if exec_at_open and i > 0:
+                # 隔夜：旧持仓 open_t / close_{t-1}；日内：新持仓 close_t / open_t
+                r_on = ret_on.iloc[i].to_numpy()
+                r_in = ret_intra.iloc[i].to_numpy()
+                overnight = float((w_hold * r_on).sum())
+                intra = float((w_target * r_in).sum())
+                port_r = overnight + intra
+                nav *= 1.0 + port_r
+                denom = 1.0 + port_r
+                if denom > 1e-12:
+                    w_after = w_target * (1.0 + r_in) / denom
+                else:
+                    w_after = w_target
+                nav_s[t] = nav
+                ret_s[t] = port_r
+                w_pre_cost = w_after          # 成本在下方统一扣减
+            else:
+                w_pre_cost = None
 
             delta = w_target - w_hold
             buy = np.maximum(delta, 0.0)
@@ -174,7 +207,7 @@ def run_portfolio_backtest(
                 print(f"[{t.date()}] 换手 {buy.sum() + sell.sum():.3f} 成本 {cost_amt:,.2f}")
             nav_s[t] = nav
             turn_s[t] = buy.sum() + sell.sum()
-            w_hold = w_target
+            w_hold = w_after if (exec_at_open and w_pre_cost is not None) else w_target
             w_rounds += 1
 
     nav_series = pd.Series(nav_s).sort_index()
