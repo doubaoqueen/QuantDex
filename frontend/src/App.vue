@@ -128,6 +128,21 @@ function switchAccount(acc) {
 
 const accLabel = computed(() =>
   accounts.find(a => a.key === account.value)?.label || '')
+const currentStrategy = computed(() =>
+  accounts.find(a => a.key === account.value)?.strategy || '')
+const menuOpen = ref(false)
+
+// 巧思：账户行背景色 = 盈亏状态（A 股习惯：盈利红 / 亏损绿 / 未开仓灰）
+function rowCls(o) {
+  const c = o && o.cum_ret != null ? o.cum_ret : null
+  if (c == null || c === 0) return 'bg-slate-400'
+  return c > 0 ? 'bg-gradient-to-r from-rose-600 to-red-500' : 'bg-gradient-to-r from-emerald-700 to-emerald-600'
+}
+function cumText(o) {
+  const c = o && o.cum_ret != null ? o.cum_ret : null
+  if (c == null) return '…'
+  return (c > 0 ? '+' : '') + (c * 100).toFixed(2) + '%'
+}
 </script>
 
 <template>
@@ -151,16 +166,36 @@ const accLabel = computed(() =>
           <span class="live-dot inline-block h-2.5 w-2.5 rounded-full bg-sky-500"></span>
           QuantDex 控制台
         </h1>
-        <select :value="account" @change="switchAccount($event.target.value)"
-                class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium
-                       focus:border-sky-500 focus:outline-none">
-          <optgroup v-for="g in strategyGroups" :key="g.name" :label="g.name">
-            <option v-for="a in g.accs" :key="a.key" :value="a.key">{{ a.label }}</option>
-          </optgroup>
-        </select>
-        <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
-          {{ accounts.find(a => a.key === account)?.strategy }}
-        </span>
+        <div class="relative">
+          <button @click="menuOpen = !menuOpen"
+                  class="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm hover:border-sky-400">
+            <span>{{ accLabel }}</span>
+            <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{{ currentStrategy }}</span>
+            <span class="text-[10px] text-slate-400 transition-transform duration-200"
+                  :class="menuOpen && 'rotate-180'">▼</span>
+          </button>
+          <div v-if="menuOpen" class="fixed inset-0 z-30" @click="menuOpen = false"></div>
+          <transition name="dd">
+            <div v-if="menuOpen"
+                 class="absolute right-0 z-40 mt-2 w-[21rem] rounded-xl border border-slate-200 bg-white p-2 shadow-2xl">
+              <div v-for="g in strategyGroups" :key="g.name" class="mb-2 last:mb-0">
+                <div class="px-2 pb-1 pt-1.5 text-[11px] font-medium tracking-wide text-slate-400">
+                  {{ g.name }}
+                </div>
+                <button v-for="a in g.accs" :key="a.key"
+                        @click="switchAccount(a.key); menuOpen = false"
+                        class="mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm text-white shadow-sm transition hover:brightness-110"
+                        :class="rowCls(overviews[a.key])">
+                  <span class="flex items-center gap-1.5 font-medium">
+                    <span class="w-4">{{ account === a.key ? '✓' : '' }}</span>{{ a.label }}
+                  </span>
+                  <span class="tabular text-xs font-semibold">{{ cumText(overviews[a.key]) }}</span>
+                </button>
+              </div>
+              <div class="px-2 pb-1 pt-0.5 text-[10px] text-slate-400">行背景 = 累计盈亏（红盈 / 绿亏 / 灰未开仓）</div>
+            </div>
+          </transition>
+        </div>
         <div class="ml-auto flex items-center gap-2">
           <span v-if="freshness && !freshness.error"
                 class="rounded-full px-2.5 py-1 text-xs"

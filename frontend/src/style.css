@@ -36,3 +36,7 @@ body {
 
 /* 数字用等宽，表格对齐 */
 .tabular { font-variant-numeric: tabular-nums; }
+
+/* 账户二级目录下拉动画 */
+.dd-enter-active, .dd-leave-active { transition: opacity .15s ease, transform .15s ease; }
+.dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-4px); }
