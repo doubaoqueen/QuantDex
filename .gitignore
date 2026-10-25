@@ -240,8 +240,9 @@ data/store/sim/*.sqlite-shm
 data/store/sim/backups/
 
 # 行情本地读缓存（派生数据，可重建：scripts/18_rebuild_daily_cache.py）
-# 入库的行情数据是 data/store/market/daily_by_date/（按日分区，append-only）
-data/store/market/daily/
+# D-035：数据整体出 git（架构/代码/文档入库，数据本地保留+backups/ 打包备份）
+# 克隆后按 README §四 三步重建：00(PIT) -> 01(池) -> 02b/04(行情)
+data/
 
 # Obsidian 知识库（个人笔记，不推送）
 quantdex_vault/
