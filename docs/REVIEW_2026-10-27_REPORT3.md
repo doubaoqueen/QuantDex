@@ -1,0 +1,172 @@
+# 评审报告 3（2026-10-27）：全面挑刺
+
+> 方法：三路并行深度审计（执行/账本链路、数据/研究口径、Web安全/流程/测试），全部结论经逐行读码验证；数据层结论含真实数据实测。延续报告1/报告2 命名。
+> 范围：src/ 全部核心模块、scripts/ 关键脚本、tests/、CI、git 卫生。
+> 已排除：报告1/报告2 已修复项（D-034/D-038/D-039）与已知接受边界（D-019 覆盖语义、2008 前退市股无数据、行业无 PIT 等）。
+> 编号规则：R3-##；P0=数据错误传导到决策 / P1=资金错误·状态污染·口径偏差 / P2=安全·健壮性 / P3=卫生。
+
+---
+
+## 总纲（一句话）
+
+本项目最大的问题不是某一个 bug，而是：**前复权(qfq)在"append-only 增量架构"下根本没有发生**——每日追加的"qfq"行实为不复权真实价，每次除权留下永久假跳空（实测 362 处），收益类因子、IC/分层检验、回测、影子盘撮合全部被传染。D-038 修对了"窗口怎么算"，但价格地基本身是歪的。其余问题集中在：并发无锁、撮合-快照非原子、以及一批"配置散落导致覆盖不全"的边角。
+
+---
+
+## P0 — 数据地基
+
+### R3-01 qfq 复权基准永久断裂（实测 362 个除权日假跳空，缓存/分区/重建三路同坏）
+- **机制**：增量更新只抓 `last+1` 起的新行（`src/data/market.py:270-273`），存量历史永不重抓；qfq 以"最新价为锚"，**单日抓取的行就是不复权真实价**。除权发生后旧行永不重算（`storage.py:117-121` upsert 旧行原样保留；`partitions.py:11-13` 分区 append-only）。
+- **实测证据**：用分红表 2788 个 2024+ 现金分红事件核对——**362 个除权日缓存出现≈分红率的假跌幅**。例：000429 于 2026-08-10 除权（派 0.604 元），缓存 14.20→13.25，当日 rev_5=-5.49%（此前 20 日中位 +0.72%）。缓存与分区逐行一致（600519 两路 2136 行差集为 0）→ `18_rebuild_daily_cache.py` 重建必然复现同样断裂。
+- **传染面**：① rev_5 把除权日识别为假超跌 → 反转策略误买入；② mom_20/vol_20/turnover_20/amihud 窗口被污染；③ D-038 修好的 fwd 收益与 IC/分层全部建立在坏价格上；④ 影子盘 `_day_prices` 用假 prev_close 判涨跌停——除权日真实低开 8% 会被累计成 -10% 而误判跌停拒单（pipeline.py:152-160）；⑤ 持仓市值凭空缩掉分红额。
+- **质检为何没发现**：quality.py 异常涨跌幅阈值 21%，分红缺口 1-7% 不触发；坏行自身的 pct_chg（真实涨幅）与 close（断裂价）自洽，内部一致性检查不可见。
+- **修复**（二选一，推荐 ②）：
+  1. 补丁：upsert 前用分红/复权因子表检测"抓取起点跨除权"（或比对当日 pct_chg 与 close 阶差），命中即对该 symbol **全史重抓整体替换**缓存+分区；
+  2. 根治：改存**不复权价 + 复权因子**（adjfactor 已 947/947 抓齐，D-020），读取时现算复权——一次解决"除权改写历史"与"append-only"的架构矛盾。
+- **附带缺口**：需新增专项质检——对照复权因子重建理论 qfq 与缓存比对，|偏差|>0.5% 报警（防复发）。
+
+---
+
+## P1 — 资金与状态一致性（执行链）
+
+### R3-02 无跨进程文件锁：19:00 计划任务 × webapp 按钮 × 调度器并发 = 双订单/账本锁死/parquet 竞态
+- 全仓 grep 无 msvcrt/flock/filelock。webapp 只防自己的任务（16_webapp.py:643-644）；下单守卫 `pending_orders().empty` 是先查后写（pipeline.py:383），两进程可在对方提交前都看到空 pending → **各写一份订单，次日双倍成交**。WAL 只护读，写锁默认 5s 超时（ledger.py:91）→ `database is locked` 半途崩溃。webapp 进程内 `_spot_work` 还直写 parquet（16_webapp.py:693-708），storage registry 是"读→合并→覆写"非原子。
+- **修复**：`data/store/sim/.pipeline.lock` + `msvcrt.locking` 跨进程锁，pipeline/02b/spot 更新启动前抢锁，抢不到即退出。
+
+### R3-03 部分成交后 trade_log 的 qty 不回写（D-038 的剩余漏洞）
+- pipeline.py:188 部分成交只改局部变量；:193 `mark_filled` 不传 qty；ledger.py:195-196 UPDATE 不含 qty。任何一次高开部分成交后：19_audit「amount=qty×price」从此永久 FAIL；按 trade_log 重建持仓会得出错误股数。
+- **修复**：`mark_filled` 增加 qty 参数。
+
+### R3-04 撮合与快照非原子：中途崩溃 → 已成交资金/股数永久丢失，无自愈
+- 每单 mark_filled 独立事务即时提交（pipeline.py:193），快照在 :457 才写；状态重建只认"上一快照+本次 fill_results"（:350-362），不重放 trade_log。撮合后、写快照前的慢 I/O 窗口（逐 symbol get_kline）以分钟计；R3-02 的锁死崩溃是现实触发源。D-017 曾人工修一次，机制仍在。
+- **修复**：状态重建改为「上期快照 + trade_log 中未入快照的 filled 行重放」，或撮合与快照并入同一事务。
+
+### R3-05 回撤断路器在实盘流水线**实际永不触发**（reindex 产生 NaN）
+- pipeline.py:392-396 用 `snap_now`（今日快照尚未写入）做 nav_hist，`apply_risk` 内 `dd.reindex([latest])` → NaN → `NaN < -0.15` 恒 False（risk.py:46-48）。参数上"已启用"（默认 -0.15/0.5），机制上每日首跑必然失效——D-033 认定负贡献应停用的断路器，目前是"意外停用"而非决策。仅同日重跑才可能触发，行为不一致。
+- **修复**：显式化语义——追加 `nav_hist.loc[latest] = nav_now`，或改为"截至上一快照的回撤"；并把 D-033 的遗留决策（停用/放宽）正式拍板进决策日志。
+
+### R3-06 延迟撮合不回填历史快照（D-017 复发机制仍在）
+- 快照只写 latest 一天（:457），无回填循环。当"个别 symbol 数据晚到但面板 latest 前进"（02b 打印 FAIL 后照常跑，日常会发生）→ D 日快照在未撮合状态写死，D+1 补数后以 fill_date=D 补撮合 → D 日快照与逐笔账永久错位，审计现金连续性从此持续 FAIL。
+- **修复**：撮合晚于 fill_date 时对 (fill_date, latest] 逐日补写快照，或至少把 fill 归因日与快照日对齐并在日报标注。
+
+### R3-07 record_day 不删当日消失的持仓行 → 幽灵持仓 → 凭空现金
+- ledger.py:122-124 `INSERT OR REPLACE` 无先 DELETE；pipeline.py:418-420 未持有标的不写行也不清旧行。同日重跑且成交结果翻转（人工修数后重跑是该项目的既定操作）→ 残留持仓行次日被 `_load_state` 读到 → 生成卖出单真实成交 → **无中生有的现金**。
+- **修复**：record_day 写 positions 前先 `DELETE FROM positions WHERE date=?`。
+
+### R3-08 webapp 手工挂单 fill_date 按个股自身 K 线末日推算 → 停牌股 retro 成交或永久 pending
+- 16_webapp.py:540-542 用该 symbol 最后行情日的下一交易日当 fill_date。对停牌数月的股票挂单：fill_date 落在过去 → 本地补数后按**过去开盘价**成交（未来函数）；真停牌则该日永无行情 → 永久 pending（连 rejected_suspended 都不会有）。
+- **修复**：fill_date 改为 `max(账户最新快照日, 今天)` 的下一交易日。
+
+### R3-09 邮件发送失败后当天日报**永不补发**（自查发现）
+- run_pipeline 里 `already_reported = report_path.exists()` 在写文件前判定（pipeline.py:571）；首次运行"写文件→发送失败"后，下次运行全部账户 `new_report=False` → 10_daily_run.py:69-70 直接跳过合并邮件。`sys.exit(2)`（:87）只是退出码，没有任何机制重发。D-029 声称的"失败后补跑仍会发"兜底只覆盖**崩溃在写文件之前**的情形，发送失败路径不在其中。
+- **修复**：推送状态独立持久化（如 `reports/.pushed_{date}` 标记文件），发送成功才落标记；或失败路径允许"报告存在且未标记推送"时重发。
+
+### R3-10 影子盘无公司行为处理：分红现金不入账、送转不增股
+- src/live/ 全目录无 dividCash/送转逻辑；持仓 shares 只由买卖改变（pipeline.py:354-362）。叠加 R3-01：除权日持仓市值直接缩掉分红额、无现金补偿——红利账户（div）年收益被系统性低估 1-2%；10送10 当日 NAV 视觉腰斩且股数不变。
+- **修复**：撮合流程加除权日公司行为钩子（现金分红入 cash、送转按比例增 shares），用已抓齐的分红表驱动。**与 R3-01 是同一问题的两面，建议合并修复**。
+
+---
+
+## P1 — 研究口径
+
+### R3-11 22_factor_factory 前瞻收益用旧口径，违背自家 D-038
+- scripts/22_factor_factory.py:56-57 `fwd = px.shift(-h)/px - 1`（含隔夜跳空）；而 factor_test.py:34-53 已按 D-038 右移。表达式因子的"13/46 显著"与 04 口径不可比且系统性偏乐观。**修复**：22 改调 `add_forward_returns`，重跑全量。
+
+### R3-12 46 因子全样本 |t|>2 筛选，无多重检验校正
+- 22:100-110 与 24_quant_school.py:172-178 均直接以 |t20|>2 计"显著"；46 因子 × 2 horizon 期望 2-4 个假显著混入候选，且该名单是"进策略"的准入门槛（TODO P1）。**修复**：加 BH-FDR q 值列，准入 q<0.1 且过 WF；教学页同步。
+
+### R3-13 策略间择优本身的多重比较未披露
+- 四策略并行 WF 后选样本外最强（topk IR 1.10），但"因子清单由全样本 IC 固定（multi_factor.py:61-62）+ WF 网格只调 (top_n, rebalance)（06_walkforward.py:35）"——因子/策略两层选择偏差叠加，OOS 数字直接写进教学页对外展示。**修复**：WF 网格纳入因子子集；至少在教学页与 README 显式披露"多策略择优含选择偏差，数字按乐观口径看待"。
+
+### R3-14 dy_ttm 忽略送转股 → 红利因子最高虚高 2 倍+
+- financials.py:177 只取 `dividCashPsBeforeTax`，同表 `dividStocksPs`（送转）丢弃；10送10 后旧每股分红除以新股本口径价格 → dy_ttm ≈2 倍虚高，红利账户系统性高配刚大比例送转的股票。**修复**：按窗口内送转比例折算历史每股分红到当前股本口径。
+
+### R3-15 交易日历是 2027-01-01 定时炸弹
+- 日历实测止于 2026-12-31，且每日任务链（02b/10/14）都不刷新日历（只有手动 00/01 脚本抓）。2027 起 `market.py:229` 的 `last_closed` 恒为 2026-12-31 → 所有标的恒 "uptodate"，**行情静默停更**、日报用旧价无任何报错；snapshot.py:41-42 还会把新年价格错标成 2026-12-31 覆盖真实收盘；`_next_trading_day` 返回 None → fill_date 退化为日历外日期。
+- **修复**：02b 开头加"日历 max < today → fetch_trade_calendar()"（幂等），一行代码拆弹。
+
+### R3-16 分层回测末次再平衡 eff_date 钳位造成 1 天前视（尾部污染）
+- factor_test.py:204-205 `min(get_loc+1, len-1)` → 最后一个调仓日 eff_date=信号日当天，吃到信号前隔夜段。仅污染样本尾 1 天。**修复**：越界丢弃该期。
+
+---
+
+## P2 — 安全（webapp）
+
+### R3-17 `/api/reports` 账户参数未白名单——D-034 修了 report_text，漏了姊妹端点
+- 16_webapp.py:624-628 + :833-834 直接 `STORE_DIR/"reports"/acc` glob，`?account=../../../..` 可列举任意目录 .md 文件名（信息泄露 + KeyError 500）。**修复**：复用 report_text 的白名单+正则。
+
+### R3-18 Origin 校验用 startswith，可前缀绕过
+- 16_webapp.py:856 `origin.startswith("http://127.0.0.1:8765")` → `http://127.0.0.1:8765.evil.com` 通过。当前被 JSON Content-Type + SameSite=Strict 兜底，但这是 D-034 声明的防线本身是坏检查。**修复**：`urlparse(origin).netloc` 精确比对。
+
+### R3-19 登出不吊销、改密不失效：被窃 Cookie 有效至 7 天过期
+- logout 仅清客户端 Cookie（:868-870）；token=HMAC(secret, exp) 无服务端会话表、签名不含密码版本。Cookie 不分端口，本机其他进程/同 host 恶意页面可窃取，登出甚至改 webauth.json 后仍有效。**修复**：webauth.json 加 `session_epoch`，登出/改密 +1 并纳入签名。
+
+### R3-20 /api/login 无速率限制；add_order price 无合法性校验
+- 登录失败仅审计不阻断（:860-867），用户名可时序枚举（:85 and 短路）；add_order `float(price)` 收 NaN/负数/1e308（:536），NaN 金额入账本污染统计，负价格买单必过现金校验。**修复**：失败 5 次锁 5 分钟；`isfinite(px) and 0<px<=现价×1.2` 校验，qty 解析失败返 400。
+
+### R3-21 webapp `_job` 双击竞态 + 重启后状态失真
+- ThreadingHTTPServer 每请求一线程（:907），:643-644 的 check-then-start 无锁，并发 POST 可起两条流水线（叠加 R3-02）；webapp 重启后 `_job` 清零但旧子进程仍活 → 面板显示"空闲"而实际在跑。**修复**：`threading.Lock` 包住启动段；启动时检测孤儿进程。
+
+### R3-22 定时任务失败无主动告警（自查发现）
+- 流水线崩溃时唯一信号是"今天没收到邮件"——用户需要自己发现"没收到"。R3-09 修复后邮件语义才可靠；建议 notifier 增加"任务失败"告警邮件（try/except 里发一封），实现成本极低。
+
+---
+
+## P2 — 健壮性（合并清单）
+
+| # | 问题 | 证据 | 修复 |
+|---|---|---|---|
+| R3-23 | 每日备份 WAL 未 checkpoint，恢复丢最近一次运行全部数据 | ledger.py:236-240 copyfile 主库、-wal 不入备份 | copy 前 `PRAGMA wal_checkpoint(TRUNCATE)` |
+| R3-24 | 备份轮换 glob 前缀碰撞：`ledger_*` 匹配 `ledger_2000_*`，大账户备份轮换会删其他账户备份（实际每账户仅留 ~7-8 天，声称 30 份） | ledger.py:241-243 | glob 后按精确 stem 过滤 |
+| R3-25 | 10_daily_run 账户循环无逐账户异常隔离，一个账户崩→其余账户+合并邮件全停 | 10_daily_run.py:59-64 | 循环体 try/except，失败账户 nav=None 照常合并 |
+| R3-26 | pending 存在时逢调仓日静默跳过，本期目标权重 20 个交易日后才有机会执行，日报无提示 | pipeline.py:383 | pending 清空后补检"最近调仓日是否已执行"，未执行补下单 |
+| R3-27 | topk 持仓停牌被静默移出 held（multi_factor.py:137-144），pipeline 对"目标 0 但无价"不生成卖出单（pipeline.py:210-212）→ 账户实际持仓 topk+1，策略/实盘/回测三方口径分叉 | multi_factor.py / pipeline.py | 策略层保留停牌股于 held；pipeline 记入日报待处置清单 |
+| R3-28 | 回测 min_fee 按权重差名义额逐只收取 vs 实盘整手取整 → 大账户每期虚增 ~250 元成本（≈0.1-0.15%/年），回测/影子盘差难归因 | portfolio.py:192-195 | 回测 delta 先整手取整（delta<一手阈值免费） |
+| R3-29 | 19_audit_numbers 硬编码只审计 large/small，div/topk 两个 100 万账户不受审计（D-039 注册表的反例） | 19_audit_numbers.py:25-26 | 改为注册表驱动遍历 |
+| R3-30 | CI 仅 ubuntu，生产是 Windows——factor_test.py:89-91 的 Windows 专属绕行路径（Series.corr 原生崩溃）CI 永远测不到 | ci.yml（12 行） | 加 windows-latest 矩阵；CI 内 `npm run build` + dist 一致性检查 |
+| R3-31 | 测试写真实数据目录（data/store/sim/_test_*）且依赖 CWD，崩溃残留污染生产 sim/ | test_webapp.py:27 等 | tempfile.TemporaryDirectory + 绝对 ROOT |
+| R3-32 | `_daily_delta` 缓冲 check-then-set 竞态：4 线程批处理下先写者缓冲被顶掉 → 缓存有行、分区缺行，18 重建丢数据 | partitions.py:60-65 | batch_write 单线程入口预建缓冲 |
+| R3-33 | baostock 登录单例无失效重连，断开后 949 只逐只烧满重试 | sources.py:18-27 | 捕获连接类错误 logout+重登一次 |
+| R3-34 | PIT 成分表纯手动刷新（mtime 10-19），12 月中旬调样生效后有数据真空期 | universe.py:222-226 | 02b 每周自动重跑 00 脚本（幂等） |
+| R3-35 | 02b 失败清单只打印不落盘，连续失败数天无法机读定位 | 02b_update_pit.py:49-50 | 失败清单写 parquet |
+| R3-36 | 快照盘中判据用 Windows 本地时钟（无 NTP 校验）；日历外临时休市日会把昨收错标成当日行 | snapshot.py:39 / :41-42 | 落库前校验当日 partition 有真实行情 |
+| R3-37 | expr 引擎负 Ref（未来引用）只靠约定：`evaluate()` 无特征/标签语境区分，test_expr.py:21-23 把 `Ref($close,-1)` 当功能断言——维护铁律下手滑一个负 Ref 会静默进 IC | expr.py:37-39 / :178-190 | evaluate 加 `mode="feature"`，特征模式遇负 Ref 抛错 |
+| R3-38 | 停牌行污染窗口因子：amihud_20 一个停牌日→此后 20 日退出截面；turnover_20 把 0 值算进均值；fwd 不剔停牌 | factors.py:84-86 | 窗口计算前剔除 volume=0 行或放宽 min_periods |
+| R3-39 | 22 脚本 `_rank` 用 argsort 序数排名（不处理并列），与 factor_test 的 `rank(pct=True)` 平均法不可比 | 22:36-40 | 统一 pandas rank |
+| R3-40 | experiments.py id 精确到秒（同秒同名覆盖）；record 在产物写盘前调用，artifacts 可指向不存在文件；无数据版本/面板截止日 | experiments.py:42-54；06:190-206 | id 加 uuid；record 移到写盘后；params 补 data_max_date |
+| R3-41 | `_next_trading_day` 日历缺失回退 latest+1 自然日，可能落周末 → 周一误拒单 | pipeline.py:384 | 回退改为拒绝下单并报警 |
+| R3-42 | 调度器 catch-up 用本地时间 vs APScheduler Asia/Shanghai 脱节；webapp Popen 未设 PYTHONUTF8（子进程日志中文乱码） | 14_scheduler.py:94-108；16_webapp.py:656 | 统一 zoneinfo；Popen 传同 env |
+| R3-43 | engine.py 期初仓位被收全天费用（position[0]≠0 当成交） | engine.py diff().fillna | 首日免费或文档标注 |
+| R3-44 | `_board_limit` 未处理 ST ±5%（PIT 并集历史上可能含 ST 成员）；webapp 错误信息回显 str(e) 含绝对路径；Cookie 解析子串匹配；API JSON 无 Cache-Control/nosniff；Content-Length 无上限 | pipeline.py:54 等 | ST 用名称表标记；其余小项一并修 |
+
+---
+
+## 测试盲区清单（46 项之外真正缺的）
+
+1. **multi_factor.py 零测试**——topk 停牌消失（R3-27）、n_slot 补足、1/len(held) 重定基全部未覆盖。
+2. 幂等性只测了"无并发、无崩溃"的 happy path：无"mark_filled 后 record_day 前崩溃再跑"（R3-04）、无"同日重跑成交翻转"（R3-07）、无任何双进程并发用例（R3-02）。
+3. D-038 测试只有单买单账户：多单滚动 cash_run、卖先买后跨日积压、部分成交后 trade_log 一致性无用例（R3-03 不会被现有测试拦截）。
+4. webapp HTTP 层零测试：登录流程/Cookie/401/Origin 全是裸函数级测试，Handler 类从未被请求过（R3-17 正是 test_report_path_traversal_blocked 只测 report_text 的漏网）。
+5. add_order 非法输入（NaN/负价格/非整数 qty）零用例（R3-20）。
+6. 22_factor_factory 与 06_walkforward 无任何测试——研究口径回归全靠 D-038 的 5 条，22 是漏网（R3-11 同因）。
+7. 延迟撮合场景（per-symbol 数据晚到、面板前进）无守卫测试——D-017 修过一次没留下回归（R3-06）。
+8. daily_backup 无测试（R3-23/24 都不会被现有测试发现）；scheduler catch-up/时区无测试；push 失败路径仅 --dry-push 打桩（R3-09）。
+9. 无覆盖率工具、无 lint（.gitignore 出现 ruff 但仓库无 ruff.toml）。
+
+## 已验证无问题（防止重复劳动）
+
+- D-038 三项修复本身正确（fwd 窗口/空洞防护/撮合护栏）。
+- build_factor_panel 基础因子全部只用 T 及以前数据（逐个核对）；dy_ttm 用除权日进窗口是保守方向；PIT 边界 `in<=date<out` 语义正确；因子窗口在 PIT 打洞前计算。
+- portfolio.py exec_at_open 两段收益经手算对账；停牌日两段收益自然缩并为 1.0，净值不漂；涨跌停跳过后不归一（现金闲置）与分红近似符合声称。
+- 卖单先于买单（ORDER BY signal_date,id）、_plan_orders 缩单只减不增不超现金、webapp add_order 与 pipeline 的 pending 互斥语义一致。
+- slip 不入库但可由 amount×0.0005 精确复算（当前对得上；隐患是常量双份硬编码，改一处即全线误报）。
+- git 卫生：126 个跟踪文件无 .env/data/webauth；dist 与源码一致；webapp 绑定 127.0.0.1、SQL 全参数化、token 比较时序安全。
+
+## 修复优先级路线图
+
+| 批次 | 内容 | 理由 |
+|---|---|---|
+| **批 1（立即）** | R3-01+R3-10（qfq 修复选型→实施，公司行为钩子一并）· R3-02（文件锁）· R3-03（qty 回写）· R3-04（重放自愈）· R3-07（删幽灵行） | 数据地基 + 资金正确性，其余一切研究建立在它们之上 |
+| **批 2（本周）** | R3-15（日历一行拆弹）· R3-11（22 口径）· R3-05（断路器语义拍板）· R3-06（延迟回填）· R3-08（手工单 fill_date）· R3-09（推送标记）· R3-14（dy_ttm 送转）· R3-29（审计覆盖四账户） | 小改动大风险消除 |
+| **批 3** | R3-17/18/19/20/21（webapp 安全五件套）· R3-22（失败告警）· R3-12/13（多重检验与披露） | 安全第一的用户原则（D-037） |
+| **批 4** | R3-23~44 健壮性批量 + 测试盲区补齐（优先 multi_factor、并发、崩溃恢复三类）+ CI Windows 矩阵 | 防复发 |

@@ -115,6 +115,8 @@ class Ledger:
                 " VALUES (?,?,?,?,?,?)",
                 (date, float(cash), float(market_value),
                  float(cash) + float(market_value), benchmark_nav, now))
+            if positions is not None:
+                conn.execute("DELETE FROM positions WHERE date=?", (date,))
             if positions is not None and len(positions):
                 rows = [(date, str(r.symbol), float(r.shares),
                          float(r.close), float(r.weight))
@@ -187,14 +189,15 @@ class Ledger:
             self.connect())
 
     def mark_filled(self, trade_id: int, fill_date: str, price: float,
-                    amount: float, fee: float, stamp_duty: float) -> None:
-        """把待成交订单标记为已完成（写入真实成交价与费用）。"""
+                    amount: float, fee: float, stamp_duty: float,
+                    qty: float | None = None) -> None:
+        """把待成交订单标记为已完成（写入真实成交价/费/实际数量——部分成交必传 qty）。"""
         conn = self.connect()
         with conn:
             conn.execute(
                 "UPDATE trade_log SET fill_date=?, price=?, amount=?, fee=?, "
-                "stamp_duty=?, status='filled' WHERE id=?",
-                (fill_date, price, amount, fee, stamp_duty, trade_id))
+                "stamp_duty=?, qty=COALESCE(?, qty), status='filled' WHERE id=?",
+                (fill_date, price, amount, fee, stamp_duty, qty, trade_id))
 
     def mark_rejected(self, trade_id: int, status: str, note: str = "") -> None:
         """把待成交订单标记为拒单（涨停/跌停/停牌）。"""
@@ -233,12 +236,17 @@ class Ledger:
 
         文件名带账本 stem（ledger / ledger_2000），避免多账户互相覆盖。
         """
-        self.connect().commit()
+        conn = self.connect()
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # R3-23：WAL 并入主库再拷贝
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         stamp = _dt.datetime.now().strftime("%Y%m%d")
         dst = _BACKUP_DIR / f"{self.path.stem}_{stamp}.sqlite"
         shutil.copyfile(self.path, dst)
-        backups = sorted(_BACKUP_DIR.glob(f"{self.path.stem}_*.sqlite"))
+        import re as _re
+        pat = _re.compile(_re.escape(self.path.stem) + r"_\d{8}\.sqlite$")
+        backups = sorted(p for p in _BACKUP_DIR.glob(f"{self.path.stem}_*.sqlite")
+                         if pat.match(p.name))  # R3-24：精确匹配防 ledger_2000 误删
         for old in backups[:-_KEEP_BACKUPS]:
             old.unlink(missing_ok=True)
         return dst

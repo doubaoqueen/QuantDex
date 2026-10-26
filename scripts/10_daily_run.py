@@ -57,10 +57,17 @@ def main() -> None:
     from src.strategies.registry import enabled_accounts
     results = []
     for key, cfg in enabled_accounts().items():
-        r = run_pipeline(capital=cfg["capital"], push=False,
-                         db_path=STORE_DIR / "sim" / cfg["ledger"],
-                         label=cfg["reports"], strategy=cfg["strategy"],
-                         max_positions=cfg["max_positions"])
+        try:
+            r = run_pipeline(capital=cfg["capital"], push=False,
+                             db_path=STORE_DIR / "sim" / cfg["ledger"],
+                             label=cfg["reports"], strategy=cfg["strategy"],
+                             max_positions=cfg["max_positions"])
+        except Exception as e:  # noqa: BLE001  R3-25：单账户失败不拖垮其余账户与合并邮件
+            import traceback
+            traceback.print_exc()
+            r = {"date": None, "new_report": False, "nav": None,
+                 "day_ret": None, "cum_ret": None,
+                 "report_text": f"# 账户 {key} 流水线失败：{e}"}
         results.append((cfg["group"], r))
 
     # 合并日报：四账户一封邮件（D-030/D-031）；沿用 D-029 去重——全部账户都推送过则跳过

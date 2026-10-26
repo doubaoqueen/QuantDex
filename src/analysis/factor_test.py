@@ -201,8 +201,9 @@ def quantile_backtest(panel: pd.DataFrame, factor: str,
 
     # 生效日 = 再平衡日的下一个交易日
     didx = pd.DatetimeIndex(dates)
-    snap["eff_date"] = snap["date"].map(
-        lambda rd: dates[min(didx.get_loc(rd) + 1, len(dates) - 1)])
+    # R3-16：末次再平衡若 +1 越界则丢弃该期（钳位=吃到信号前隔夜，1 天前视）
+    snap = snap[snap["date"].map(lambda rd: didx.get_loc(rd) + 1 < len(dates))].copy()
+    snap["eff_date"] = snap["date"].map(lambda rd: dates[didx.get_loc(rd) + 1])
     reb = snap[["eff_date", "symbol", "grp"]].rename(
         columns={"eff_date": "date"}).sort_values(["date", "symbol"])
 

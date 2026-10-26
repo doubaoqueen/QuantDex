@@ -22,8 +22,9 @@ from config import STORE_DIR
 from src.live.ledger import Ledger
 
 SLIP = 0.0005
-ACCOUNTS = {"large": STORE_DIR / "sim" / "ledger.sqlite",
-            "small": STORE_DIR / "sim" / "ledger_2000.sqlite"}
+from src.strategies.registry import enabled_accounts
+# R3-29：审计覆盖全部注册表账户（div/topk 不再漏审）
+ACCOUNTS = {k: STORE_DIR / "sim" / c["ledger"] for k, c in enabled_accounts().items()}
 results = []
 
 

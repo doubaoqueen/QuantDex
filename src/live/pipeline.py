@@ -190,7 +190,7 @@ def _fill_pending(led: Ledger, price_lookup: dict,
                 stamp = 0.0
                 slip = amount * SLIP
                 msg = f"开盘价现金不足，部分成交 {qty:.0f} 股"
-        led.mark_filled(o.id, str(fd.date()), op, amount, fee, stamp)
+        led.mark_filled(o.id, str(fd.date()), op, amount, fee, stamp, qty=qty)
         if cash_run is not None:
             cash_run += (amount - fee - stamp - slip if o.side == "sell"
                          else -(amount + fee + slip))
@@ -381,8 +381,11 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     bootstrap = snap_now.empty and len(W) > 0
     orders_df = None
     if not dry_run and (rebalance_day or bootstrap) and led.pending_orders().empty:
-        next_td = _next_trading_day(store, latest) or (latest + pd.Timedelta(days=1))
-        if max_positions:
+        next_td = _next_trading_day(store, latest)
+        if next_td is None:
+            # R3-41：日历缺失/到期时不落"自然日"单（可能落周末被误拒单）
+            print("[warn] 下一交易日无法确定（日历缺失/到期）——本期不挂单，请刷新日历后重跑")
+        elif max_positions:
             # 小资金模式：整手组合，按分数挑最多 max_positions 只
             orders = _plan_small_orders(day, new_shares, prices_close, cash,
                                         max_positions=max_positions)

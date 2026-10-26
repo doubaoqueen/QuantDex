@@ -54,7 +54,8 @@ def main() -> None:
           f"{len(panel)} 行", flush=True)
 
     px = panel.pivot(index="date", columns="symbol", values="close").sort_index()
-    fwd = {h: (px.shift(-h) / px - 1.0) for h in (5, 20)}
+    # D-038 可成交口径：T 收盘出信号、T+1 建仓、持有 h 日（剔隔夜跳空）
+    fwd = {h: (px.shift(-(h + 1)) / px.shift(-1) - 1.0) for h in (5, 20)}
     fwd_long = {h: f.stack().rename("fwd").reset_index()
                 .rename(columns={"level_0": "date", "level_1": "symbol"})
                 for h, f in fwd.items()}

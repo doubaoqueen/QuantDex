@@ -27,6 +27,15 @@ from src.data.storage import ParquetStore
 
 def main() -> None:
     store = ParquetStore()
+    # R3-15：日历止于 2026-12-31 的定时炸弹——距到期 30 天内自动刷新（幂等）
+    cal = store.read_or_empty("meta", "trade_calendar")
+    if cal.empty or pd.to_datetime(cal["date"]).max() < pd.Timestamp.now().normalize() + pd.Timedelta(days=30):
+        print(">> 交易日历缺失/将到期，刷新...", flush=True)
+        try:
+            from src.data.universe import fetch_trade_calendar
+            fetch_trade_calendar(store)
+        except Exception as e:  # noqa: BLE001
+            print(f"[calendar] 刷新失败: {e}", flush=True)
     symbols = universe.pit_union_symbols("000300", store)
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     if limit:

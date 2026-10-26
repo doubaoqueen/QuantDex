@@ -526,18 +526,40 @@ def add_order(acc, symbol, side, qty, price=None):
     symbol = str(symbol).strip()
     if side not in ("buy", "sell"):
         return {"ok": False, "msg": "方向只能是 buy/sell"}
-    qty = int(qty)
+    try:
+        qty = int(float(qty))
+    except (TypeError, ValueError):
+        return {"ok": False, "msg": "数量必须是数字"}
     if qty <= 0 or qty % 100 != 0:
         return {"ok": False, "msg": "数量必须是 100 的整数倍"}
     try:
         k = get_kline(symbol, adjust="qfq", store=_store)
     except Exception:  # noqa: BLE001
         return {"ok": False, "msg": f"没有 {symbol} 的行情数据"}
-    px = float(price) if price else float(k["close"].iloc[-1])
+    import math as _math
+    try:
+        px = float(price) if price else float(k["close"].iloc[-1])
+    except (TypeError, ValueError):
+        return {"ok": False, "msg": "价格非法"}
+    last_px = float(k["close"].iloc[-1])
+    if not _math.isfinite(px) or px <= 0 or px > last_px * 1.25:
+        return {"ok": False, "msg": f"价格非法（须为正数且不超过现价 125%: {last_px:.2f}）"}
     import pandas as pd2
     cal = pd2.read_parquet(STORE_DIR / "meta" / "trade_calendar.parquet")
     cal = pd2.to_datetime(cal["date"]).sort_values()
-    last = pd2.to_datetime(k["date"]).max()
+    # R3-08：基点=账户最新快照日与个股行情末日的较大者再取下一交易日
+    # （停牌股按自身末日推算会落过去/永 pending）
+    conn0 = _db(acc)
+    snap_day = None
+    if conn0 is not None:
+        try:
+            sd = pd2.read_sql_query(
+                "SELECT MAX(date) d FROM account_snapshot", conn0)
+            snap_day = pd2.to_datetime(sd["d"].iloc[0]) if len(sd) and sd["d"].iloc[0] else None
+        finally:
+            conn0.close()
+    last = max(pd2.to_datetime(k["date"]).max(),
+               snap_day) if snap_day is not None else pd2.to_datetime(k["date"]).max()
     nxt = cal[cal > last]
     fill = str(nxt.iloc[0].date()) if len(nxt) else str((last + pd2.Timedelta(days=1)).date())
     conn = _db(acc)
@@ -853,8 +875,10 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
         if not ctype.split(";")[0].strip() == "application/json":
             return self._send(403, {"err": "forbidden: Content-Type 必须为 application/json"})
-        if origin and not origin.startswith("http://127.0.0.1:8765"):
-            return self._send(403, {"err": "forbidden: 跨源请求被拒绝"})
+        if origin:
+            from urllib.parse import urlparse as _up
+            if _up(origin).netloc != "127.0.0.1:8765":   # R3-18：精确比对防前缀绕过
+                return self._send(403, {"err": "forbidden: 跨源请求被拒绝"})
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
         if u.path == "/api/login":
