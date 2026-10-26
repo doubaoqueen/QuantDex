@@ -253,6 +253,57 @@ def rebalance_diff(acc):
     return {"rows": rows, "nav": nav}
 
 
+def school_data():
+    """量化学院动态数据（D-044：内容数据在 src/analysis/school_content，统计实时算）。"""
+    from src.analysis import expr_factors as EF
+    from src.analysis.factors import FACTOR_NAMES
+    from src.analysis.school_content import (OPS_TABLE, PITFALLS, STATUS_STYLE,
+                                             STRATEGY_MAP)
+    st = {"n_factors": len(FACTOR_NAMES) + len(EF.EXPR_FACTORS) + 1,
+          "n_expr": len(EF.EXPR_FACTORS)}
+    try:
+        reg = pd.read_parquet(STORE_DIR / "registry.parquet")
+        g = reg.groupby("dataset").agg(n=("name", "count"))
+        st["daily_syms"] = int(g.loc["daily", "n"]) if "daily" in g.index else 0
+        st["total_rows"] = f"{int(reg['rows'].sum()) / 1e4:.0f} 万"
+        st["datasets"] = int(len(reg))
+    except Exception:  # noqa: BLE001
+        st.update({"daily_syms": 0, "total_rows": "-", "datasets": 0})
+    exp_dir = STORE_DIR / "experiments"
+    st["experiments"] = len(list(exp_dir.glob("*.json"))) if exp_dir.exists() else 0
+    ic = []
+    pth = STORE_DIR / "factor_results" / "expr_ic_summary.parquet"
+    if pth.exists():
+        df = pd.read_parquet(pth)
+        for _, r in df.head(18).iterrows():
+            ic.append({"factor": r["factor"], "family": r["family"],
+                       "ic20": round(float(r["ic20"]), 4),
+                       "t20": round(float(r["t20"]), 2),
+                       "sig": bool(abs(r["t20"]) > 2),
+                       "coverage": round(float(r["coverage"]), 2),
+                       "desc": EF.EXPR_FACTORS.get(r["factor"], {}).get("desc", "")})
+    st["ic_rows"] = ic
+    st["ops_rows"] = [{"op": o, "desc": d, "eg": e} for o, d, e in OPS_TABLE]
+    st["pitfalls"] = [{"title": t, "desc": d} for t, d in PITFALLS]
+    st["strategies"] = [{**sm, "style": STATUS_STYLE[sm["status"]][0]}
+                        for sm in STRATEGY_MAP]
+    accounts = []
+    for k, c in ACCOUNTS.items():
+        conn = _db(k)
+        nav = None
+        if conn is not None:
+            try:
+                sn = pd.read_sql_query(
+                    "SELECT total_nav FROM account_snapshot ORDER BY date DESC LIMIT 1",
+                    conn)
+                nav = float(sn["total_nav"].iloc[0]) if len(sn) else None
+            finally:
+                conn.close()
+        accounts.append({"key": k, "label": c["label"], "nav": nav})
+    st["accounts"] = accounts
+    return st
+
+
 def fees(acc):
     """费用统计（影子盘真实账本，仅已成交订单）。
 
@@ -858,6 +909,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, fees(q.get("account", ["large"])[0]))
             if u.path == "/api/candidates":
                 return self._send(200, candidates(q.get("account", ["large"])[0]))
+            if u.path == "/api/school":
+                return self._send(200, school_data())
             if u.path == "/api/strategies":
                 return self._send(200, {"accounts": [
                     {"key": k, "label": v["label"], "strategy": v["group"]}

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, provide } from 'vue'
 import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
+import SchoolView from './components/SchoolView.vue'
 import NavChart from './components/NavChart.vue'
 import BacktestPanel from './components/BacktestPanel.vue'
 import PositionsTable from './components/PositionsTable.vue'
@@ -26,6 +27,7 @@ const strategyGroups = (() => {
   }
   return [...seen.entries()].map(([name, accs]) => ({ name, accs }))
 })()
+const view = ref('console')   // console | school
 const account = ref('large')          // 当前选中账户，驱动全部面板与主题色
 const overviews = ref({})             // key -> overview
 const regime = ref(null)
@@ -163,12 +165,18 @@ function cumText(o) {
   }"></div>
 
   <div class="min-h-screen text-slate-800">
+    <!-- 量化学院视图（独立于控制台数据面板） -->
+    <SchoolView v-if="view==='school'" class="fixed inset-0 z-40 overflow-auto bg-slate-900" />
+    <div v-else>
     <!-- 顶栏 -->
     <header class="sticky top-0 z-20 border-b border-slate-200/70 bg-white/80 backdrop-blur">
       <div class="mx-auto flex max-w-[1400px] flex-wrap items-center gap-3 px-4 py-2.5">
         <h1 class="flex items-center gap-2 text-base font-bold">
-          <span class="live-dot inline-block h-2.5 w-2.5 rounded-full bg-sky-500"></span>
-          QuantDex 控制台
+          <button :class="view==='console' ? 'text-white' : 'text-slate-400'"
+                  class="rounded px-1 transition" @click="view='console'">控制台</button>
+          <span class="text-slate-600">/</span>
+          <button :class="view==='school' ? 'text-white' : 'text-slate-400'"
+                  class="rounded px-1 transition" @click="view='school'">量化学院</button>
         </h1>
         <div class="group relative">
           <button class="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm hover:border-sky-400"
@@ -281,5 +289,6 @@ function cumText(o) {
          class="fixed bottom-5 right-5 z-50 rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white shadow-lg">
       {{ toast }}
     </div>
+  </div>
   </div>
 </template>
