@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 技术指标库（纯 pandas/numpy 实现，无外部依赖）。
 输入为标准化日线 DataFrame（含 open/high/low/close/volume）。

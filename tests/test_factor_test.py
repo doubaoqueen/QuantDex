@@ -1,6 +1,4 @@
-# -*- coding: utf-8 -*-
 """因子检验口径回归（D-038）：可成交窗口 / PIT 空洞防护 / 建仓日日内段。"""
-import numpy as np
 import pandas as pd
 
 from src.analysis.factor_test import add_forward_returns, quantile_backtest
@@ -14,7 +12,7 @@ def test_fwd_window_starts_t_plus_1():
     """fwd_1 = close[t+2]/close[t+1] - 1（T+1 成交，剔除隔夜跳空）。"""
     dates = pd.date_range("2026-01-04", periods=4, freq="D")
     p = _panel([{"date": d, "symbol": "A", "close": c, "ret": 0.0}
-                for d, c in zip(dates, [10.0, 11.0, 12.0, 13.0])])
+                for d, c in zip(dates, [10.0, 11.0, 12.0, 13.0], strict=False)])
     out = add_forward_returns(p, horizons=(1,))
     assert abs(out.loc[out["date"] == dates[0], "fwd_1"].iloc[0]
                - (12.0 / 11.0 - 1)) < 1e-12
@@ -25,7 +23,7 @@ def test_fwd_hole_becomes_nan():
     dates = pd.date_range("2026-01-04", periods=10, freq="D")
     rows = []
     closes = {d: 10.0 + i for i, d in enumerate(dates)}
-    for i, d in enumerate(dates):                      # B：完整序列（撑起交易日序号）
+    for _i, d in enumerate(dates):                      # B：完整序列（撑起交易日序号）
         rows.append({"date": d, "symbol": "B", "close": closes[d], "ret": 0.0})
         if d not in (dates[2], dates[3], dates[4]):    # A：01-06~01-08 被剔除（洞）
             rows.append({"date": d, "symbol": "A", "close": closes[d] + 5, "ret": 0.0})

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 第 6 步：walk-forward 防过拟合检验（多因子策略参数稳健性）。
 
@@ -16,20 +15,21 @@
 """
 import sys
 
+import _bootstrap  # noqa: F401
 import numpy as np
 import pandas as pd
 
-import _bootstrap  # noqa: F401
-
 from config import STORE_DIR
-from src.data.storage import ParquetStore
+from src.analysis.factors import build_factor_panel
+from src.backtest.portfolio import run_portfolio_backtest
 from src.data import financials, universe
 from src.data.market import get_kline
-from src.analysis.factors import build_factor_panel
-from src.strategies.multi_factor import (topk_dropout_topn,
-                                         turnover_lowvol_dividend_topn,
-                                         turnover_lowvol_reversal_topn)
-from src.backtest.portfolio import run_portfolio_backtest
+from src.data.storage import ParquetStore
+from src.strategies.multi_factor import (
+    topk_dropout_topn,
+    turnover_lowvol_dividend_topn,
+    turnover_lowvol_reversal_topn,
+)
 
 START_DATE = "20180101"
 GRID = [(tn, rb) for tn in (20, 30, 50) for rb in (10, 20, 60)]

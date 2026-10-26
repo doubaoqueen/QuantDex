@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """完整绩效指标：收益/风险/回撤/交易质量/相对基准。"""
 import numpy as np
 import pandas as pd

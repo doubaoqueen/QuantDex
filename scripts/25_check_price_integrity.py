@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """价格完整性检测器（D-041 的证据仪器）。
 
 原理：除权日当天，真实市场涨跌幅（pct_chg，交易所口径）与存储价格的
@@ -10,9 +9,9 @@ close-to-close 变化应当一致；两者之差 = 复权断裂（假跳空）�
 import sys
 from pathlib import Path
 
+import _bootstrap  # noqa: F401
 import pandas as pd
 
-import _bootstrap  # noqa: F401
 from config import STORE_DIR
 
 TOL = 0.01

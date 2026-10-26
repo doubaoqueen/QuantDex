@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 因子中性化四口径检验：低换手/低波/反转 是"小盘代理"还是"行业代理"？
 
@@ -18,10 +17,9 @@
 """
 import sys
 
+import _bootstrap  # noqa: F401
 import numpy as np
 import pandas as pd
-
-import _bootstrap  # noqa: F401
 
 from config import STORE_DIR
 from src.analysis.factor_test import _newey_west_tstat

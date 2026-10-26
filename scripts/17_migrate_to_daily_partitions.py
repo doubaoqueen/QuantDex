@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 一次性迁移：per-symbol 日线 → 按日分区（append-only）。
 
@@ -8,9 +7,8 @@
 """
 import sys
 
-import pandas as pd
-
 import _bootstrap  # noqa: F401
+import pandas as pd
 
 from config import STORE_DIR
 from src.data.partitions import PART_DIR, migrate_from_symbols, rebuild_symbol_cache

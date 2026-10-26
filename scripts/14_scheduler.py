@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Python 原生定时调度器（APScheduler，常驻进程）。
 
@@ -101,7 +100,7 @@ def main() -> None:
         job()
     elif _report_exists_today():
         print(f"今天（{now:%Y-%m-%d}）的日报已存在，等待下一次定时 {args.hour:02d}:{args.minute:02d}")
-        _log(f"startup: 今日日报已存在，跳过补跑")
+        _log("startup: 今日日报已存在，跳过补跑")
 
     sched = BlockingScheduler(timezone="Asia/Shanghai")
     sched.add_job(job,

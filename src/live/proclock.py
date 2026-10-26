@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """跨进程文件锁（R3-02）：流水线/更新入口互斥，防双订单与账本竞态。
 
 Windows 用 msvcrt.locking，POSIX 用 fcntl.flock；进程崩溃由 OS 自动释放，

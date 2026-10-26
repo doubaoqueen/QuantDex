@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 D-011 市场状态过滤器回测：弱市约束"新开仓"能否改善 MDD/收益？
 
@@ -16,10 +15,9 @@ D-011 市场状态过滤器回测：弱市约束"新开仓"能否改善 MDD/收�
 """
 import sys
 
+import _bootstrap  # noqa: F401
 import numpy as np
 import pandas as pd
-
-import _bootstrap  # noqa: F401
 
 from config import STORE_DIR
 from src.analysis.factors import build_factor_panel

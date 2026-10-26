@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """单标的向量化引擎回归测试：T+1 成交、佣金、滑点、印花税。"""
 import numpy as np
 import pandas as pd

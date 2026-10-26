@@ -1,25 +1,24 @@
-# -*- coding: utf-8 -*-
 """
 演示：读取本地数据 -> 技术指标 -> 数据质检 -> 收益概览 -> 回测绩效。
 用法：python scripts/demo_analysis.py [代码，默认510300]
 """
-import _bootstrap  # noqa: F401
 import sys
 
-from src.data.storage import ParquetStore
-from src.data.market import get_kline
+import _bootstrap  # noqa: F401
+
 from src.analysis.indicators import add_indicators
 from src.analysis.quality import quality_report
-from src.analysis.report import symbol_overview, yearly_returns, store_coverage
-from src.strategies.dual_ma import dual_ma_signal
+from src.analysis.report import store_coverage, symbol_overview, yearly_returns
 from src.backtest.engine import run_backtest
 from src.backtest.metrics import performance
-
+from src.data.market import get_kline
+from src.data.storage import ParquetStore
+from src.strategies.dual_ma import dual_ma_signal
 
 # 需要按百分比显示的指标
 _PCT_KEYS = {
     "区间总收益", "年化收益", "年化波动", "最大回撤", "基准区间收益", "超额收益(区间)",
-    "总收益率", "年化收益率", "年化波动率", "最大回撤", "基准总收益率",
+    "总收益率", "年化收益率", "年化波动率", "基准总收益率",
     "超额总收益", "年化超额收益", "胜率", "平均每笔收益", "平均盈利", "平均亏损",
 }
 # 倍数/数值（保留2位小数），天数/笔数（整数）
@@ -82,7 +81,7 @@ def main() -> None:
 
     # 自动出图（失败不影响控制台结果）
     try:
-        from src.analysis.plot import plot_kline, plot_backtest, plot_yearly_returns
+        from src.analysis.plot import plot_backtest, plot_kline, plot_yearly_returns
         p1 = plot_kline(df, name=symbol, title=f"{symbol} 收盘价与均线")
         p2 = plot_backtest(result, title=f"{symbol} 双均线(5,20)回测", name=symbol)
         p3 = plot_yearly_returns(df, title=f"{symbol} 分年度收益", name=symbol)

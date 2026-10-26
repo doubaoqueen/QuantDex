@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 数据备份（D-035：数据出 git 后的唯一异地/本地备份手段）。
 
@@ -17,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
+
 from config import STORE_DIR
 
 ROOT = STORE_DIR.parent.parent          # 项目根

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """实验存档（Recorder 轻量版，对标 qlib Recorder/MLflow 思想，D-031）。
 
 把"参数 ↔ 结果指标 ↔ 产物路径 ↔ 代码版本"绑成一条 JSON 记录，

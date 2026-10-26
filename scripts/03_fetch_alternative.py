@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 第 3 步：抓取另类/深度数据——估值、财务、资金流、宏观、龙虎榜。
 用法：python scripts/03_fetch_alternative.py
@@ -6,14 +5,16 @@
 import _bootstrap  # noqa: F401
 import pandas as pd
 
-from src.data.storage import ParquetStore
-from src.data.valuation import fetch_stock_valuation, fetch_index_valuation
 from src.data.financials import fetch_all_financials
+from src.data.macro import fetch_bs_macro, fetch_cpi, fetch_lpr
 from src.data.moneyflow import (
-    fetch_northbound, fetch_margin_hist, fetch_lhb,
+    fetch_lhb,
+    fetch_margin_hist,
+    fetch_northbound,
 )
-from src.data.macro import fetch_cpi, fetch_lpr, fetch_bs_macro
 from src.data.sources import bs_logout
+from src.data.storage import ParquetStore
+from src.data.valuation import fetch_index_valuation, fetch_stock_valuation
 
 STOCKS = ["600519", "300750"]
 INDEX_VAL_NAMES = ["沪深300", "中证500", "创业板50"]

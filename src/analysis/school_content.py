@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """量化学院教学内容数据（D-044：数据归 src，展示归 frontend）。"""
 
 STRATEGY_MAP = [

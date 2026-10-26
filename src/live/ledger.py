@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 模拟盘账本（SQLite，WAL 模式）。
 
@@ -104,7 +103,7 @@ class Ledger:
     def record_day(self, date: str, cash: float, market_value: float,
                    positions: pd.DataFrame | None = None,
                    trades: pd.DataFrame | None = None,
-                   benchmark_nav: float | None = None) -> "Ledger":
+                   benchmark_nav: float | None = None) -> Ledger:
         """写入某日模拟记录（快照 + 持仓 + 成交，同一事务）。"""
         conn = self.connect()
         now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

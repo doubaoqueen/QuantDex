@@ -1,13 +1,13 @@
-# -*- coding: utf-8 -*-
 """
 第 2 步：批量（增量）抓取核心标的日线并落盘。
 已有数据的标的只增量抓最新部分，可反复运行。
 用法：python scripts/02_update_market.py
 """
 import _bootstrap  # noqa: F401
-from src.data.storage import ParquetStore
+
 from src.data.market import update_kline_batch
 from src.data.sources import bs_logout
+from src.data.storage import ParquetStore
 
 # 默认跟踪清单（可自行增删，代码为 6 位）
 STOCKS = ["600519", "000858", "601318", "000333", "300750"]

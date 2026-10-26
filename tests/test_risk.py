@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """组合级风控回归测试：单票上限、总仓位、回撤断路器。"""
 import numpy as np
 import pandas as pd

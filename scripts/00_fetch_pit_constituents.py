@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 第 0 步：下载 point-in-time 历史指数成分表并落库（消除幸存者偏差的地基数据）。
 
@@ -10,8 +9,8 @@
 """
 import io
 import tarfile
-import _bootstrap  # noqa: F401
 
+import _bootstrap  # noqa: F401
 import pandas as pd
 import requests
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """网络/数据源诊断: 东财 vs 新浪 vs baostock, 以及代理环境。
 运行: python scripts/_net_diag.py     (结果自动写入 net_diag_result.txt)
 """
@@ -52,6 +51,7 @@ t("stock_zh_a_daily(sh600519)", lambda: __import__("akshare").stock_zh_a_daily(
 log()
 log("== baostock ==")
 import baostock as bs
+
 lg = bs.login()
 log(f"  login: {lg.error_code} {lg.error_msg}")
 

@@ -1,13 +1,13 @@
-# -*- coding: utf-8 -*-
 """
 第 1 步：初始化标的池与基础数据（股票/ETF/指数/可转债列表、交易日历、
 全量证券、主要指数成分股）。
 用法：python scripts/01_init_universe.py
 """
 import _bootstrap  # noqa: F401
+
+from src.data.sources import bs_logout
 from src.data.storage import ParquetStore
 from src.data.universe import init_universe
-from src.data.sources import bs_logout
 
 
 def main() -> None:

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 P0 参考数据补全（docs/DATA_ROADMAP.md）：
   1) 全量证券表（含退市）：meta/bs_securities —— 退市研究 + 无偏股票池底座

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """表达式引擎 + TopkDropout 选股回归测试。"""
 import numpy as np
 import pandas as pd

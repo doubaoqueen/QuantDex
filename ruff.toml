@@ -1,0 +1,19 @@
+# QuantDex 代码规范执行器（CODE_STANDARD.md §8/D-044）
+line-length = 100
+target-version = "py311"
+exclude = ["frontend", "data", "quantdex_vault", "docs", "_legacy_old_naming"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+  "E501",   # 行宽由人掌握（中文注释与长公式）
+  "E402",   # scripts 需先 import _bootstrap 再 import src（结构性前置）
+  "B008",   # FastAPI 风格默认参数调用不适用本项目
+]
+
+[lint.per-file-ignores]
+"scripts/*" = ["F401"]  # 脚本顶部的预留导入（_bootstrap 等）
+"tests/*" = ["E501"]
+
+[lint.isort]
+known-first-party = ["src", "config"]

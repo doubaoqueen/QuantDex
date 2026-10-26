@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 第 4 步：因子研究（IC / 分层回测 / 衰减）。
 流程：PIT 历史成分并集 -> 批量(增量)抓前复权日线(baostock，覆盖退市股)
@@ -19,12 +18,12 @@ import _bootstrap  # noqa: F401
 import pandas as pd
 
 from config import STORE_DIR
-from src.data.storage import ParquetStore
+from src.analysis.factor_test import run_factor_tests
+from src.analysis.factors import FACTOR_DESC, FACTOR_NAMES, build_factor_panel
 from src.data import universe
 from src.data.market import get_local_last_date, update_kline_batch
 from src.data.schema import normalize_code
-from src.analysis.factors import FACTOR_NAMES, FACTOR_DESC, build_factor_panel
-from src.analysis.factor_test import run_factor_tests
+from src.data.storage import ParquetStore
 
 START_DATE = "20180101"     # 因子样本起始
 N_GROUPS = 5                # 分层组数

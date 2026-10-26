@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """表达式因子库（AlphaLite32）：对标 qlib Alpha158 的"产能形态"，字段用我们
 的真实数据（close/open/high/low/volume/amount/turnover——特别是真实换手率，
 qlib 样例库没有）。所有表达式只用 Ref(x, n>0)（只看过去），无前视。
@@ -88,7 +87,7 @@ EXPR_FACTORS: dict[str, dict] = {
 EXPR_NAMES = list(EXPR_FACTORS)
 
 
-def evaluate_all(fields: dict, names: list[str] | None = None) -> dict[str, "object"]:
+def evaluate_all(fields: dict, names: list[str] | None = None) -> dict[str, object]:
     """对一个标的的字段字典批量求值，返回 {因子名: Series}。"""
     from src.analysis.expr import evaluate
     out = {}

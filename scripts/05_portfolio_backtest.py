@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 第 5 步：组合 / 截面回测 —— 20日动量 + 低波 Top-N 等权，定期调仓，对比基准。
 
@@ -14,16 +13,18 @@ import _bootstrap  # noqa: F401
 import pandas as pd
 
 from config import STORE_DIR
-from src.data.storage import ParquetStore
-from src.data import financials, universe
-from src.data.market import get_kline
 from src.analysis.factors import build_factor_panel
 from src.analysis.plot import plot_backtest
-from src.strategies.multi_factor import (momentum_lowvol_topn,
-                                         topk_dropout_topn,
-                                         turnover_lowvol_dividend_topn,
-                                         turnover_lowvol_reversal_topn)
 from src.backtest.portfolio import portfolio_performance, run_portfolio_backtest
+from src.data import financials, universe
+from src.data.market import get_kline
+from src.data.storage import ParquetStore
+from src.strategies.multi_factor import (
+    momentum_lowvol_topn,
+    topk_dropout_topn,
+    turnover_lowvol_dividend_topn,
+    turnover_lowvol_reversal_topn,
+)
 
 START_DATE = "20180101"
 

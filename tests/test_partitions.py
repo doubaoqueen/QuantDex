@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """按日分区测试：一天一个文件、按 symbol+adjust 去重、批次缓冲。"""
 import pathlib
 import shutil

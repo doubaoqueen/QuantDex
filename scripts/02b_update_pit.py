@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 只更新 PIT 历史成员行情（不跑流水线）。
 
@@ -17,9 +16,8 @@
 import os
 import sys
 
-import pandas as pd
-
 import _bootstrap  # noqa: F401
+import pandas as pd
 
 from config import DEFAULT_START_DATE
 from src.data import universe

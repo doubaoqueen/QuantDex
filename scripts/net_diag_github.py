@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """GitHub 连通性诊断: DNS / TCP / HTTPS / git 代理 / ssh, 结果写入 gh_diag_result.txt
 运行: python scripts/net_diag_github.py
 """

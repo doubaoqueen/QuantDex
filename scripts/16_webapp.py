@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 QuantDex 本地可视化控制台（Python 标准库，零依赖）。
 
@@ -26,12 +25,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import _bootstrap  # noqa: F401
 import pandas as pd
 
-import _bootstrap  # noqa: F401
 from config import STORE_DIR
 from src.data.market import get_kline
-from src.data.snapshot import freshness as data_freshness, update_spot_snapshot
+from src.data.snapshot import freshness as data_freshness
+from src.data.snapshot import update_spot_snapshot
 from src.data.storage import ParquetStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -257,8 +257,7 @@ def school_data():
     """量化学院动态数据（D-044：内容数据在 src/analysis/school_content，统计实时算）。"""
     from src.analysis import expr_factors as EF
     from src.analysis.factors import FACTOR_NAMES
-    from src.analysis.school_content import (OPS_TABLE, PITFALLS, STATUS_STYLE,
-                                             STRATEGY_MAP)
+    from src.analysis.school_content import OPS_TABLE, PITFALLS, STATUS_STYLE, STRATEGY_MAP
     st = {"n_factors": len(FACTOR_NAMES) + len(EF.EXPR_FACTORS) + 1,
           "n_expr": len(EF.EXPR_FACTORS)}
     try:
@@ -350,9 +349,10 @@ def candidates(acc):
     if _CAND_CACHE["acc"] == acc and now - _CAND_CACHE["t"] < 900:
         return _CAND_CACHE["data"]
     import numpy as np
+
+    from src.analysis.factors import compute_raw_factors
     from src.data import financials, universe
     from src.data.market import get_kline
-    from src.analysis.factors import compute_raw_factors
 
     store = _store
     is_div = (acc == "div")
@@ -693,6 +693,7 @@ def regime():
     try:
         import glob
         import os
+
         import numpy as np
         files = glob.glob(os.path.join(str(STORE_DIR / "market" / "daily"), "*.parquet"))[:200]
         above = tot = 0
@@ -887,7 +888,7 @@ class Handler(BaseHTTPRequestHandler):
                 if static:
                     # 入口页不缓存：保证发版后刷新即得新版（assets 文件名带哈希可长缓存）
                     return self._send(200, static[0], static[1], cache="no-cache")
-                return self._send(503, "前端未构建：请运行 cd frontend && npm run build".encode("utf-8"),
+                return self._send(503, "前端未构建：请运行 cd frontend && npm run build".encode(),
                                   "text/plain; charset=utf-8")
             if not u.path.startswith("/api/"):
                 static = _serve_static(u.path)      # /assets/*.js|css 等前端产物

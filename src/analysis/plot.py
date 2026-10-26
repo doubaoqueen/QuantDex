@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 数据可视化（Pillow 静态图）：把行情 / 回测 / 因子结果翻译成能看懂的 PNG 图。
 
@@ -93,7 +92,7 @@ def _points(xs, ys, rect, x_min, x_max, y_min, y_max) -> list[tuple[int, int]]:
         y_max = y_min + 1.0
     w, h = rect[2] - rect[0], rect[3] - rect[1]
     pts = []
-    for x, y in zip(xs, ys):
+    for x, y in zip(xs, ys, strict=False):
         px = rect[0] + (x - x_min) / (x_max - x_min) * w
         py = rect[3] - (y - y_min) / (y_max - y_min) * h
         pts.append((int(round(px)), int(round(py))))
@@ -105,7 +104,8 @@ def _draw_axes(draw, rect, x_min, x_max, y_min, y_max,
                font_size=14, grid_x=False):
     """坐标轴 + 刻度 + 网格。y_fmt: 刻度数值 -> 标签字符串。"""
     if y_fmt is None:
-        y_fmt = lambda t: f"{t:.2f}"
+        def y_fmt(t):
+            return f"{t:.2f}"
     x0, y0, x1, y1 = rect
     f = _font(font_size)
     draw.rectangle([x0, y0, x1, y1], outline=AXIS, width=1)
@@ -221,7 +221,7 @@ def plot_kline(df: pd.DataFrame, ma_windows=(5, 20, 60),
     rect = (70, top + 6, 1080, top + 6 + 400)
     _draw_axes(draw, rect, float(x.min()), float(x.max()), y_min, y_max,
                y_fmt=lambda t: f"{t:.0f}", y_n=6, x_labels=_date_labels(d["date"]))
-    for label, y, color, lw in series:
+    for _label, y, color, lw in series:
         mask = ~np.isnan(y)
         draw.line(_points(x[mask], y[mask], rect, float(x.min()), float(x.max()), y_min, y_max),
                   fill=color, width=int(lw * 1.6))
@@ -292,7 +292,7 @@ def plot_ic_heatmap(ic_table: pd.DataFrame, metric: str = "ic_mean",
     w = left + cell_w * tbl.shape[1] + 80
     h = top_m + cell_h * tbl.shape[0] + 70
     img, draw = _new_canvas(w, h)
-    top = _title(img, draw, title or f"因子 RankIC 热力图（* 表示 |NW t|>2）", font_size=22)
+    top = _title(img, draw, title or "因子 RankIC 热力图（* 表示 |NW t|>2）", font_size=22)
     f_label = _font(16)
     f_cell = _font(15)
     # 列标签（持有期）

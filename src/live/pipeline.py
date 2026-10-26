@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 影子盘每日流水线（v2：T+1 两段式成交，与回测口径一致）。
 
@@ -20,8 +19,6 @@
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
@@ -32,9 +29,11 @@ from src.data.market import get_kline
 from src.data.storage import ParquetStore
 from src.live.ledger import Ledger
 from src.risk.risk import apply_risk
-from src.strategies.multi_factor import (topk_dropout_topn,
-                                         turnover_lowvol_dividend_topn,
-                                         turnover_lowvol_reversal_topn)
+from src.strategies.multi_factor import (
+    topk_dropout_topn,
+    turnover_lowvol_dividend_topn,
+    turnover_lowvol_reversal_topn,
+)
 
 FEE = 0.00025       # 券商佣金率（单边）
 SLIP = 0.0005       # 滑点（单边，按成交额）
@@ -416,7 +415,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
 
     # 3) 最新收盘价与净值
     day = panel[panel["date"] == latest]
-    prices_close = dict(zip(day["symbol"].astype(str), day["close"].astype(float)))
+    prices_close = dict(zip(day["symbol"].astype(str), day["close"].astype(float), strict=False))
     mv = 0.0
     for s, sh in new_shares.items():
         px = prices_close.get(s)

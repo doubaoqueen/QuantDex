@@ -1,6 +1,4 @@
-# -*- coding: utf-8 -*-
 """开盘执行口径回归（D-034）：T+1 开盘成交的两段收益与独立手算一致。"""
-import numpy as np
 import pandas as pd
 
 from src.backtest.portfolio import run_portfolio_backtest

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """组合回测引擎回归测试：T+1 生效、权重漂移、换手成本、印花税、现金。"""
 import numpy as np
 import pandas as pd

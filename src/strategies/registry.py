@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """策略/账户注册表（D-039）：账户定义的**单一事实来源**。
 
 此前账户信息散落 5 处硬编码（10_daily_run、webapp.ACCOUNTS、backtest 后缀映射、

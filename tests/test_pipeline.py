@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """影子盘流水线回归测试：下单计划 + T+1 撮合（成交/涨停/跌停/停牌拒单）。"""
 from pathlib import Path
 
@@ -73,7 +72,7 @@ def test_fill_pending_statuses():
         assert by_sym["688009"]["status"] == "rejected_suspended"
         # 账本落库校验
         trades = led.trades()
-        status = dict(zip(trades["symbol"], trades["status"]))
+        status = dict(zip(trades["symbol"], trades["status"], strict=False))
         assert status["600519"] == "filled"
         assert status["000001"] == "rejected_limit_up"
         filled = trades[trades["symbol"] == "600519"].iloc[0]
@@ -159,9 +158,8 @@ def test_report_email_sent_once_per_day():
     """同一交易日的重复运行不得重复推送邮件（周末重跑/幂等重跑静默）。"""
     import shutil
 
-    from src.data import universe
-    from src.data.storage import ParquetStore
     from src.analysis.factors import build_factor_panel
+    from src.data.storage import ParquetStore
     from src.live import notifier
     from src.live.pipeline import run_pipeline
 
@@ -192,9 +190,10 @@ def test_report_email_sent_once_per_day():
     assert r2["emailed"] is False, "同日重复运行不得重复推送"
     assert len(sent) == 1, f"邮件应只发 1 封，实际 {len(sent)}"
 
-    import gc, time as _t
+    import gc
+    import time as _t
     gc.collect()
-    for attempt in range(4):   # Windows 句柄释放有延迟，重试清理
+    for _attempt in range(4):   # Windows 句柄释放有延迟，重试清理
         try:
             for suffix in ("", "-wal", "-shm"):
                 Path(str(tmp_db) + suffix).unlink(missing_ok=True)
@@ -228,8 +227,9 @@ def test_combine_reports_merges_sections_and_summary():
 # ---------------------------------------------------------------- 现金护栏（D-038）
 def test_fill_pending_partial_fill_on_gap_up():
     """高开超现金 -> 部分成交（整手递减至可负担）。"""
-    from src.live.pipeline import _fill_pending
     from pathlib import Path
+
+    from src.live.pipeline import _fill_pending
     tmp = Path("data/store/sim/_test_cash.sqlite")
     for suf in ("", "-wal", "-shm"):
         Path(str(tmp) + suf).unlink(missing_ok=True)
@@ -251,8 +251,9 @@ def test_fill_pending_partial_fill_on_gap_up():
 
 
 def test_fill_pending_reject_when_one_lot_unaffordable():
-    from src.live.pipeline import _fill_pending
     from pathlib import Path
+
+    from src.live.pipeline import _fill_pending
     tmp = Path("data/store/sim/_test_cash2.sqlite")
     for suf in ("", "-wal", "-shm"):
         Path(str(tmp) + suf).unlink(missing_ok=True)

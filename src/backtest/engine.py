@@ -1,11 +1,9 @@
-# -*- coding: utf-8 -*-
 """
 向量化回测引擎（T+1 开盘成交，避免未来函数）：
 - 信号 T 日收盘生成，T+1 日开盘按开盘价执行
 - 双边手续费、滑点；卖出印花税（股票 0.05%，ETF 为 0）
 - 输出净值、基准净值、回撤序列、逐笔交易明细
 """
-import numpy as np
 import pandas as pd
 
 from src.backtest.metrics import extract_trades
@@ -53,9 +51,9 @@ def run_backtest(
 
 
 if __name__ == "__main__":
+    from src.backtest.metrics import performance
     from src.data.market import get_kline
     from src.strategies.dual_ma import dual_ma_signal
-    from src.backtest.metrics import performance
 
     df = get_kline("510300")
     df = dual_ma_signal(df, fast=5, slow=20)

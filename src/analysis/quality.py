@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 数据质量检查：缺失交易日、重复日期、零成交(停牌)、OHLC 逻辑错误、
 缺失值统计、异常涨跌幅。
@@ -45,15 +44,15 @@ def check_zero_volume(df: pd.DataFrame) -> pd.DataFrame:
 
 def check_ohlc_logic(df: pd.DataFrame) -> pd.DataFrame:
     """OHLC 价格逻辑错误：最高<最低、开/收 超出最高最低范围。"""
-    o, h, l, c = (pd.to_numeric(df[c], errors="coerce")
+    o, h, ln, c = (pd.to_numeric(df[c], errors="coerce")
                   for c in ("open", "high", "low", "close"))
-    bad = (h < l) | (o > h) | (o < l) | (c > h) | (c < l) | h.isna() | l.isna()
+    bad = (h < ln) | (o > h) | (o < ln) | (c > h) | (c < ln) | h.isna() | ln.isna()
     out = df[bad].copy()
     if len(out):
         out["issue"] = np.select(
-            [h[bad] < l[bad],
-             (o[bad] > h[bad]) | (o[bad] < l[bad]),
-             (c[bad] > h[bad]) | (c[bad] < l[bad])],
+            [h[bad] < ln[bad],
+             (o[bad] > h[bad]) | (o[bad] < ln[bad]),
+             (c[bad] > h[bad]) | (c[bad] < ln[bad])],
             ["high<low", "open_out_of_range", "close_out_of_range"],
             default="missing_hl",
         )

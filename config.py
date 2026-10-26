@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """QuantDex 全局配置：路径与默认参数。"""
 from pathlib import Path
 

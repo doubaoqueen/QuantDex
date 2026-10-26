@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """模拟盘账本回归测试：建表、写入、读回、WAL。"""
 from pathlib import Path
 

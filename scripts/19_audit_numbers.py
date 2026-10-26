@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 数字审计：账户/持仓/成交/报表逐项对账，输出 PASS/FAIL。
 
@@ -14,15 +13,15 @@
 import re
 import sys
 
-import pandas as pd
-
 import _bootstrap  # noqa: F401
+import pandas as pd
 
 from config import STORE_DIR
 from src.live.ledger import Ledger
 
 SLIP = 0.0005
 from src.strategies.registry import enabled_accounts
+
 # R3-29：审计覆盖全部注册表账户（div/topk 不再漏审）
 ACCOUNTS = {k: STORE_DIR / "sim" / c["ledger"] for k, c in enabled_accounts().items()}
 results = []

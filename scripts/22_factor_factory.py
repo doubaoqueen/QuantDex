@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 表达式因子工厂检验（D-031）：AlphaLite32 逐因子真数据 IC 筛选。
 
@@ -71,7 +70,7 @@ def main() -> None:
         for h in (5, 20):
             m = col.merge(fwd_long[h], on=["date", "symbol"], how="inner").dropna()
             ics = []
-            for d, g in m.groupby("date"):
+            for _, g in m.groupby("date"):
                 if len(g) < 30:
                     continue
                 ics.append(_pearson(_rank(g[f].to_numpy(float)),

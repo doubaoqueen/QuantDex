@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 增量抓取 PIT 历史成员的分红送配数据（baostock，按报告年度）。
 已存在的文件自动跳过，可断点续跑。
@@ -33,7 +32,7 @@ def main() -> None:
             if (STORE_DIR / "financials" / "baostock" / f"{sym}__dividend.parquet").exists():
                 skip += 1
                 continue
-            df = fetch_dividend(str(sym), years=YEARS, store=store)
+            fetch_dividend(str(sym), years=YEARS, store=store)
             ok += 1
         except Exception as e:  # noqa: BLE001
             fail += 1

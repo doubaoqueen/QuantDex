@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 因子库：从标准化日线构造截面因子面板。
 
@@ -18,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data.schema import normalize_code, kline_file_name
+from src.data.schema import kline_file_name, normalize_code
 from src.data.storage import ParquetStore
 
 # 因子名与中文说明（方向以实测 IC 为准）

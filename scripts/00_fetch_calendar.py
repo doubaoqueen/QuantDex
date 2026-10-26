@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 第 0b 步：补全交易日历 meta/trade_calendar，并做数据覆盖健康检查。
 

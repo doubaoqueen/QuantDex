@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 邮件推送连通性测试：发送一封测试邮件。
 运行: python scripts/09_test_mail.py

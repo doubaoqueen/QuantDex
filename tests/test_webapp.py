@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """webapp 安全与挂单校验回归（D-034）：路径遍历防护 / 买入现金 / 卖出持仓。"""
 import importlib.util
 import sys

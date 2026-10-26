@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """策略注册表一致性回归（D-039）：加账户漏改一处即在此报错。"""
 import importlib.util
 import sys
