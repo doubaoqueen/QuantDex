@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-每日一键：更新 PIT 历史成员行情 → 影子盘流水线（三个账户）→ 合并日报邮件。
+每日一键：更新 PIT 历史成员行情 → 影子盘流水线（四个账户）→ 合并日报邮件。
 
 账户：
   - large：100 万虚拟，现行策略（低换手+低波+反转 Top50 等权）
   - small：2000 元虚拟，整手小组合（最多 3 只），实盘建仓模拟
   - div  ：100 万虚拟，红利版（低换手+低波+股息率，D-027）——与现行策略并行对比
   - topk ：100 万虚拟，TopkDropout 换手机制（同 corrected 因子，D-031）——换手 A/B
-邮件：三账户合并为一封（含账户速览，D-030）；同一交易日只推一次（D-029）。
+邮件：四账户合并为一封（含账户速览，D-030）；同一交易日只推一次（D-029）。
 
 用法：
-    python scripts/10_daily_run.py              # 完整每日流程（三账户 + 一封合并邮件）
-    python scripts/10_daily_run.py --no-push    # 不发送邮件
+    python scripts/10_daily_run.py                 # 完整每日流程（四账户 + 一封合并邮件）
+    python scripts/10_daily_run.py --no-push        # 不发送邮件
+    python scripts/10_daily_run.py --dry-push       # 只构建邮件正文、不发送（验证推送分支用）
 """
 import sys
 
@@ -68,7 +69,12 @@ def main() -> None:
                          db_path=STORE_DIR / "sim" / "ledger_div.sqlite",
                          label="div", strategy="dividend")
 
-    # 合并日报：三账户一封邮件（D-030）；沿用 D-029 去重——全部账户都推送过则跳过
+    print("\n>> [账户 topk] 影子盘流水线（100 万 / TopkDropout 换手机制，D-031）...")
+    r_topk = run_pipeline(push=False,
+                          db_path=STORE_DIR / "sim" / "ledger_topk.sqlite",
+                          label="topk", strategy="topkdrop")
+
+    # 合并日报：四账户一封邮件（D-030/D-031）；沿用 D-029 去重——全部账户都推送过则跳过
     if push:
         results = [("大账户（100万）", r_large), ("小账户（2000元）", r_small),
                    ("红利账户（100万）", r_div), ("TopkDropout（100万）", r_topk)]
@@ -82,12 +88,19 @@ def main() -> None:
                 {"title": t, "text": r["report_text"], "nav": r["nav"],
                  "day_ret": r.get("day_ret"), "cum_ret": r.get("cum_ret")}
                 for t, r in results])
-            if is_configured():
+            if not is_configured():
+                print("\n>> SMTP 未配置，跳过合并日报推送")
+            elif "--dry-push" in sys.argv:
+                # 只构建正文不发送：用于验证推送分支（不惊动收件箱）
+                print(f"\n>> [dry-push] 合并日报正文已构建：{day}（{len(results)} 个账户，"
+                      f"{len(body)} 字符），未发送")
+                print(body[:600])
+            else:
                 ok = send_report(f"QuantDex 影子盘日报 {day}", body)
                 print(f"\n>> 合并日报{'已发送' if ok else '发送失败'}：{day}"
                       f"（{len(results)} 个账户）")
-            else:
-                print("\n>> SMTP 未配置，跳过合并日报推送")
+                if not ok:
+                    sys.exit(2)  # 让计划任务/调度器能看出"推送失败"
 
 
 if __name__ == "__main__":

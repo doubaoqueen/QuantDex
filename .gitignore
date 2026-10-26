@@ -253,3 +253,5 @@ frontend/node_modules/
 
 # 备份产物不入库（D-035）
 backups/
+
+.commitmsg.txt

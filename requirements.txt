@@ -6,5 +6,6 @@ akshare==1.19.1
 pyarrow==26.0.0
 pillow==12.3.0
 requests==2.34.2
-# apscheduler 可选（scripts/14_scheduler.py 常驻调度；任务计划方案不需要）
-# apscheduler>=3.10
+# apscheduler：scripts/14_scheduler.py 常驻调度必需（2026-10-26 装上并解注；
+# 只用 Windows 计划任务可以不装，但 14 脚本会直接退出并给出提示）
+apscheduler>=3.10
