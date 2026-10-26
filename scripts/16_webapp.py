@@ -103,6 +103,7 @@ def _check_token(tok: str) -> bool:
 _store = ParquetStore()
 _cache = {"regime": (0.0, None)}
 _job = {"proc": None, "name": None}
+_job_lock = threading.Lock()
 
 
 def _db(acc):
@@ -662,22 +663,23 @@ def report_text(acc, date):
 
 
 def start_job(name):
-    if _job["proc"] is not None and _job["proc"].poll() is None:
-        return {"ok": False, "msg": f"已有任务在跑：{_job['name']}"}
-    import subprocess
-    import sys
-    py = sys.executable
-    if name == "update":
-        cmd = [py, str(ROOT / "scripts" / "02b_update_pit.py")]
-    else:
-        cmd = [py, str(ROOT / "scripts" / "10_daily_run.py"), "--skip-update", "--no-push"]
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    f = open(LOG, "a", encoding="utf-8")
-    f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} {name} =====\n")
-    f.flush()
-    _job["proc"] = subprocess.Popen(cmd, cwd=str(ROOT), stdout=f, stderr=f)
-    _job["name"] = name
-    return {"ok": True, "msg": f"已启动：{name}"}
+    with _job_lock:                                   # R3-21：双击竞态
+        if _job["proc"] is not None and _job["proc"].poll() is None:
+            return {"ok": False, "msg": f"已有任务在跑：{_job['name']}"}
+        import subprocess
+        import sys
+        py = sys.executable
+        if name == "update":
+            cmd = [py, str(ROOT / "scripts" / "02b_update_pit.py")]
+        else:
+            cmd = [py, str(ROOT / "scripts" / "10_daily_run.py"), "--skip-update", "--no-push"]
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        f = open(LOG, "a", encoding="utf-8")
+        f.write(chr(10) + "===== " + time.strftime('%Y-%m-%d %H:%M:%S') + " " + name + " =====")
+        f.flush()
+        _job["proc"] = subprocess.Popen(cmd, cwd=str(ROOT), stdout=f, stderr=f)
+        _job["name"] = name
+        return {"ok": True, "msg": f"已启动：{name}"}
 
 
 def job_status():

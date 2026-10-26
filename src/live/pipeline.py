@@ -114,6 +114,37 @@ def _day_prices(store: ParquetStore, date: pd.Timestamp,
     return out
 
 
+def _replay_state(led, upto_date):
+    """重建截至 upto_date 的（cash, shares）：上期快照 + 未入快照的成交重放。"""
+    snap = led.snapshot()
+    if snap.empty:
+        return None
+    snap["date"] = pd.to_datetime(snap["date"])
+    prior = snap[snap["date"] <= pd.Timestamp(upto_date)]
+    if prior.empty:
+        return None
+    base = prior.iloc[-1]
+    cash = float(base["cash"])
+    shares = {}
+    pos = led.positions(str(base["date"]))
+    for r in pos.itertuples(index=False):
+        shares[str(r.symbol)] = float(r.shares)
+    fills = led.unreconciled_fills(str(base["date"]))
+    if not fills.empty:
+        fills = fills[pd.to_datetime(fills["fill_date"]) <= pd.Timestamp(upto_date)]
+    for t in fills.itertuples(index=False):
+        q = float(t.qty) if t.qty else (
+            float(t.amount) / float(t.price) if t.price else 0.0)
+        if str(t.side) == "buy":
+            cash -= float(t.amount) + float(t.fee) + float(t.amount) * SLIP
+            shares[str(t.symbol)] = shares.get(str(t.symbol), 0.0) + q
+        else:
+            cash += float(t.amount) - float(t.fee) - float(t.stamp_duty) \
+                - float(t.amount) * SLIP
+            shares[str(t.symbol)] = max(0.0, shares.get(str(t.symbol), 0.0) - q)
+    return {"cash": cash, "shares": shares}
+
+
 # ---------------------------------------------------------------- 撮合
 def _fill_pending(led: Ledger, price_lookup: dict,
                   latest: pd.Timestamp,
@@ -347,6 +378,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
 
     # 2) 账户状态 + 应用撮合结果
     snap_now = led.snapshot()
+    last_snap_date = str(snap_now["date"].iloc[-1]) if not snap_now.empty else None
     cash, cur_shares, _ = _load_state(led)
     if cash == 0.0 and not cur_shares and snap_now.empty:
         cash = capital  # 账户初始化
@@ -360,6 +392,27 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         else:
             cash += r["amount"] - r["fee"] - r["stamp"] - r["slip"]
             new_shares[r["symbol"]] = max(0.0, new_shares.get(r["symbol"], 0.0) - r["qty"])
+
+    # R3-04 自愈：上期快照之后已成交但未入快照的订单重放（崩溃窗口不再丢钱）
+    if last_snap_date is not None:
+        try:
+            unre = led.unreconciled_fills(last_snap_date)
+            unre = unre[pd.to_datetime(unre["fill_date"]) <= latest]
+            for t in unre.itertuples(index=False):
+                q = float(t.qty) if t.qty else (
+                    float(t.amount) / float(t.price) if t.price else 0.0)
+                if str(t.side) == "buy":
+                    cash -= float(t.amount) + float(t.fee) + float(t.amount) * SLIP
+                    new_shares[str(t.symbol)] = new_shares.get(str(t.symbol), 0.0) + q
+                else:
+                    cash += float(t.amount) - float(t.fee) - float(t.stamp_duty) \
+                        - float(t.amount) * SLIP
+                    new_shares[str(t.symbol)] = max(
+                        0.0, new_shares.get(str(t.symbol), 0.0) - q)
+                print(f"[replay] 自愈重放 {t.symbol} {t.side} {q:.0f} 股"
+                      f"（fill_date={t.fill_date}）", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[replay] 自愈检查失败: {e}", flush=True)
 
     # 3) 最新收盘价与净值
     day = panel[panel["date"] == latest]
@@ -452,14 +505,52 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
 
     try:
         bench = get_kline(index_code, adjust="none", store=store)
-        bench_close = float(bench[bench["date"] <= latest]["close"].iloc[-1])
+        bench = bench.set_index(pd.to_datetime(bench["date"]))["close"].sort_index()
+        bench_close = float(bench[bench.index <= latest].iloc[-1])
     except Exception:  # noqa: BLE001
+        bench = None
         bench_close = float("nan")
 
     if not dry_run:
         led.record_day(str(latest.date()), cash=cash, market_value=mv,
                        positions=positions, trades=None,
                        benchmark_nav=bench_close)
+        # R3-06 回填：(上期快照, latest] 中缺快照且有成交的日期，重放状态补写
+        try:
+            if last_snap_date is not None and bench is not None:
+                gap_days = pd.date_range(pd.Timestamp(last_snap_date),
+                                         pd.Timestamp(latest), freq="D")
+                fills_all = led.unreconciled_fills(last_snap_date)
+                filled_dates = (set(pd.to_datetime(fills_all["fill_date"]).dt.date)
+                                if not fills_all.empty else set())
+                for d in gap_days[:-1]:
+                    ds = str(d.date())
+                    if d.date() not in filled_dates or led.snapshot(date=ds).shape[0]:
+                        continue
+                    st = _replay_state(led, ds)
+                    if st is None:
+                        continue
+                    pos_rows, mv_b = [], 0.0
+                    for sym, sh in st["shares"].items():
+                        if sh <= 0:
+                            continue
+                        try:
+                            kk = get_kline(sym, adjust="qfq", store=store)
+                            kk = kk[pd.to_datetime(kk["date"]) <= d]
+                            px = float(kk["close"].iloc[-1]) if len(kk) else 0.0
+                        except Exception:  # noqa: BLE001
+                            px = 0.0
+                        mv_b += sh * px
+                        denom = st["cash"] + mv_b
+                        pos_rows.append({"symbol": sym, "shares": sh, "close": px,
+                                         "weight": sh * px / denom if denom else 0.0})
+                    bb = bench[bench.index <= d]
+                    led.record_day(ds, cash=st["cash"], market_value=mv_b,
+                                   positions=pd.DataFrame(pos_rows) if pos_rows else None,
+                                   benchmark_nav=float(bb.iloc[-1]) if len(bb) else None)
+                    print(f"[backfill] 已补写 {ds} 快照（延迟撮合，R3-06）", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[backfill] 回填失败: {e}", flush=True)
         # 每日操作记录：同一天重复运行只更新这一条（不新增行、不占空间）
         try:
             filled_n = sum(1 for r in fill_results if r["status"] == "filled")

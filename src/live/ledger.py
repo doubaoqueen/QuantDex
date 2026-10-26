@@ -158,6 +158,12 @@ class Ledger:
     def trades(self) -> pd.DataFrame:
         return pd.read_sql_query("SELECT * FROM trade_log ORDER BY id", self.connect())
 
+    def unreconciled_fills(self, last_snap_date: str) -> pd.DataFrame:
+        """快照日期之后已成交但尚未入任何快照的订单（R3-04 崩溃自愈用）。"""
+        return pd.read_sql_query(
+            "SELECT * FROM trade_log WHERE status='filled' AND fill_date > ? ORDER BY id",
+            self.connect(), params=(last_snap_date,))
+
     # -------------------------------------------------- 待成交订单（T+1 两段式）
     def add_pending(self, orders: pd.DataFrame) -> int:
         """写入待成交订单（status='pending'），返回写入条数。

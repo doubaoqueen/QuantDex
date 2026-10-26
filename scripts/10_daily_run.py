@@ -28,6 +28,12 @@ from src.live.pipeline import run_pipeline
 def main() -> None:
     import os
 
+    from src.live.proclock import try_lock
+    lf = try_lock(STORE_DIR / "sim" / ".pipeline.lock")
+    if lf is None:
+        print(">> [lock] 另一流水线实例正在运行，本次退出（R3-02）")
+        sys.exit(3)
+
     push = "--no-push" not in sys.argv
     if "--skip-update" not in sys.argv:
         store = ParquetStore()
