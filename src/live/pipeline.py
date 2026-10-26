@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import STORE_DIR
+from config import MIN_FEE, STORE_DIR
 from src.analysis.factors import build_factor_panel
 from src.data import financials, universe
 from src.data.market import get_kline

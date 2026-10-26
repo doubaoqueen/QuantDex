@@ -47,3 +47,13 @@ def ensure_dirs() -> None:
         MACRO_DIR,
     ]:
         d.mkdir(parents=True, exist_ok=True)
+
+
+# 交易成本与撮合参数（影子盘与回测共用，D-044 收编）
+FEE_RATE = 0.00025        # 券商佣金率（单边）
+MIN_FEE = 5.0             # 最低佣金（元/笔）
+SLIP_RATE = 0.0005        # 滑点（单边，按成交额估算）
+STAMP_RATE = 0.0005       # 印花税（仅卖出）
+TRANSFER_RATE = 0.00001   # 过户费（双边，0.001%）
+LOT = 100                 # A 股整手
+GEM_PREFIX = ("300", "301", "688")  # 创业板/科创板（±20%）
