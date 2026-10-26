@@ -17,11 +17,13 @@
 import os
 import sys
 
+import pandas as pd
+
 import _bootstrap  # noqa: F401
 
 from config import DEFAULT_START_DATE
 from src.data import universe
-from src.data.market import update_kline_batch
+from src.data.market import fetch_kline, update_kline_batch
 from src.data.storage import ParquetStore
 
 
@@ -57,6 +59,31 @@ def main() -> None:
           f"失败 {len(failed)} 只", flush=True)
     for code, err in failed[:10]:
         print(f"   FAIL {code}: {str(err)[:100]}", flush=True)
+
+    # R3-02/D-041a 护栏：增量写入后行级自洽校验（序列涨跌 vs pct_chg，阈值 0.5%），
+    # 破裂=除权锚点断裂，自动全史重抓修复——除权季每期制造的新缺口当日清零
+    ok_syms = [c for c, v in r.items() if isinstance(v, int) and v > 0]
+    broken = []
+    for c in ok_syms:
+        pth = store._path("daily", f"{c}__qfq")
+        if not pth.exists():
+            continue
+        k = pd.read_parquet(pth, columns=["date", "close", "pct_chg"])
+        if len(k) < 2:
+            continue
+        chg = k["close"] / k["close"].shift(1) - 1
+        pct = pd.to_numeric(k["pct_chg"], errors="coerce") / 100
+        if ((chg - pct).abs() > 0.005).any():
+            broken.append(c)
+    if broken:
+        print(f"[guardrail] 自洽破裂 {len(broken)} 只（除权锚点断裂），全史重抓修复", flush=True)
+        for c in broken:
+            try:
+                fetch_kline(c, start=DEFAULT_START_DATE, asset="stock", adjust="qfq",
+                            source="bs", store=store)
+            except Exception as e:  # noqa: BLE001
+                print(f"[guardrail] {c} 重抓失败: {e}", flush=True)
+        print(f"[guardrail] 完成（{len(broken)} 只）", flush=True)
 
     # 基准指数不在股票池里，必须单独更新（否则报告/市场状态一直是旧值）
     from src.data.snapshot import update_indexes
