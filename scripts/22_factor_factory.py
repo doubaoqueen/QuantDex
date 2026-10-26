@@ -87,6 +87,14 @@ def main() -> None:
               flush=True)
 
     out = pd.DataFrame(rows)
+    # R3-12 多重检验校正：BH-FDR q 值（p 由 t 的正态近似，46 因子期望 2-4 个假显著）
+    from math import erfc, sqrt
+    out["p20"] = [erfc(abs(v) / sqrt(2)) if pd.notna(v) else np.nan
+                  for v in out["t20"]]
+    m = out["p20"].notna().sum()
+    pvals = out.loc[out["p20"].notna(), "p20"].sort_values()
+    qvals = (pvals * m / (pvals.rank(method="first"))).clip(upper=1.0)
+    out["q20"] = qvals.reindex(out.index)
     out_dir = STORE_DIR / "factor_results"
     out_dir.mkdir(parents=True, exist_ok=True)
     # 合并历史结果（同因子新结果覆盖旧结果），避免分批筛选互相覆盖
