@@ -12,8 +12,13 @@
    以及「最高组 - 最低组」的多空收益。好因子应呈现清晰单调排列。
 3. 衰减：对持有周期 1/5/10/20 日分别算 IC，观察预测力在几天后消失。
 
-口径说明：未来收益用收盘价计算 fwd_h = close.shift(-h)/close - 1；
-分层组合在 t 日按因子分组、获取 t→t+1 收益（fwd_1），避免前瞻偏差。
+口径说明（D-038，修复报告2 P0-2/P0-3 两处口径裂缝）：
+  1. fwd_h = close[t+1+h] / close[t+1] - 1 —— **T+1 才能成交**，窗口右移一天，
+     剔除 t 收盘→t+1 开盘实盘拿不到的隔夜跳空（旧口径 close[t]→close[t+h] 高估）；
+  2. PIT 面板有时间空洞（剔除期无行），shift 按行位置会无声跨洞——
+     用全局交易日序号校验：future 与 base 必须恰好相隔 h 个交易日，否则置 NaN。
+分层回测：建仓日（eff_date）只计日内段 close/open-1（开盘建仓拿不到隔夜），
+merge_asof 加 tolerance（停牌/调出股不得沿用陈旧分组）。
 """
 from __future__ import annotations
 
@@ -28,11 +33,24 @@ TRADING_DAYS = 250
 # ================================================================ 未来收益
 def add_forward_returns(panel: pd.DataFrame,
                         horizons=(1, 5, 10, 20)) -> pd.DataFrame:
-    """给面板追加 fwd_1/fwd_5/... 未来收益列（按 symbol 时序 shift，不含未来信息泄漏）。"""
+    """给面板追加 fwd_1/fwd_5/... **可成交**未来收益列（D-038）。
+
+    窗口：T 日收盘出信号 -> T+1 收盘建仓（近似 T+1 开盘）-> 持有 h 日。
+    空洞防护：PIT 过滤会在个股序列上打洞，按行 shift 会无声跨洞——
+    用面板全局交易日序号校验 base/future 恰好相隔 h 个交易日，跨洞置 NaN。
+    """
     out = panel.sort_values(["symbol", "date"]).copy()
+    all_dates = pd.DatetimeIndex(np.sort(out["date"].unique()))
+    tno_map = {d: i for i, d in enumerate(all_dates)}
+    out["_tno"] = out["date"].map(tno_map)
+    gpx = out.groupby("symbol")["close"]
+    gtn = out.groupby("symbol")["_tno"]
     for h in horizons:
-        out[f"fwd_{h}"] = out.groupby("symbol")["close"].shift(-h) / out["close"] - 1
-    return out.sort_values(["date", "symbol"]).reset_index(drop=True)
+        base_px, base_t = gpx.shift(-1), gtn.shift(-1)
+        fut_px, fut_t = gpx.shift(-(h + 1)), gtn.shift(-(h + 1))
+        valid = (fut_t - base_t) == h
+        out[f"fwd_{h}"] = (fut_px / base_px - 1.0).where(valid.fillna(False))
+    return out.drop(columns=["_tno"]).sort_values(["date", "symbol"]).reset_index(drop=True)
 
 
 # ================================================================ 截面相关（向量化）
@@ -163,9 +181,14 @@ def quantile_backtest(panel: pd.DataFrame, factor: str,
     换手扣 fee+slippage。避免「每日全量再平衡且零成本」造成的净值幻觉。
 
     分组在再平衡日（因子当日收盘已知），下一交易日生效；持有期成分固定。
+    口径（D-038）：建仓日只计日内段 close/open-1（开盘建仓拿不到隔夜）；
+    merge_asof 带 tolerance——停牌/调出股在空洞后不得沿用陈旧分组。
     收益为 close 口径。返回 daily(扣费后各组日收益)、nav、ls/nav_ls、stats、单调性。
     """
     d = panel[["date", "symbol", factor, "ret"]].dropna().copy()
+    has_open = "open" in panel.columns
+    if has_open:
+        d["open"] = panel.loc[d.index, "open"]
     d["date"] = pd.to_datetime(d["date"])
     dates = np.sort(d["date"].unique())
     reb_dates = dates[::rebalance]
@@ -184,11 +207,21 @@ def quantile_backtest(panel: pd.DataFrame, factor: str,
         columns={"eff_date": "date"}).sort_values(["date", "symbol"])
 
     # merge_asof：每个交易日映射到最近一次生效分组（持有期成分固定）
+    # tolerance：距上次生效超过 3 个调仓周期视为陈旧（停牌/调出股，不得沿用）
     m = pd.merge_asof(
         d.sort_values(["date", "symbol"]), reb,
-        by="symbol", on="date", direction="backward")
+        by="symbol", on="date", direction="backward",
+        tolerance=pd.Timedelta(days=rebalance * 3 + 10))
     m = m.dropna(subset=["grp"]).copy()
     m["grp"] = "Q" + m["grp"].astype(int).astype(str)
+
+    # 建仓日只计日内段（开盘建仓拿不到隔夜跳空，D-038）
+    if has_open:
+        if "close" not in m.columns:
+            m = m.merge(panel[["date", "symbol", "close"]], on=["date", "symbol"],
+                        how="left")
+        eff = m["date"].isin(set(snap["eff_date"]))
+        m.loc[eff, "ret"] = (m.loc[eff, "close"] / m.loc[eff, "open"] - 1.0).fillna(0.0)
 
     grouped = m.groupby(["date", "grp"])["ret"]
     daily = grouped.mean().unstack("grp").sort_index()

@@ -71,11 +71,13 @@ const statusBadge = {
   cancelled: 'bg-slate-200 text-slate-500',
   rejected_limit_up: 'bg-rose-100 text-rose-700',
   rejected_limit_down: 'bg-rose-100 text-rose-700',
-  rejected_suspended: 'bg-slate-300 text-slate-600'
+  rejected_suspended: 'bg-slate-300 text-slate-600',
+  rejected_insufficient_cash: 'bg-amber-100 text-amber-700'
 }
 const statusText = {
   filled: '已成交', pending: '待成交', cancelled: '已取消',
-  rejected_limit_up: '涨停拒单', rejected_limit_down: '跌停拒单', rejected_suspended: '停牌拒单'
+  rejected_limit_up: '涨停拒单', rejected_limit_down: '跌停拒单', rejected_suspended: '停牌拒单',
+  rejected_insufficient_cash: '现金不足拒单'
 }
 const shownTrades = computed(() => (props.trades || []).slice(0, 30))
 </script>

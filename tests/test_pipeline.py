@@ -216,3 +216,49 @@ def test_combine_reports_merges_sections_and_summary():
     # 单账户原首行标题不应重复出现
     assert "# 影子盘日报[" not in body
     assert "2026-10-26" in body  # 合并标题含日期（单账户首行标题已被去除）
+
+
+# ---------------------------------------------------------------- 现金护栏（D-038）
+def test_fill_pending_partial_fill_on_gap_up():
+    """高开超现金 -> 部分成交（整手递减至可负担）。"""
+    from src.live.pipeline import _fill_pending
+    from pathlib import Path
+    tmp = Path("data/store/sim/_test_cash.sqlite")
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)
+    led = Ledger(tmp)
+    led.record_day("2026-10-19", cash=3000.0, market_value=0.0)
+    led.add_pending(pd.DataFrame([{
+        "signal_date": "2026-10-19", "fill_date": "2026-10-20", "symbol": "600519",
+        "side": "buy", "qty": 1000, "price": 10.0, "amount": 10000.0,
+        "fee": 5.0, "stamp_duty": 0.0, "status": "pending", "note": "ref"}]))
+    prices = {pd.Timestamp("2026-10-20"): {"600519": {"open": 10.0, "close": 10.2,
+                                                      "prev_close": 9.5}}}
+    res = _fill_pending(led, prices, pd.Timestamp("2026-10-20"))
+    filled = [r for r in res if r["status"] == "filled"]
+    assert filled and filled[0]["qty"] == 200, filled      # 3000 元买得起 200 股
+    assert "部分成交" in filled[0]["msg"]
+    led.close()
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)
+
+
+def test_fill_pending_reject_when_one_lot_unaffordable():
+    from src.live.pipeline import _fill_pending
+    from pathlib import Path
+    tmp = Path("data/store/sim/_test_cash2.sqlite")
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)
+    led = Ledger(tmp)
+    led.record_day("2026-10-19", cash=500.0, market_value=0.0)
+    led.add_pending(pd.DataFrame([{
+        "signal_date": "2026-10-19", "fill_date": "2026-10-20", "symbol": "600519",
+        "side": "buy", "qty": 1000, "price": 10.0, "amount": 10000.0,
+        "fee": 5.0, "stamp_duty": 0.0, "status": "pending", "note": "ref"}]))
+    prices = {pd.Timestamp("2026-10-20"): {"600519": {"open": 10.0, "close": 10.2,
+                                                      "prev_close": 9.5}}}
+    res = _fill_pending(led, prices, pd.Timestamp("2026-10-20"))
+    assert res[0]["status"] == "rejected_insufficient_cash", res
+    led.close()
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)

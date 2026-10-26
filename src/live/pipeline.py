@@ -118,10 +118,17 @@ def _day_prices(store: ParquetStore, date: pd.Timestamp,
 def _fill_pending(led: Ledger, price_lookup: dict,
                   latest: pd.Timestamp,
                   last_dates: dict | None = None) -> list[dict]:
-    """撮合 fill_date ≤ latest 的待成交订单；返回每单处理结果。"""
+    """撮合 fill_date ≤ latest 的待成交订单；返回每单处理结果。
+
+    D-038：买入前做现金硬校验（以最新快照现金为起点、随成交滚动）——
+    高开时按可负担股数**部分成交**（整手递减），一手都买不起则拒单
+    rejected_insufficient_cash；卖出不受限。
+    """
     pend = led.pending_orders()
     if pend.empty:
         return []
+    snap = led.snapshot()
+    cash_run = float(snap["cash"].iloc[-1]) if not snap.empty else None
     results = []
     for o in pend.itertuples(index=False):
         fd = pd.Timestamp(o.fill_date)
@@ -159,11 +166,38 @@ def _fill_pending(led: Ledger, price_lookup: dict,
         fee = _trade_fee(amount)
         stamp = amount * STAMP if o.side == "sell" else 0.0
         slip = amount * SLIP
+        msg = "开盘价成交"
+        if o.side == "buy" and cash_run is not None:
+            need = amount + fee + slip
+            if need > cash_run + 1e-6:
+                # 现金不足：整手递减至可负担；一手都买不起 -> 拒单
+                q2 = int(qty // LOT) * LOT
+                while q2 >= LOT:
+                    a2 = q2 * op
+                    f2 = _trade_fee(a2)
+                    if a2 + f2 + a2 * SLIP <= cash_run + 1e-6:
+                        break
+                    q2 -= LOT
+                if q2 < LOT:
+                    led.mark_rejected(o.id, "rejected_insufficient_cash",
+                                      f"开盘价现金不足: 需{need:,.0f} 可用{cash_run:,.0f}")
+                    results.append({"id": o.id, "symbol": o.symbol,
+                                    "status": "rejected_insufficient_cash",
+                                    "msg": f"现金不足（可用 {cash_run:,.0f}）"})
+                    continue
+                qty, amount = float(q2), float(q2) * op
+                fee = _trade_fee(amount)
+                stamp = 0.0
+                slip = amount * SLIP
+                msg = f"开盘价现金不足，部分成交 {qty:.0f} 股"
         led.mark_filled(o.id, str(fd.date()), op, amount, fee, stamp)
+        if cash_run is not None:
+            cash_run += (amount - fee - stamp - slip if o.side == "sell"
+                         else -(amount + fee + slip))
         results.append({"id": o.id, "symbol": o.symbol, "side": o.side,
                         "status": "filled", "qty": qty, "price": op,
                         "amount": amount, "fee": fee, "stamp": stamp,
-                        "slip": slip, "msg": "开盘价成交"})
+                        "slip": slip, "msg": msg})
     return results
 
 
