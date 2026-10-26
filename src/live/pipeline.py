@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import MIN_FEE, STORE_DIR
+from config import GEM_PREFIX, LOT, MIN_FEE, SLIP_RATE, STAMP_RATE, STORE_DIR, TRANSFER_RATE
 from src.analysis.factors import build_factor_panel
 from src.data import financials, universe
 from src.data.market import get_kline
@@ -35,14 +35,12 @@ from src.strategies.multi_factor import (
     turnover_lowvol_reversal_topn,
 )
 
-FEE = 0.00025       # 券商佣金率（单边）
-SLIP = 0.0005       # 滑点（单边，按成交额）
-STAMP = 0.0005      # 印花税（仅卖出）
-LOT = 100
-MIN_FEE = 5.0       # 券商最低佣金（元/笔，小资金影响巨大）
-TRANSFER = 0.00001  # 过户费（双边，0.001%；深市免，这里保守统一收）
-# 涨跌停幅度：主板/中小板 10%；创业板(300/301)/科创板(688) 20%
-_GEM_PREFIX = ("300", "301", "688")
+# 成本与撮合常量统一来自 config（D-044）
+FEE = 0.00025
+SLIP = SLIP_RATE
+STAMP = STAMP_RATE
+TRANSFER = TRANSFER_RATE
+_GEM_PREFIX = GEM_PREFIX
 
 
 def _trade_fee(amount: float) -> float:
