@@ -192,9 +192,16 @@ def test_report_email_sent_once_per_day():
     assert r2["emailed"] is False, "同日重复运行不得重复推送"
     assert len(sent) == 1, f"邮件应只发 1 封，实际 {len(sent)}"
 
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(tmp_db) + suffix).unlink(missing_ok=True)
-    shutil.rmtree(report_dir, ignore_errors=True)
+    import gc, time as _t
+    gc.collect()
+    for attempt in range(4):   # Windows 句柄释放有延迟，重试清理
+        try:
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(tmp_db) + suffix).unlink(missing_ok=True)
+            shutil.rmtree(report_dir, ignore_errors=True)
+            break
+        except PermissionError:
+            _t.sleep(0.6)
 
 
 # ---------------------------------------------------------------- 合并日报（D-030）
