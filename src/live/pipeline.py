@@ -593,6 +593,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
              f"- 总净值: {nav_now:,.2f}",
              f"- 今日盈亏: {day_pnl:+,.2f}（{day_ret:+.2%}）",
              f"- 累计收益: {cum_ret:+.2%}",
+             f"- 累计交易费用（含滑点估算）: {_cum_cost(led):,.2f} 元",
              f"- 涨跌家数: {chg_txt}",
              f"- 基准(沪深300): {bench_close:,.2f}",
              f"- 持仓数: {len(positions)}",
@@ -689,6 +690,18 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             "new_report": not already_reported,
             "emailed": bool(push and not already_reported),
             "day_ret": day_ret, "cum_ret": cum_ret}
+
+
+def _cum_cost(led) -> float:
+    """累计交易代价：佣金+印花+滑点估算（已成交口径）。"""
+    try:
+        f = pd.read_sql_query(
+            "SELECT COALESCE(SUM(amount),0) a, COALESCE(SUM(fee),0) f, "
+            "COALESCE(SUM(stamp_duty),0) s FROM trade_log WHERE status='filled'",
+            led.connect())
+        return float(f["f"].iloc[0]) + float(f["s"].iloc[0]) + float(f["a"].iloc[0]) * SLIP
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def combine_reports(day: str, parts: list[dict]) -> str:

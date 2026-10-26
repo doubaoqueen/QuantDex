@@ -137,6 +137,22 @@ def overview(acc):
                "positions": int(len(pos)), "pending": int(len(pend))}
         out["day_pnl"] = (out["nav"] - out["prev_nav"]) if out["prev_nav"] else 0.0
         out["cum_ret"] = (out["nav"] / out["base_nav"] - 1.0) if out["base_nav"] else 0.0
+        # D-043：累计交易代价常驻账户卡（让每次看账户都能感到费用）
+        try:
+            conn2 = _db(acc)
+            f = pd.read_sql_query(
+                "SELECT COUNT(*) n, COALESCE(SUM(amount),0) a, COALESCE(SUM(fee),0) f, "
+                "COALESCE(SUM(stamp_duty),0) s FROM trade_log WHERE status='filled'", conn2)
+            conn2.close()
+            if f["n"].iloc[0]:
+                amt = float(f["a"].iloc[0])
+                slip = amt * 0.0005
+                out["fee"] = {"n": int(f["n"].iloc[0]), "turnover": amt,
+                              "commission": float(f["fee"].iloc[0]),
+                              "stamp": float(f["s"].iloc[0]), "slip": slip,
+                              "total": float(f["fee"].iloc[0]) + float(f["s"].iloc[0]) + slip}
+        except Exception:  # noqa: BLE001
+            pass
         return out
     finally:
         conn.close()

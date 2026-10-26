@@ -26,6 +26,11 @@ const shortName = { large: '大账户', small: '小账户', div: '红利', topk:
           （{{ overviews[a.key].prev_nav ? fmt.pct(overviews[a.key].nav / overviews[a.key].prev_nav - 1) : '-' }}）
         </div>
         <div class="tabular mt-0.5 text-sm" :class="fmt.signCls(overviews[a.key].cum_ret)">累计 {{ fmt.pct(overviews[a.key].cum_ret) }}</div>
+        <div v-if="overviews[a.key].fee" class="tabular mt-0.5 text-[11px] text-amber-600"
+             :title="'佣金 ' + fmt.n(overviews[a.key].fee.commission, 0) + ' / 滑点 ' + fmt.n(overviews[a.key].fee.slip, 0) + ' / 印花 ' + fmt.n(overviews[a.key].fee.stamp, 0) + '，占成交额 ' + (overviews[a.key].fee.total / overviews[a.key].fee.turnover * 100).toFixed(3) + '%'">
+          交易代价 {{ fmt.n(overviews[a.key].fee.total, 0) }} 元
+          <span class="text-slate-400">（{{ (overviews[a.key].fee.total / overviews[a.key].fee.turnover * 100).toFixed(3) }}% of 成交）</span>
+        </div>
         <div class="tabular mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
           <span>现金 {{ fmt.n(overviews[a.key].cash, 0) }}</span>
           <span>持仓 {{ overviews[a.key].positions }}</span>
