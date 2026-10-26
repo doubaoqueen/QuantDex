@@ -52,12 +52,12 @@ def _serve_static(rel: str):
         return None
     ctype = _MIME.get(p.suffix.lower(), "application/octet-stream")
     return p.read_bytes(), ctype
-ACCOUNTS = {
-    "large": {"db": STORE_DIR / "sim" / "ledger.sqlite", "label": "大账户（100万）"},
-    "small": {"db": STORE_DIR / "sim" / "ledger_2000.sqlite", "label": "小账户（2000元）"},
-    "div": {"db": STORE_DIR / "sim" / "ledger_div.sqlite", "label": "红利账户（100万）"},
-    "topk": {"db": STORE_DIR / "sim" / "ledger_topk.sqlite", "label": "TopkDropout（100万）"},
-}
+from src.strategies.registry import STRATEGIES
+
+# 账户定义唯一来源 = src/strategies/registry.py（D-039），本文件不再硬编码
+ACCOUNTS = {k: {"db": STORE_DIR / "sim" / c["ledger"], "label": c["label"],
+                "suffix": c["backtest_suffix"], "group": c["group"]}
+            for k, c in STRATEGIES.items() if c.get("enabled")}
 LOG = STORE_DIR / "logs" / "webapp_run.log"
 AUDIT = STORE_DIR / "logs" / "webapp_audit.log"
 AUTH_FILE = STORE_DIR / "webauth.json"      # D-037：控制台凭证（明文，等同 .env 待遇，勿入库）
@@ -456,13 +456,10 @@ def backtest(acc="large"):
         # 账户 -> 回测产物映射（D-032）：
         #   large=现行版；topk=TopkDropout 版(_tk)；div=红利版(_div)；
         #   small 无独立回测（3只整手执行验证组合）——展示现行版并明确标注"参考"
-        acc2suffix = {"topk": "_tk", "div": "_div"}
-        acc2name = {
-            "topk": "TopkDropout 版：同现行因子+换手上界（n_drop=5/期）",
-            "div": "红利版：低换手+低波+股息率",
-        }
-        suffix = acc2suffix.get(acc, "")
-        name = acc2name.get(acc, "现行版：低换手+低波+反转")
+        suffix = ACCOUNTS.get(acc, {}).get("suffix", "")
+        name = ("红利版：低换手+低波+股息率" if suffix == "_div" else
+                "TopkDropout 版：同现行因子+换手上界（n_drop=5/期）" if suffix == "_tk" else
+                "现行版：低换手+低波+反转")
         if acc == "small":
             name = "参考：现行版（小账户为 3 只整手执行验证，无独立历史回测）"
         out = {"strategy": name,
@@ -821,6 +818,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, fees(q.get("account", ["large"])[0]))
             if u.path == "/api/candidates":
                 return self._send(200, candidates(q.get("account", ["large"])[0]))
+            if u.path == "/api/strategies":
+                return self._send(200, {"accounts": [
+                    {"key": k, "label": v["label"], "strategy": v["group"]}
+                    for k, v in ACCOUNTS.items()]})
             if u.path == "/api/position_alerts":
                 return self._send(200, position_alerts(q.get("account", ["large"])[0]))
             if u.path == "/api/positions":

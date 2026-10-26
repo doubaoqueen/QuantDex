@@ -507,3 +507,24 @@ P0-2/P0-3/P0-4 全部属实并已修复。
   与显著名单可能变化**，以重跑结果为准；05/06 组合回测不受影响（走
   portfolio.py 开盘执行路径，非 factor_test）。README §8 旧表标注为历史口径。
 - 复核：22 重跑后核对排名变动；04 全量重跑列入下次排期。
+
+### D-039 策略注册表 + CI 流水线（2026-10-27，报告1/2 共同建议）
+- **重要更正**：报告2 P0-1（r_topk 未定义）经查在**另一并行会话已修复**（该会话
+  提交 9dd7d9f 补跑了 topk 并加 dry-push/sys.exit(2) 分支与 test_daily_run_push
+  测试——其测试文档记录了当时的 NameError）。此前我判"误报"有误：报告属实，
+  只是修复发生在并行会话。这正是"5 处硬编码"风险的第一次真实发作与修复。
+- **策略注册表**（治本）：`src/strategies/registry.py` 成为账户定义唯一来源
+  （label/strategy/capital/ledger/reports/backtest_suffix/max_positions/enabled/group）；
+  10_daily_run 改为注册表驱动的循环；webapp ACCOUNTS/回测后缀/新增
+  /api/strategies 全部派生自注册表；一致性测试确保"注册表=webapp"不漂移。
+  **此后加账户/策略只改 registry.py 一处。** 前端 App.vue 账户列表消费
+  /api/strategies 的改造列入下批。
+- **CI**：.github/workflows/ci.yml（checkout→3.11→装依赖→全部测试），push/PR 触发。
+- 测试：46 项全过（新增注册表 schema/webapp 一致性 3 项；适配 daily_run_push 测试
+  至显式传参语义）。
+- **代码规范重构判定（用户问询）**：**不做整体重构**。理由：①核心模块（引擎/
+  流水线/策略/表达式）docstring 已实质完整且承载口径决策；②全量改名会打断
+  git blame 与决策日志的名称引用——本项目最依赖"可追溯"；③单人项目下
+  收益/风险比不划算。替代：新代码遵循既定范式（表达式注册、策略注册表），
+  旧函数 docstring 在被触碰时顺手补齐。
+- 复核：第 5 账户（模型层）上线时验证"只改一处"是否成立。

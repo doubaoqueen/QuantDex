@@ -60,5 +60,6 @@ def test_daily_run_merges_four_accounts_without_sending():
     assert len(calls) == 4, f"应有 4 个账户流水线，实际 {len(calls)}：{[c.get('label') for c in calls]}"
     # large 账户走 run_pipeline 的默认 label（不显式传），其余三个显式传
     assert [c.get("label") or "large" for c in calls] == ["large", "small", "div", "topk"]
-    assert [c.get("strategy") for c in calls] == [None, None, "dividend", "topkdrop"]
+    # D-039 注册表化后策略恒显式传入（corrected 不再依赖函数默认值）
+    assert [c.get("strategy") for c in calls] == ["corrected", "corrected", "dividend", "topkdrop"]
     assert not sent, "--dry-push 不应真的发送邮件"

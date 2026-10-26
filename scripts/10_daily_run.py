@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-每日一键：更新 PIT 历史成员行情 → 影子盘流水线（四个账户）→ 合并日报邮件。
+每日一键：更新 PIT 历史成员行情 → 影子盘流水线（账户由注册表驱动，D-039）→ 合并日报邮件。
 
 账户：
   - large：100 万虚拟，现行策略（低换手+低波+反转 Top50 等权）
@@ -35,8 +35,6 @@ def main() -> None:
         source = os.environ.get("QUANTDEX_SOURCE", "bs")
         allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
         allow_bs = os.environ.get("QUANTDEX_BS_FALLBACK", "1") == "1"
-        print(f">> 更新 PIT 历史成员行情（{len(symbols)} 只，增量，source={source}，"
-              f"baostock兜底={allow_bs}）...")
         r = update_kline_batch(symbols, asset="stock", adjust="qfq",
                                full_start=DEFAULT_START_DATE, source=source,
                                store=store, sina_fallback=allow_sina,
@@ -56,34 +54,24 @@ def main() -> None:
 
     print("")
 
-    print("\n>> [账户 large] 影子盘流水线（100 万 / Top50 等权）...")
-    r_large = run_pipeline(push=False)
-
-    print("\n>> [账户 small] 影子盘流水线（2000 元 / 整手 ≤3 只）...")
-    r_small = run_pipeline(capital=2000.0, push=False,
-                           db_path=STORE_DIR / "sim" / "ledger_2000.sqlite",
-                           label="small", max_positions=3)
-
-    print("\n>> [账户 div] 影子盘流水线（100 万 / 红利版：低换手+低波+股息率）...")
-    r_div = run_pipeline(push=False,
-                         db_path=STORE_DIR / "sim" / "ledger_div.sqlite",
-                         label="div", strategy="dividend")
-
-    print("\n>> [账户 topk] 影子盘流水线（100 万 / TopkDropout 换手机制，D-031）...")
-    r_topk = run_pipeline(push=False,
-                          db_path=STORE_DIR / "sim" / "ledger_topk.sqlite",
-                          label="topk", strategy="topkdrop")
+    from src.strategies.registry import enabled_accounts
+    results = []
+    for key, cfg in enabled_accounts().items():
+        r = run_pipeline(capital=cfg["capital"], push=False,
+                         db_path=STORE_DIR / "sim" / cfg["ledger"],
+                         label=cfg["reports"], strategy=cfg["strategy"],
+                         max_positions=cfg["max_positions"])
+        results.append((cfg["group"], r))
 
     # 合并日报：四账户一封邮件（D-030/D-031）；沿用 D-029 去重——全部账户都推送过则跳过
     if push:
-        results = [("大账户（100万）", r_large), ("小账户（2000元）", r_small),
-                   ("红利账户（100万）", r_div), ("TopkDropout（100万）", r_topk)]
+        # results 已由注册表循环填充：(分组标题, 单账户结果)
         if not any(r.get("new_report") for _, r in results):
             print("\n>> 所有账户日报均已推送过（重复运行），跳过合并邮件")
         else:
             from src.live.notifier import is_configured, send_report
             from src.live.pipeline import combine_reports
-            day = r_large["date"]
+            day = results[0][1]["date"]
             body = combine_reports(day, [
                 {"title": t, "text": r["report_text"], "nav": r["nav"],
                  "day_ret": r.get("day_ret"), "cum_ret": r.get("cum_ret")}
@@ -92,13 +80,9 @@ def main() -> None:
                 print("\n>> SMTP 未配置，跳过合并日报推送")
             elif "--dry-push" in sys.argv:
                 # 只构建正文不发送：用于验证推送分支（不惊动收件箱）
-                print(f"\n>> [dry-push] 合并日报正文已构建：{day}（{len(results)} 个账户，"
-                      f"{len(body)} 字符），未发送")
                 print(body[:600])
             else:
                 ok = send_report(f"QuantDex 影子盘日报 {day}", body)
-                print(f"\n>> 合并日报{'已发送' if ok else '发送失败'}：{day}"
-                      f"（{len(results)} 个账户）")
                 if not ok:
                     sys.exit(2)  # 让计划任务/调度器能看出"推送失败"
 
