@@ -43,3 +43,20 @@ def test_add_order_rejects_insufficient_cash_and_naked_sell():
         webapp.ACCOUNTS.update(orig)
         for suf in ("", "-wal", "-shm"):
             Path(str(tmp) + suf).unlink(missing_ok=True)
+
+
+def test_auth_token_and_login():
+    import hashlib as _hsh
+    import hmac as _h
+    import time as _t
+    tok = webapp._make_token()
+    assert webapp._check_token(tok), "有效 token 应通过"
+    exp, sig = tok.split(".")
+    tampered = exp + "." + ("0" if sig[0] != "0" else "1")
+    assert not webapp._check_token(tampered), "篡改签名应被拒"
+    expired = f"{int(_t.time()) - 10}." + _h.new(
+        webapp.AUTH["secret"].encode(), str(int(_t.time()) - 10).encode(),
+        _hsh.sha256).hexdigest()
+    assert not webapp._check_token(expired), "过期 token 应被拒"
+    assert webapp._verify_login(webapp.AUTH["user"], webapp.AUTH["pass"])
+    assert not webapp._verify_login(webapp.AUTH["user"], "wrong")

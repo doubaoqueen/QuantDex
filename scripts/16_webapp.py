@@ -14,10 +14,14 @@ QuantDex 本地可视化控制台（Python 标准库，零依赖）。
   - 日报：按日期查看
   - 运行：更新行情 / 跑流水线（后台，日志可看）
 """
+import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 import threading
 import time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -55,6 +59,47 @@ ACCOUNTS = {
     "topk": {"db": STORE_DIR / "sim" / "ledger_topk.sqlite", "label": "TopkDropout（100万）"},
 }
 LOG = STORE_DIR / "logs" / "webapp_run.log"
+AUDIT = STORE_DIR / "logs" / "webapp_audit.log"
+AUTH_FILE = STORE_DIR / "webauth.json"      # D-037：控制台凭证（明文，等同 .env 待遇，勿入库）
+SESSION_TTL = 7 * 24 * 3600
+
+
+def _auth_store() -> dict:
+    """首次运行自动生成账号/密码（打印到控制台）；改密码=直接编辑该文件。"""
+    if AUTH_FILE.exists():
+        return json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+    pw = "".join(secrets.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(10))
+    st = {"user": "quantdex", "pass": pw, "secret": secrets.token_hex(32)}
+    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AUTH_FILE.write_text(json.dumps(st, indent=2), encoding="utf-8")
+    print("")
+    print(f"[auth] 控制台首次初始化  账号: {st['user']}  密码: {pw}")
+    print(f"[auth] 凭证文件: {AUTH_FILE}（改密码=编辑该文件后重启）", flush=True)
+    return st
+
+
+AUTH = _auth_store()
+
+
+def _verify_login(user: str, pw: str) -> bool:
+    return hmac.compare_digest(str(user), AUTH["user"]) and         hmac.compare_digest(str(pw), AUTH["pass"])
+
+
+def _make_token() -> str:
+    exp = int(time.time()) + SESSION_TTL
+    sig = hmac.new(AUTH["secret"].encode(), str(exp).encode(),
+                   hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _check_token(tok: str) -> bool:
+    try:
+        exp, sig = tok.split(".", 1)
+        good = hmac.new(AUTH["secret"].encode(), exp.encode(),
+                        hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, good) and int(exp) > time.time()
+    except Exception:  # noqa: BLE001
+        return False
 _store = ParquetStore()
 _cache = {"regime": (0.0, None)}
 _job = {"proc": None, "name": None}
@@ -474,6 +519,7 @@ def cancel_order(acc, order_id):
             "UPDATE trade_log SET status='cancelled', note=note || '（人工取消）' "
             "WHERE id=? AND status='pending'", (int(order_id),))
         conn.commit()
+        # 审计留痕由调用层 _audit 记录
         return {"ok": cur.rowcount > 0, "msg": "已取消" if cur.rowcount else "订单不存在或非 pending"}
     finally:
         conn.close()
@@ -531,7 +577,8 @@ def add_order(acc, symbol, side, qty, price=None):
             (str(last.date()), fill, symbol, side, qty, px, amount,
              fee, amount * 0.0005 if side == "sell" else 0.0, "pending", "人工下单"))
         conn.commit()
-        return {"ok": True, "msg": f"已挂单：{symbol} {side} {qty} 股，成交日 {fill}"}
+        return {"ok": True, "msg": f"已挂单：{symbol} {side} {qty} 股，成交日 {fill}",
+                "_audit": f"add_order {acc} {symbol} {side} {qty}"}
     finally:
         conn.close()
 
@@ -683,21 +730,69 @@ def auto_update_on_start():
 PAGE = ""  # 旧内嵌页面已移除（dist 随 git 提交，见 D-034）
 
 
+LOGIN_PAGE = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>QuantDex 控制台 · 登录</title><style>
+body{margin:0;font-family:"Microsoft YaHei",system-ui;background:#0f172a;color:#e2e8f0;
+     display:flex;align-items:center;justify-content:center;min-height:100vh}
+.box{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:34px 38px;width:320px}
+h1{font-size:18px;margin:0 0 6px}.sub{color:#64748b;font-size:12px;margin-bottom:20px}
+input{width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;border:1px solid #334155;
+      border-radius:8px;background:#0f172a;color:#e2e8f0;font-size:14px}
+input:focus{outline:none;border-color:#38bdf8}
+button{width:100%;padding:11px;border:0;border-radius:8px;background:#2563eb;color:#fff;
+       font-size:14px;cursor:pointer}button:hover{background:#1d4ed8}
+#msg{color:#f87171;font-size:12px;min-height:18px;margin-top:10px;text-align:center}
+</style></head><body><div class="box">
+<h1>QuantDex 控制台</h1><div class="sub">本机私有工具 · 请登录（D-037）</div>
+<input id="u" placeholder="账号" autocomplete="username">
+<input id="p" type="password" placeholder="密码" autocomplete="current-password">
+<button onclick="go()">登 录</button><div id="msg"></div></div>
+<script>
+async function go(){
+  const r=await fetch('/api/login',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user:u.value,pass:p.value})});
+  if(r.ok){location.reload()}else{msg.textContent=(await r.json()).msg||'登录失败'}
+}
+p.addEventListener('keydown',e=>{if(e.key==='Enter')go()});
+</script></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, obj, ctype="application/json; charset=utf-8",
-              cache=None):
+              cache=None, cookie=None):
         body = obj if isinstance(obj, bytes) else json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         if cache:
             self.send_header("Cache-Control", cache)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def _authed(self) -> bool:
+        c = self.headers.get("Cookie", "")
+        if "qd_session=" not in c:
+            return False
+        tok = c.split("qd_session=", 1)[1].split(";", 1)[0].strip()
+        return _check_token(tok)
+
+    def _audit(self, action: str, detail: str = "") -> None:
+        AUDIT.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT.open("a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"{self.client_address[0]} {action} {detail}" + chr(10))  # newline
 
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if not self._authed():
+            if u.path.startswith("/api/"):
+                return self._send(401, {"authed": False})
+            return self._send(200, LOGIN_PAGE.encode("utf-8"),
+                              "text/html; charset=utf-8", cache="no-cache")
         try:
             if u.path in ("/", "/index.html"):
                 static = _serve_static("index.html")
@@ -761,16 +856,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"err": "forbidden: 跨源请求被拒绝"})
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+        if u.path == "/api/login":
+            if _verify_login(str(body.get("user", "")), str(body.get("pass", ""))):
+                self._audit("login", "ok")
+                ck = (f"qd_session={_make_token()}; HttpOnly; SameSite=Strict; "
+                      f"Max-Age={SESSION_TTL}; Path=/")
+                return self._send(200, {"ok": True}, cookie=ck)
+            self._audit("login", "FAIL")
+            return self._send(401, {"ok": False, "msg": "账号或密码错误"})
+        if u.path == "/api/logout":
+            ck = "qd_session=; HttpOnly; Max-Age=0; Path=/"
+            return self._send(200, {"ok": True}, cookie=ck)
+        if not self._authed():
+            return self._send(401, {"authed": False})
         try:
             if u.path == "/api/orders/cancel":
-                return self._send(200, cancel_order(body.get("account", "large"), body.get("id")))
+                r = cancel_order(body.get("account", "large"), body.get("id"))
+                if r.get("ok"):
+                    self._audit("cancel", f"{body.get('account')} #{body.get('id')}")
+                return self._send(200, r)
             if u.path == "/api/orders/add":
-                return self._send(200, add_order(body.get("account", "large"),
-                                                 body.get("symbol", ""), body.get("side", "buy"),
-                                                 body.get("qty", 0), body.get("price")))
+                r = add_order(body.get("account", "large"),
+                              body.get("symbol", ""), body.get("side", "buy"),
+                              body.get("qty", 0), body.get("price"))
+                if r.get("ok"):
+                    self._audit("add_order",
+                                f"{body.get('account')} {body.get('symbol')} "
+                                f"{body.get('side')} {body.get('qty')}")
+                return self._send(200, r)
             if u.path == "/api/run":
+                self._audit("run_job", body.get("job", "pipeline"))
                 return self._send(200, start_job(body.get("job", "pipeline")))
             if u.path == "/api/update":
+                self._audit("run_job", "spot_update")
                 return self._send(200, start_spot_update())
             return self._send(404, {"err": "not found"})
         except Exception as e:  # noqa: BLE001
