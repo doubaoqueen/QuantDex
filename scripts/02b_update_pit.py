@@ -19,13 +19,21 @@ import sys
 import _bootstrap  # noqa: F401
 import pandas as pd
 
-from config import DEFAULT_START_DATE
+from config import DEFAULT_START_DATE, STORE_DIR
 from src.data import universe
 from src.data.market import fetch_kline, update_kline_batch
 from src.data.storage import ParquetStore
 
 
 def main() -> None:
+    # R3-02 同源互斥（D-045）：与 10_daily_run 共用同一把锁——手抖连点、网页与调度器
+    # 同时触发、关窗口后留下的孤儿进程，都会在入口被挡住，不会两个进程同写一批 parquet。
+    from src.live.proclock import try_lock
+    lf = try_lock(STORE_DIR / "sim" / ".pipeline.lock")
+    if lf is None:
+        print(">> [lock] 另一个更新/流水线实例正在运行，本次退出（不重复写数据）", flush=True)
+        sys.exit(3)
+
     store = ParquetStore()
     # R3-15：日历止于 2026-12-31 的定时炸弹——距到期 30 天内自动刷新（幂等）
     cal = store.read_or_empty("meta", "trade_calendar")

@@ -229,8 +229,14 @@ function cumText(o) {
                 <div class="ml-auto flex items-center gap-2">
           <span v-if="freshness && !freshness.error"
                 class="rounded-full px-2.5 py-1 text-xs"
+                :title="freshness.last_auto ? `上次自动更新：${freshness.last_auto}` : '本次会话还没触发过自动更新'"
                 :class="freshness.stale ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'">
             数据：{{ freshness.last_closed }} · {{ freshness.up_to_date }}/{{ freshness.sample }} 已更新
+          </span>
+          <span v-if="freshness && freshness.missing_reports && freshness.missing_reports.length"
+                class="rounded-full bg-orange-100 px-2.5 py-1 text-xs text-orange-800"
+                :title="`未生成日报的账户：${freshness.missing_reports.join('、')}（打开服务会自动补跑并合并发信）`">
+            日报待补 {{ freshness.missing_reports.length }}
           </span>
           <button class="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-700"
                   @click="loadAll(); say('已刷新')">刷新</button>

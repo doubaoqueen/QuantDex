@@ -16,8 +16,10 @@ QuantDex 本地可视化控制台（Python 标准库，零依赖）。
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -60,8 +62,19 @@ ACCOUNTS = {k: {"db": STORE_DIR / "sim" / c["ledger"], "label": c["label"],
             for k, c in STRATEGIES.items() if c.get("enabled")}
 LOG = STORE_DIR / "logs" / "webapp_run.log"
 AUDIT = STORE_DIR / "logs" / "webapp_audit.log"
+START_LOG = STORE_DIR / "logs" / "webapp_starts.jsonl"   # 每次打开一行（时间戳/动作），D-045
+STATE_FILE = STORE_DIR / "logs" / "webapp_state.json"    # 上一次自动更新/补日报的时间，做节流
 AUTH_FILE = STORE_DIR / "webauth.json"      # D-037：控制台凭证（明文，等同 .env 待遇，勿入库）
 SESSION_TTL = 7 * 24 * 3600
+HOST, PORT = "127.0.0.1", 8765
+# 重复启动节流（D-045）：一天开好几次服务，不应该把 949 只全量更新跑好几遍。
+# 只节流"自动链"，手动点「更新行情」「跑流水线」永远放行；日志里会写明跳过的原因。
+AUTO_UPDATE_COOLDOWN = 60 * 60          # 自动更新：两次之间至少 60 分钟
+AUTO_REPORT_COOLDOWN = 20 * 60          # 自动补日报/邮件：失败重试间隔 20 分钟
+LOG_MAX_BYTES = 2 * 1024 * 1024         # 运行日志超过 2MB 启动时轮转一份（只留 1 份 .1）
+# R3-18 同源白名单：仍按 netloc 精确比对（防 http://127.0.0.1:8765.evil.com 前缀绕过），
+# 但 localhost 与 127.0.0.1 是同一台机器——只认二者，用 localhost 打开时 POST 不再 403。
+ALLOWED_ORIGINS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 
 
 def _auth_store() -> dict:
@@ -102,8 +115,10 @@ def _check_token(tok: str) -> bool:
         return False
 _store = ParquetStore()
 _cache = {"regime": (0.0, None)}
-_job = {"proc": None, "name": None}
+# busy：非子进程阶段的占用（快照更新线程），让 UI 能看到"正在跑"并阻止重复点击
+_job = {"proc": None, "name": None, "busy": None}
 _job_lock = threading.Lock()
+_instance_lock = None      # 单实例锁句柄（保持打开=持锁）
 
 
 def _db(acc):
@@ -115,6 +130,65 @@ def _db(acc):
 
 def _tail(df, n=1):
     return df.tail(n)
+
+
+# ---------------------------------------------------------------- 启动日志与节流（D-045）
+def _state() -> dict:
+    """自动更新节流状态（小 JSON；读坏了当空，不影响服务）。"""
+    try:
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _set_state(**kw) -> None:
+    st = _state()
+    st.update(kw)
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _note(msg: str) -> None:
+    """往运行日志写一行带时间戳的说明（控制台「后台任务」面板可见）。"""
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(f"\n[{time.strftime('%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _log_start(**rec) -> None:
+    """每次打开服务记一行（只追加、可追溯；一行约 100~200 字节，一年几十 KB）。"""
+    rec = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **rec}
+    try:
+        START_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with START_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _report_missing(day: str | None) -> list:
+    """当日（最近收盘交易日）还缺哪些账户的日报 —— 缺=邮件还没发。"""
+    if not day:
+        return []
+    return [k for k in ACCOUNTS
+            if not (STORE_DIR / "reports" / k / f"{day}.md").exists()]
+
+
+def _rotate_log() -> None:
+    """运行日志按大小轮转（只留 1 份 .1）：连跑几个月也不会无限长。"""
+    try:
+        if LOG.exists() and LOG.stat().st_size > LOG_MAX_BYTES:
+            bak = LOG.with_name(LOG.name + ".1")
+            bak.unlink(missing_ok=True)
+            LOG.replace(bak)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def overview(acc):
@@ -692,7 +766,6 @@ def regime():
            "breadth": None}
     try:
         import glob
-        import os
 
         import numpy as np
         files = glob.glob(os.path.join(str(STORE_DIR / "market" / "daily"), "*.parquet"))[:200]
@@ -730,39 +803,57 @@ def report_text(acc, date):
     return p.read_text(encoding="utf-8") if p.exists() else "未找到日报"
 
 
+def _job_cmd(name: str) -> list:
+    """任务名 -> 命令行。D-045：把"只更新行情"和"跑完整每日流程（含发信）"分开。"""
+    py = sys.executable
+    daily = [py, str(ROOT / "scripts" / "10_daily_run.py")]
+    return {
+        # 只更新行情（手动「更新行情」用；不发信、不跑流水线）
+        "update": [py, str(ROOT / "scripts" / "02b_update_pit.py")],
+        # 完整每日流程：更新行情 + 四账户流水线 + 合并日报邮件（自动链用）
+        "daily": daily,
+        # 数据已是最新，只补流水线 + 合并日报邮件（自动链用）
+        "report": daily + ["--skip-update"],
+        # 手动「跑流水线」：不发信（避免手动调试惊动收件箱）
+        "pipeline": daily + ["--skip-update", "--no-push"],
+    }.get(name, daily + ["--skip-update", "--no-push"])
+
+
 def start_job(name):
     with _job_lock:                                   # R3-21：双击竞态
         if _job["proc"] is not None and _job["proc"].poll() is None:
             return {"ok": False, "msg": f"已有任务在跑：{_job['name']}"}
         import subprocess
-        import sys
-        py = sys.executable
-        if name == "update":
-            cmd = [py, str(ROOT / "scripts" / "02b_update_pit.py")]
-        else:
-            cmd = [py, str(ROOT / "scripts" / "10_daily_run.py"), "--skip-update", "--no-push"]
+        cmd = _job_cmd(name)
         LOG.parent.mkdir(parents=True, exist_ok=True)
         f = open(LOG, "a", encoding="utf-8")
         f.write(chr(10) + "===== " + time.strftime('%Y-%m-%d %H:%M:%S') + " " + name + " =====")
         f.flush()
-        _job["proc"] = subprocess.Popen(cmd, cwd=str(ROOT), stdout=f, stderr=f)
+        # 子进程强制 UTF-8：否则它按 GBK 写进 UTF-8 日志文件，面板里全是乱码
+        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        _job["proc"] = subprocess.Popen(cmd, cwd=str(ROOT), stdout=f, stderr=f, env=env)
         _job["name"] = name
         return {"ok": True, "msg": f"已启动：{name}"}
 
 
 def job_status():
     p = _job["proc"]
-    running = p is not None and p.poll() is None
+    busy = _job["busy"]
+    running = bool(busy) or (p is not None and p.poll() is None)
     tail = ""
     if LOG.exists():
         lines = LOG.read_text(encoding="utf-8", errors="ignore").splitlines()
         tail = "\n".join(lines[-25:])
-    return {"running": running, "name": _job["name"], "log": tail}
+    return {"running": running, "name": busy or _job["name"], "log": tail}
 
 
 def freshness_info():
     try:
-        return data_freshness(_store)
+        f = data_freshness(_store)
+        f["missing_reports"] = _report_missing(f.get("last_closed"))
+        ts = _state().get("last_auto_update")
+        f["last_auto"] = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else None
+        return f
     except Exception as e:  # noqa: BLE001
         return {"error": str(e), "stale": True}
 
@@ -782,38 +873,107 @@ def ops(acc, limit=14):
         conn.close()
 
 
-def _spot_work():
-    """先更新指数（基准），再快照股票；失败/盘中则回退 baostock 补历史。"""
+def _spot_work(auto=False):
+    """先更新指数（基准），再快照股票；失败则回退 baostock 补齐。
+
+    auto=True（打开服务触发的自动链，D-045）时顺带把当日日报+邮件补齐：
+      - 快照成功 → 当日日报缺失则只跑流水线+发信（report）
+      - 快照失败 → 跑完整每日流程（更新行情+流水线+发信，daily）
+    手动点「更新行情」auto=False：只更新行情，不发信（保持原行为）。
+    """
     from src.data.snapshot import update_indexes
     try:
-        update_indexes(_store)
-    except Exception as e:  # noqa: BLE001
-        with LOG.open("a", encoding="utf-8") as f:
-            f.write(f"\n[index] 更新失败: {e}\n")
-    try:
-        r = update_spot_snapshot(_store)
-        if r.get("ok") or "盘中" in str(r.get("reason", "")):
+        try:
+            update_indexes(_store)
+        except Exception as e:  # noqa: BLE001
+            _note(f"[index] 基准指数更新失败（不影响个股快照）：{e}")
+        fed = None
+        try:
+            r = update_spot_snapshot(_store)
+            if r.get("ok"):
+                fed = r.get("date")
+            elif "盘中" in str(r.get("reason", "")):
+                _note("[spot] 盘中，收盘前不落库；收盘后再打开会自动更新")
+                return
+        except Exception as e:  # noqa: BLE001
+            _note(f"[spot] 东财快照源不可用（{e}），自动改用 baostock 逐只补齐")
+        if not auto:
+            if fed:
+                return
+            jr = start_job("update")
+            if not jr.get("ok"):
+                _note(f"[spot] 快照未取到数据，且补齐任务未启动：{jr.get('msg')}")
             return
-    except Exception as e:  # noqa: BLE001
-        with LOG.open("a", encoding="utf-8") as f:
-            f.write(f"\n[spot] 失败，回退 baostock: {e}\n")
-    start_job("update")
+        # ---- 自动链：把当日日报/邮件也补齐 ----
+        if fed:
+            miss = _report_missing(fed)
+            if miss:
+                _note(f"[auto] 行情已更新到 {fed}，但日报缺失（{'/'.join(miss)}）"
+                      f"→ 跑流水线并合并发信")
+                _set_state(last_report_update=time.time())
+                start_job("report")
+            else:
+                _note("[auto] 行情已更新且当日日报齐全，无需再跑流水线")
+        else:
+            _note("[auto] 快照不可用 → 跑完整每日流程（更新行情 + 四账户流水线 + 合并日报邮件）")
+            start_job("daily")
+    finally:
+        _job["busy"] = None
 
 
-def start_spot_update():
-    if _job["proc"] is not None and _job["proc"].poll() is None:
-        return {"ok": False, "msg": f"已有任务在跑：{_job['name']}"}
-    threading.Thread(target=_spot_work, daemon=True).start()
-    return {"ok": True, "msg": "已开始检查并更新行情（快照优先，失败自动回退）"}
+def start_spot_update(auto=False):
+    with _job_lock:                                   # 防止连点开出一堆线程
+        running = (_job["proc"] is not None and _job["proc"].poll() is None)
+        if _job["busy"] or running:
+            return {"ok": False, "msg": f"已有任务在跑：{_job['busy'] or _job['name']}"}
+        _job["busy"] = "spot"
+    threading.Thread(target=_spot_work, args=(auto,), daemon=True).start()
+    return {"ok": True, "msg": "已开始检查并更新行情（快照优先，失败自动回退 baostock）"}
 
 
 def auto_update_on_start():
+    """打开服务时的自动链（D-045）：记启动时间戳 + 节流，别一天开几次就跑几次。"""
     try:
         f = freshness_info()
-        if f.get("stale"):
-            start_spot_update()
-    except Exception:  # noqa: BLE001
-        pass
+        day = f.get("last_closed")
+        stale = bool(f.get("stale"))
+        miss = f.get("missing_reports") or []
+        _log_start(event="startup", stale=stale, up_to_date=f.get("up_to_date"),
+                   sample=f.get("sample"), last_closed=day, missing_reports=miss)
+        now = time.time()
+        st = _state()
+        if stale:
+            last = float(st.get("last_auto_update") or 0)
+            left = AUTO_UPDATE_COOLDOWN - (now - last)
+            if last and left > 0:
+                _note(f"[startup] 距上次自动更新仅 {int((now - last) / 60)} 分钟，本次跳过"
+                      f"（{int(left / 60)} 分钟后才会再自动补；急用请点「更新行情」）")
+                _log_start(event="skip-cooldown", reason="stale",
+                           minutes=int((now - last) / 60))
+                return
+            _set_state(last_auto_update=now)
+            _log_start(event="auto-update")
+            start_spot_update(auto=True)
+            return
+        if miss:
+            last = float(st.get("last_report_update") or 0)
+            left = AUTO_REPORT_COOLDOWN - (now - last)
+            if last and left > 0:
+                _note(f"[startup] {day} 日报缺失（{'/'.join(miss)}），但 {int((now - last) / 60)} "
+                      f"分钟前刚补过，本次跳过（{int(left / 60)} 分钟后重试）")
+                _log_start(event="skip-cooldown", reason="report", missing_reports=miss)
+                return
+            _set_state(last_report_update=now)
+            _note(f"[startup] 数据已最新，但 {day} 的日报缺失（{'/'.join(miss)}）"
+                  f"→ 跑流水线并合并发信")
+            _log_start(event="catch-up-report", missing_reports=miss)
+            start_job("report")
+            return
+        _note(f"[startup] 数据已最新（{f.get('up_to_date')}/{f.get('sample')}）、"
+              f"当日日报齐全，无需后台任务")
+        _log_start(event="nothing-to-do")
+    except Exception as e:  # noqa: BLE001
+        _note(f"[startup] 自动检查失败（不影响使用）：{e}")
 
 
 PAGE = ""  # 旧内嵌页面已移除（dist 随 git 提交，见 D-034）
@@ -949,7 +1109,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"err": "forbidden: Content-Type 必须为 application/json"})
         if origin:
             from urllib.parse import urlparse as _up
-            if _up(origin).netloc != "127.0.0.1:8765":   # R3-18：精确比对防前缀绕过
+            if _up(origin).netloc not in ALLOWED_ORIGINS:   # R3-18：精确比对防前缀绕过
                 return self._send(403, {"err": "forbidden: 跨源请求被拒绝"})
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
@@ -995,12 +1155,42 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class Server(ThreadingHTTPServer):
+    """浏览器关页/刷新/取消请求会 RST 连接，属正常现象——不打印整段 traceback。"""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
-    host, port = "127.0.0.1", 8765
+    # 单实例：Windows 的 SO_REUSEADDR 允许"重复绑定"同一端口——旧实例还活着时，
+    # 新实例会静默绑定成功但永远收不到连接，于是"改了代码没生效 / 重启了还在报错"。
+    # 用跨进程文件锁挡住，并把话说清楚（锁随进程退出由 OS 释放，无陈旧锁）。
+    from src.live.proclock import try_lock
+    global _instance_lock
+    _instance_lock = try_lock(STORE_DIR / "logs" / "webapp.lock")
+    if _instance_lock is None:
+        print("[启动失败] 已经有一个控制台在跑（webapp.lock 被占用），本实例不启动。")
+        print("  关掉那个窗口即可；若窗口已关、进程还在：")
+        print("    PowerShell: Get-Process python | Stop-Process -Force")
+        raise SystemExit(3)
+    try:
+        srv = Server((HOST, PORT), Handler)
+    except OSError as e:
+        print(f"[启动失败] 端口 {PORT} 绑定不上：{e}")
+        print("  多半被别的程序占着，换端口或先结束占用它的进程。")
+        raise SystemExit(3) from e
+    _rotate_log()                                  # 运行日志按大小轮转，防无限长
     threading.Thread(target=auto_update_on_start, daemon=True).start()
-    print(f"QuantDex 控制台: http://{host}:{port}  （Ctrl+C 退出）")
-    print("启动后会自动检查数据新鲜度：过期则先快照、失败回退 baostock")
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    print(f"QuantDex 控制台: http://{HOST}:{PORT}  （也可用 http://localhost:{PORT}）")
+    print("（Ctrl+C 退出）启动后自动检查：行情过期→先快照、失败回退 baostock；"
+          "当日日报缺失→补跑流水线并发邮件")
+    print(f"（每次启动记一行：{START_LOG} ；重复启动 60 分钟内不会重复跑更新）")
+    srv.serve_forever()
 
 
 if __name__ == "__main__":
