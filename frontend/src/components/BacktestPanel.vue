@@ -47,17 +47,43 @@ function option(sec) {
   }
 }
 
+function mount(elRef, sec, key) {
+  if (!sec) return
+  const dom = elRef.value
+  if (!dom) {                                   // 容器还没挂上：稍后再试一次
+    setTimeout(() => mount(elRef, sec, key), 60)
+    return
+  }
+  try {
+    let inst = key === 'is' ? chartIs : chartOos
+    if (inst && inst.getDom() !== dom) {        // 容器被重建过（切视图/重新挂载）
+      inst.dispose()
+      inst = null
+    }
+    if (!inst) {
+      // 显式给宽高：首帧容器可能还没布局完，echarts 按 0×0 建图后就再也不画了
+      inst = echarts.init(dom, null, {
+        renderer: 'canvas',
+        width: dom.clientWidth || null,
+        height: 230
+      })
+      if (key === 'is') chartIs = inst
+      else chartOos = inst
+    }
+    inst.setOption(option(sec), true)
+    requestAnimationFrame(() => {               // 下一帧再校正一次尺寸
+      try { inst.resize({ width: dom.clientWidth || undefined, height: 230 }) } catch { /* ignore */ }
+    })
+  } catch (e) {
+    console.error('[BacktestPanel] 图表渲染失败:', key, e)
+  }
+}
+
 function render() {
   const d = data.value
   if (!d || d.error) return
-  if (d.is && elIs.value) {
-    if (!chartIs) chartIs = echarts.init(elIs.value)
-    chartIs.setOption(option(d.is), true)
-  }
-  if (d.oos && elOos.value) {
-    if (!chartOos) chartOos = echarts.init(elOos.value)
-    chartOos.setOption(option(d.oos), true)
-  }
+  mount(elIs, d.is, 'is')
+  mount(elOos, d.oos, 'oos')
 }
 
 onMounted(() => {
@@ -112,6 +138,9 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <div v-else class="rounded-lg bg-amber-50 px-3 py-8 text-center text-xs text-amber-700">
+          样本内数据缺失（检查 scripts/05 的产物 portfolio_results/nav_*.parquet）
+        </div>
 
         <!-- 样本外 -->
         <div v-if="data.oos">
@@ -139,6 +168,9 @@ onUnmounted(() => {
               <div class="tabular font-semibold text-emerald-700">{{ fmt.pct(data.oos.stats.mdd) }}</div>
             </div>
           </div>
+        </div>
+        <div v-else class="rounded-lg bg-amber-50 px-3 py-8 text-center text-xs text-amber-700">
+          样本外数据缺失（检查 scripts/06 的产物 walkforward_results/nav_oos_*.parquet）
         </div>
       </div>
 
