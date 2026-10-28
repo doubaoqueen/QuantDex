@@ -688,16 +688,44 @@ def backtest(acc="large"):
         out["oos_start"] = str(nav_oos.index[0].date())
         out["is_end"] = str(nav_is.index[-1].date()) if len(nav_is) else None
 
+        # ---- 同轴对比（D-048）：两条线都从 walk-forward 起点开始，同一段时间比 ----
+        #   固定线 = Top50/20 全程不变（参数是看全样本定的，等于"作弊"）
+        #   走向线 = walk-forward（每年只用之前的数据重选 N）
+        start = nav_oos.index[0]
+        end = nav_full.index[-1]          # 两条线截到同一终点（05 的产物可能比 06 早几天）
+        nav_walk = nav_oos[nav_oos.index <= end]
+        fixed = nav_full[nav_full.index >= start]
+        if len(fixed) > 2 and len(nav_walk) > 2:
+            idx = nav_walk.index
+            fx = (fixed / fixed.iloc[0]).reindex(idx).ffill()
+            wx = nav_walk / nav_walk.iloc[0]
+            b = bench[(bench.index >= start) & (bench.index <= idx[-1])]
+            bn = (b / b.iloc[0]).reindex(idx).ffill()
+            out["cmp"] = {
+                "start": str(start.date()), "end": str(idx[-1].date()),
+                "dates": [str(d.date()) for d in idx],
+                "fixed": [round(float(v), 4) for v in fx.values],
+                "walk": [round(float(v), 4) for v in wx.values],
+                "bench": [round(float(v), 4) for v in bn.values],
+                "fixed_stats": _stats(fixed),
+                "walk_stats": _stats(nav_walk),
+            }
+
         sy = {}
         for y, g in nav_full.groupby(nav_full.index.year):
             if len(g) > 2:
                 sy[int(y)] = float(g.iloc[-1] / g.iloc[0] - 1)
         by = {int(y): float((g / g.iloc[0] - 1).iloc[-1])
               for y, g in bench.groupby(bench.index.year)}
+        wy = {}
+        for y, g in nav_oos.groupby(nav_oos.index.year):
+            if len(g) > 1:
+                wy[int(y)] = float(g.iloc[-1] / g.iloc[0] - 1)
         oos_year = nav_oos.index[0].year
-        out["yearly"] = [{"year": y, "strategy": sy.get(y), "bench": by.get(y),
+        out["yearly"] = [{"year": y, "strategy": sy.get(y), "walk": wy.get(y),
+                          "bench": by.get(y),
                           "seg": ("样本外" if y >= oos_year else "样本内")}
-                         for y in sorted(set(sy) | set(by))]
+                         for y in sorted(set(sy) | set(by) | set(wy))]
         fp = STORE_DIR / "walkforward_results" / f"folds_000300{suffix}.parquet"
         if fp.exists():
             def _jsonable(v):
@@ -711,6 +739,17 @@ def backtest(acc="large"):
                     return str(v)
             out["folds"] = [{k: _jsonable(v) for k, v in r.items()}
                             for r in pd.read_parquet(fp).to_dict("records")]
+            # 逐年：当年采用的 N（只/天）+ 两条线当年收益，直接回答"24/25 年用的什么参数"
+            n_used = {}
+            for f in out["folds"]:
+                c = f.get("combo")
+                if isinstance(c, list) and len(c) == 2:
+                    n_used[int(f["test_year"])] = [int(c[0]), int(c[1])]
+            out["yearly_cmp"] = [
+                {"year": r["year"],
+                 "n_used": n_used.get(r["year"]) if r["seg"] == "样本外" else None,
+                 "fixed": r["strategy"], "walk": r.get("walk"), "bench": r["bench"]}
+                for r in out["yearly"]]
         return out
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}

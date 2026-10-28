@@ -33,7 +33,10 @@ from src.strategies.multi_factor import (
 
 START_DATE = "20180101"
 GRID = [(tn, rb) for tn in (20, 30, 50) for rb in (10, 20, 60)]
-TEST_YEARS = [2022, 2023, 2024, 2025, 2026]
+# 2018 只有一年数据，只能当训练段，所以 walk-forward 从 2019 开始——
+# 这样样本外链能和"固定 50/20 全样本"放在同一条时间轴上比（D-048）。
+TEST_YEARS = list(range(2019, 2027))
+_W_CACHE: dict = {}
 
 
 def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
@@ -49,17 +52,26 @@ def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
     return {"ann": ann, "ir": ir, "mdd": mdd, "total": float(nav.iloc[-1] - 1)}
 
 
+def _weights_for(panel: pd.DataFrame, combo, strategy: str) -> pd.DataFrame:
+    """按 (策略, 参数) 缓存权重矩阵：网格搜索里同一组合会被重复用到多年，省重算。"""
+    key = (strategy, combo)
+    if key not in _W_CACHE:
+        top_n, reb = combo
+        if strategy == "dividend":
+            w = turnover_lowvol_dividend_topn(panel, top_n=top_n, rebalance_days=reb)
+        elif strategy == "topkdrop":
+            w = topk_dropout_topn(panel,
+                                  [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+                                  topk=top_n, n_drop=5, rebalance_days=reb)
+        else:
+            w = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=reb)
+        _W_CACHE[key] = w
+    return _W_CACHE[key]
+
+
 def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, opens: pd.DataFrame, combo,
               dates: pd.DatetimeIndex, strategy: str = "corrected"):
-    top_n, reb = combo
-    if strategy == "dividend":
-        W = turnover_lowvol_dividend_topn(panel, top_n=top_n, rebalance_days=reb)
-    elif strategy == "topkdrop":
-        W = topk_dropout_topn(panel,
-                              [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
-                              topk=top_n, n_drop=5, rebalance_days=reb)
-    else:
-        W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=reb)
+    W = _weights_for(panel, combo, strategy)
     p = prices.loc[dates]
     W = W[W.index.isin(p.index)]
     if W.empty:
