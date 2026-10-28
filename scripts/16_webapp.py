@@ -677,19 +677,26 @@ def backtest(acc="large"):
                 "现行版：低换手+低波+反转")
         if acc == "small":
             name = "参考：现行版（小账户为 3 只整手执行验证，无独立历史回测）"
+        nav_full = _nav(STORE_DIR / "portfolio_results" / f"nav_000300_top50_reb20{suffix}.parquet")
+        nav_oos = _nav(STORE_DIR / "walkforward_results" / f"nav_oos_000300{suffix}.parquet")
+        # 样本内 = 全周期曲线在 walk-forward 起点之前的那一段；样本外单独一条（不拼成一条线）
+        nav_is = nav_full[nav_full.index < nav_oos.index[0]]
         out = {"strategy": name,
-               "full": _pack(_nav(STORE_DIR / "portfolio_results" / f"nav_000300_top50_reb20{suffix}.parquet")),
-               "oos": _pack(_nav(STORE_DIR / "walkforward_results" / f"nav_oos_000300{suffix}.parquet"))}
-        out["oos_start"] = out["oos"]["dates"][0]
+               "full": _pack(nav_full),
+               "is": _pack(nav_is) if len(nav_is) > 2 else None,
+               "oos": _pack(nav_oos)}
+        out["oos_start"] = str(nav_oos.index[0].date())
+        out["is_end"] = str(nav_is.index[-1].date()) if len(nav_is) else None
 
-        nav_full = pd.Series(out["full"]["nav"], index=pd.to_datetime(out["full"]["dates"]))
         sy = {}
         for y, g in nav_full.groupby(nav_full.index.year):
             if len(g) > 2:
                 sy[int(y)] = float(g.iloc[-1] / g.iloc[0] - 1)
         by = {int(y): float((g / g.iloc[0] - 1).iloc[-1])
               for y, g in bench.groupby(bench.index.year)}
-        out["yearly"] = [{"year": y, "strategy": sy.get(y), "bench": by.get(y)}
+        oos_year = nav_oos.index[0].year
+        out["yearly"] = [{"year": y, "strategy": sy.get(y), "bench": by.get(y),
+                          "seg": ("样本外" if y >= oos_year else "样本内")}
                          for y in sorted(set(sy) | set(by))]
         fp = STORE_DIR / "walkforward_results" / f"folds_000300{suffix}.parquet"
         if fp.exists():
