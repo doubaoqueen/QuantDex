@@ -29,12 +29,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from config import board_limit
+
 TRADING_DAYS = 250
-_GEM_PREFIX = ("300", "301", "688")
 
 
 def _board_limit(symbol: str) -> float:
-    return 0.20 if str(symbol).startswith(_GEM_PREFIX) else 0.10
+    return board_limit(symbol)
 
 
 def run_portfolio_backtest(

@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import GEM_PREFIX, LOT, MIN_FEE, SLIP_RATE, STAMP_RATE, STORE_DIR, TRANSFER_RATE
+from config import LOT, MIN_FEE, SLIP_RATE, STAMP_RATE, STORE_DIR, TRANSFER_RATE, board_limit
 from src.analysis.factors import build_factor_panel
 from src.data import financials, universe
 from src.data.market import get_kline
@@ -40,7 +40,6 @@ FEE = 0.00025
 SLIP = SLIP_RATE
 STAMP = STAMP_RATE
 TRANSFER = TRANSFER_RATE
-_GEM_PREFIX = GEM_PREFIX
 
 
 def _trade_fee(amount: float) -> float:
@@ -49,7 +48,7 @@ def _trade_fee(amount: float) -> float:
 
 
 def _board_limit(symbol: str) -> float:
-    return 0.20 if str(symbol).startswith(_GEM_PREFIX) else 0.10
+    return board_limit(symbol)
 
 
 # ---------------------------------------------------------------- 数据准备

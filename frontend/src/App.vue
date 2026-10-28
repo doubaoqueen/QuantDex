@@ -6,6 +6,7 @@ import SchoolView from './components/SchoolView.vue'
 import NavChart from './components/NavChart.vue'
 import BacktestPanel from './components/BacktestPanel.vue'
 import PositionsTable from './components/PositionsTable.vue'
+import CandidatesPanel from './components/CandidatesPanel.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
 import RegimeCard from './components/RegimeCard.vue'
 import ReportViewer from './components/ReportViewer.vue'
@@ -274,6 +275,9 @@ function cumText(o) {
         <OrdersPanel :orders="orders" :trades="trades" :account="account"
                      @changed="loadAccountScoped" />
       </div>
+
+      <!-- 备选标的（全池海选前 15：名称/行业/涨跌停/一手成本） -->
+      <CandidatesPanel :account="account" />
 
       <!-- 日报 + 操作记录 + 任务 -->
       <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">

@@ -57,3 +57,17 @@ STAMP_RATE = 0.0005       # 印花税（仅卖出）
 TRANSFER_RATE = 0.00001   # 过户费（双边，0.001%）
 LOT = 100                 # A 股整手
 GEM_PREFIX = ("300", "301", "688")  # 创业板/科创板（±20%）
+
+
+def board_limit(symbol: str, name: str | None = None) -> float:
+    """涨跌停幅度（撮合 / 回测 / 控制台展示共用，唯一来源）。
+
+    ST 股（证券简称以 ST/*ST 开头）±5%；创业板/科创板 ±20%；其余主板 ±10%。
+    传 name 才判 ST——撮合侧目前只传代码（保持既有行为），控制台展示会传名称，
+    所以 ST 标的的涨跌停标记比撮合更严格，属已知差异。
+    """
+    if name:
+        nm = str(name).upper().replace(" ", "")
+        if nm.startswith(("*ST", "ST")):
+            return 0.05
+    return 0.20 if str(symbol).startswith(GEM_PREFIX) else 0.10

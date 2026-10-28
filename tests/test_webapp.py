@@ -59,3 +59,24 @@ def test_auth_token_and_login():
     assert not webapp._check_token(expired), "过期 token 应被拒"
     assert webapp._verify_login(webapp.AUTH["user"], webapp.AUTH["pass"])
     assert not webapp._verify_login(webapp.AUTH["user"], "wrong")
+
+
+def test_board_limit_and_limit_tag():
+    """涨跌停幅度与标注：主板 ±10%、创/科 ±20%、ST ±5%（展示口径）。"""
+    from config import board_limit
+    assert board_limit("600519") == 0.10
+    assert board_limit("300750") == 0.20
+    assert board_limit("688009") == 0.20
+    assert board_limit("600519", "ST长油") == 0.05
+    assert board_limit("600519", "*ST长油") == 0.05
+
+    tag = webapp._limit_tag
+    assert tag(0.10, "600519") == "涨停"
+    assert tag(0.0995, "600519") == "涨停"      # 四舍五入到 9.95% 也算封板
+    assert tag(0.05, "600519") is None          # 主板涨 5% 不是涨停
+    assert tag(0.05, "600519", "ST长油") == "涨停"
+    assert tag(-0.1995, "300750") == "跌停"
+    assert tag(-0.095, "300750") is None        # 创业板跌 9.5% 不是跌停
+    assert tag(None, "600519") is None
+    assert tag(float("nan"), "600519") is None
+    assert tag("bad", "600519") is None

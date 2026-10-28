@@ -21,8 +21,9 @@ const filter = ref('')
 const sorted = computed(() => {
   let r = [...(props.rows || [])]
   if (filter.value.trim()) {
-    const q = filter.value.trim()
-    r = r.filter(x => String(x.symbol).includes(q))
+    const q = filter.value.trim().toLowerCase()
+    r = r.filter(x => String(x.symbol).includes(q) ||
+      String(x.name || '').toLowerCase().includes(q))
   }
   const k = sortKey.value
   r.sort((a, b) => {
@@ -41,8 +42,11 @@ const upDown = computed(() => {
   return { up, down, flat: r.length - up - down }
 })
 
+// 涨停/跌停只做提示：撮合侧已经在开盘价上判过涨跌停并拒单（涨停买不进/跌停卖不出）
+const limitRows = computed(() => (props.rows || []).filter(x => x.limit))
+
 const cols = [
-  { key: 'symbol', label: '代码', num: false },
+  { key: 'symbol', label: '标的', num: false },
   { key: 'shares', label: '股数', num: true },
   { key: 'close', label: '现价', num: true },
   { key: 'pct', label: '涨跌幅', num: true },
@@ -76,8 +80,19 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
         <span class="mx-1 text-slate-300">/</span>
         <span class="text-slate-500">平 {{ upDown.flat }}</span>
       </span>
-      <input v-model="filter" placeholder="筛选代码…"
-             class="w-28 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none" />
+      <input v-model="filter" placeholder="筛选名称/代码…"
+             class="w-32 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none" />
+    </div>
+
+    <!-- 当日涨跌停：封板意味着当日买卖都会受限（撮合已按涨跌停拒单） -->
+    <div v-if="limitRows.length" class="mb-2 flex flex-wrap items-center gap-1.5">
+      <span class="text-xs font-medium text-slate-500">今日封板</span>
+      <span v-for="r in limitRows" :key="r.symbol"
+            class="tabular rounded-full px-2 py-0.5 text-[11px]"
+            :class="r.limit === '涨停' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'"
+            :title="`${r.symbol} ${r.name || ''} ${r.limit}`">
+        {{ r.name || r.symbol }} {{ r.limit }}
+      </span>
     </div>
 
     <!-- 持仓预警：距持有期高点回撤 ≥10%（仅提醒；处置类规则已被回测否定 D-026） -->
@@ -99,12 +114,15 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
       <div class="max-h-[380px] overflow-auto rounded-lg border border-slate-100">
         <table class="tabular w-full text-sm">
           <thead class="sticky top-0 bg-slate-50 text-xs text-slate-500">
-            <tr><th class="px-3 py-2 text-left">代码</th><th>数量</th><th>参考价</th><th>参考金额</th><th>参考权重</th></tr>
+            <tr><th class="px-3 py-2 text-left">标的</th><th>数量</th><th>参考价</th><th>参考金额</th><th>参考权重</th></tr>
           </thead>
           <tbody>
             <tr v-for="o in [...pendingBuys].sort((a,b)=>b.qty*b.price-a.qty*a.price)" :key="o.id"
                 class="border-t border-slate-100">
-              <td class="px-3 py-1.5 font-medium">{{ o.symbol }}</td>
+              <td class="px-3 py-1.5">
+                <span class="font-medium">{{ o.name || o.symbol }}</span>
+                <span class="ml-1 text-[11px] text-slate-400">{{ o.symbol }}</span>
+              </td>
               <td class="text-right text-slate-500">{{ fmt.n(o.qty, 0) }}</td>
               <td class="text-right">{{ fmt.n(o.price) }}</td>
               <td class="text-right">{{ fmt.n(o.qty * o.price, 0) }}</td>
@@ -137,11 +155,18 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
         </thead>
         <tbody>
           <tr v-for="r in sorted" :key="r.symbol" class="border-t border-slate-100 hover:bg-sky-50/50">
-            <td class="px-3 py-1.5 font-medium">{{ r.symbol }}</td>
+            <td class="px-3 py-1.5">
+              <div class="font-medium">{{ r.name || r.symbol }}</div>
+              <div class="text-[11px] text-slate-400">
+                {{ r.symbol }}<span v-if="r.industry"> · {{ r.industry }}</span>
+              </div>
+            </td>
             <td class="px-3 py-1.5 text-right text-slate-500">{{ fmt.n(r.shares, 0) }}</td>
             <td class="px-3 py-1.5 text-right">{{ fmt.n(r.close) }}</td>
             <td class="px-3 py-1.5 text-right font-semibold" :class="fmt.signCls(r.pct)" :style="{ background: heat(r.pct) }">
               {{ fmt.pct(r.pct) }}
+              <span v-if="r.limit" class="ml-1 rounded px-1 text-[10px] text-white"
+                    :class="r.limit === '涨停' ? 'bg-rose-600' : 'bg-emerald-600'">{{ r.limit }}</span>
             </td>
             <td class="px-3 py-1.5 text-right" :class="fmt.signCls(r.pnl)">{{ r.pnl >= 0 ? '+' : '' }}{{ fmt.n(r.pnl, 0) }}</td>
             <td class="px-3 py-1.5 text-right">

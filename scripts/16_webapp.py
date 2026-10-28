@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 import _bootstrap  # noqa: F401
 import pandas as pd
 
-from config import STORE_DIR
+from config import STORE_DIR, board_limit
 from src.data.market import get_kline
 from src.data.snapshot import freshness as data_freshness
 from src.data.snapshot import update_spot_snapshot
@@ -191,6 +191,57 @@ def _rotate_log() -> None:
         pass
 
 
+# ---------------------------------------------------------------- 名称 / 行业 / 涨跌停
+_META_CACHE = {"key": None, "names": {}, "industries": {}}
+
+
+def _meta_maps():
+    """symbol -> 名称 / 申万一级行业（meta 里现成，按文件 mtime 缓存，改文件自动重载）。"""
+    try:
+        p1 = STORE_DIR / "meta" / "bs_securities.parquet"   # 全量证券（含退市）→ 名称
+        p2 = STORE_DIR / "meta" / "industry_sw.parquet"     # 申万一级 → 行业
+        key = tuple(int(p.stat().st_mtime) if p.exists() else 0 for p in (p1, p2))
+        if _META_CACHE["key"] == key and _META_CACHE["names"]:
+            return _META_CACHE["names"], _META_CACHE["industries"]
+        names, inds = {}, {}
+        if p1.exists():
+            df = pd.read_parquet(p1, columns=["symbol", "name"])
+            names = dict(zip(df["symbol"].astype(str), df["name"].astype(str), strict=False))
+        if p2.exists():
+            df = pd.read_parquet(p2, columns=["symbol", "industry"])
+            inds = dict(zip(df["symbol"].astype(str), df["industry"].astype(str), strict=False))
+        _META_CACHE.update(key=key, names=names, industries=inds)
+        return names, inds
+    except Exception:  # noqa: BLE001
+        return {}, {}
+
+
+def _limit_tag(pct, symbol, name=None):
+    """当日是否触及涨跌停（pct 为**小数**口径，与撮合同源：ST ±5%、创/科 ±20%、主板 ±10%）。"""
+    if pct is None:
+        return None
+    try:
+        p = float(pct)
+    except (TypeError, ValueError):
+        return None
+    if p != p:  # NaN
+        return None
+    lim = board_limit(symbol, name)
+    if p >= lim - 1e-3:
+        return "涨停"
+    if p <= -lim + 1e-3:
+        return "跌停"
+    return None
+
+
+def _with_names(records: list) -> list:
+    """给 trade_log 这类行补中文名称（就地写 name 字段，前端直接显示）。"""
+    names, _ = _meta_maps()
+    for r in records:
+        r["name"] = names.get(str(r.get("symbol")), "")
+    return records
+
+
 def overview(acc):
     conn = _db(acc)
     if conn is None:
@@ -241,21 +292,28 @@ def positions(acc):
         pos = pd.read_sql_query("SELECT * FROM positions WHERE date=?", conn, params=(last,))
     finally:
         conn.close()
+    names, inds = _meta_maps()
     rows = []
     for r in pos.itertuples(index=False):
-        prev = None
+        sym = str(r.symbol)
+        prev, pct_chg = None, None
         try:
-            k = get_kline(str(r.symbol), adjust="qfq", store=_store)
+            k = get_kline(sym, adjust="qfq", store=_store)
             k = k[pd.to_datetime(k["date"]) <= pd.Timestamp(last)]
             if len(k) >= 2:
                 prev = float(k["close"].iloc[-2])
+            if len(k) and "pct_chg" in k.columns:
+                # 仓库里的 pct_chg 是百分数（-1.39 表示 -1.39%），这里统一换成分数口径
+                pct_chg = float(k["pct_chg"].iloc[-1]) / 100.0
         except Exception:  # noqa: BLE001
             pass
         px = float(r.close)
         chg = (px / prev - 1) if prev else None
         pnl = (px - prev) * float(r.shares) if prev else 0.0
-        rows.append({"symbol": str(r.symbol), "shares": float(r.shares), "close": px,
-                     "pct": chg, "pnl": pnl, "weight": float(r.weight)})
+        rows.append({"symbol": sym, "name": names.get(sym, ""),
+                     "industry": inds.get(sym, ""), "shares": float(r.shares),
+                     "close": px, "pct": chg, "pnl": pnl,
+                     "weight": float(r.weight), "limit": _limit_tag(pct_chg, sym, names.get(sym))})
     return rows
 
 
@@ -282,7 +340,7 @@ def trades(acc, limit=30):
         df = pd.read_sql_query(
             "SELECT fill_date, symbol, side, qty, price, status FROM trade_log "
             "ORDER BY id DESC LIMIT ?", conn, params=(int(limit),))
-        return {"rows": df.to_dict("records")}
+        return {"rows": _with_names(df.to_dict("records"))}
     finally:
         conn.close()
 
@@ -311,6 +369,7 @@ def rebalance_diff(acc):
         return {"rows": [], "nav": nav}
     mv = {str(r.symbol): float(r.shares) * float(r.close)
           for r in last_pos.itertuples(index=False)}
+    names, _inds = _meta_maps()
     rows = []
     for o in pend.itertuples(index=False):
         sym = str(o.symbol)
@@ -318,7 +377,7 @@ def rebalance_diff(acc):
         delta = float(o.amount) if o.side == "buy" else -float(o.amount)
         tgt_mv = max(cur_mv + delta, 0.0)
         rows.append({
-            "id": int(o.id), "symbol": sym, "side": o.side,
+            "id": int(o.id), "symbol": sym, "name": names.get(sym, ""), "side": o.side,
             "qty": float(o.qty), "price": float(o.price), "fill_date": o.fill_date,
             "cur_weight": cur_mv / nav,
             "tgt_weight": tgt_mv / nav,
@@ -409,19 +468,20 @@ def fees(acc):
     return {"summary": summary, "recent": recent}
 
 
-_CAND_CACHE = {"t": 0.0, "acc": None, "data": None}
+_CAND_CACHE = {}          # acc -> (时间戳, 结果)；按账户缓存，切账户不用重算全池
 
 
 def candidates(acc):
     """候选池（海选）：该账户策略在最新交易日对全部 PIT 成分打分的前 15 名。
 
-    分数与流水线同口径（截面 rank 合成）；标注持仓中/待成交/备选#N。
-    为速度只取每标的最近 420 行计算（滚动窗口足够），结果缓存 15 分钟。
+    分数与流水线同口径（截面 rank 合成）；标注持仓中/待成交/备选#N，并带名称/行业/涨跌停。
+    为速度只取每标的最近 420 行计算（滚动窗口足够），结果按账户缓存 15 分钟。
     """
     import time as _t
     now = _t.time()
-    if _CAND_CACHE["acc"] == acc and now - _CAND_CACHE["t"] < 900:
-        return _CAND_CACHE["data"]
+    hit = _CAND_CACHE.get(acc)
+    if hit and now - hit[0] < 900:
+        return hit[1]
     import numpy as np
 
     from src.analysis.factors import compute_raw_factors
@@ -454,6 +514,10 @@ def candidates(acc):
         rec = {"symbol": str(sym), "close": float(last["close"]),
                "turnover_20": float(last["turnover_20"]),
                "vol_20": float(last["vol_20"]), "rev_5": float(last["rev_5"])}
+        try:   # 当日涨跌幅：仓库里是百分数，统一换成小数口径（与撮合/涨跌停判断一致）
+            rec["pct_chg"] = float(k["pct_chg"].iloc[-1]) / 100.0
+        except (KeyError, TypeError, ValueError):
+            rec["pct_chg"] = float("nan")
         if is_div:
             g = div_by.get(str(sym))
             if g is None:
@@ -497,18 +561,27 @@ def candidates(acc):
     except Exception:  # noqa: BLE001
         latest = None
     rows = []
+    names, inds = _meta_maps()
     for i, r in df.iterrows():
-        status = ("持仓中" if r["symbol"] in held
-                  else "待成交" if r["symbol"] in pend else f"备选 #{i + 1}")
-        rows.append({"rank": i + 1, "symbol": r["symbol"],
+        sym = str(r["symbol"])
+        chg = r.get("pct_chg")
+        try:
+            chg = float(chg)
+        except (TypeError, ValueError):
+            chg = None
+        status = ("持仓中" if sym in held
+                  else "待成交" if sym in pend else f"备选 #{i + 1}")
+        rows.append({"rank": i + 1, "symbol": sym,
+                     "name": names.get(sym, ""), "industry": inds.get(sym, ""),
                      "score": round(float(r["score"]), 4),
                      "close": round(float(r["close"]), 2),
+                     "pct": (round(chg, 4) if chg is not None else None), "limit": _limit_tag(chg, sym, names.get(sym)),
                      "lot_cost": round(float(r["close"]) * 100, 0),
                      "status": status})
     out = {"strategy": ("红利版：低换手+低波+股息率" if is_div else
                         "现行版：低换手+低波+反转"),
            "date": latest, "cash": cash, "rows": rows}
-    _CAND_CACHE.update(t=now, acc=acc, data=out)
+    _CAND_CACHE[acc] = (now, out)
     return out
 
 
@@ -644,9 +717,33 @@ def orders(acc):
         df = pd.read_sql_query(
             "SELECT id,symbol,side,qty,price,fill_date,status,note FROM trade_log "
             "WHERE status='pending' ORDER BY id", conn)
-        return df.to_dict("records")
+        return _with_names(df.to_dict("records"))
     finally:
         conn.close()
+
+
+def symbol_lookup(symbol):
+    """手工下单时边输代码边看标的：名称/行业/最新价/涨跌停。"""
+    sym = str(symbol or "").strip()
+    if not (len(sym) == 6 and sym.isdigit()):
+        return {"err": "代码须为 6 位数字"}
+    names, inds = _meta_maps()
+    out = {"symbol": sym, "name": names.get(sym, ""), "industry": inds.get(sym, "")}
+    try:
+        k = get_kline(sym, adjust="qfq", store=_store)
+        if k is None or not len(k):
+            out["err"] = f"没有 {sym} 的行情数据"
+            return out
+        out["close"] = round(float(k["close"].iloc[-1]), 2)
+        out["date"] = str(pd.to_datetime(k["date"]).max().date())
+        pct = k["pct_chg"].iloc[-1] if "pct_chg" in k.columns else None
+        if pct is not None and pd.notna(pct):
+            pct = float(pct) / 100.0        # 仓库里是百分数 -> 小数口径
+            out["pct"] = round(pct, 4)
+            out["limit"] = _limit_tag(pct, sym, out.get("name"))
+    except Exception:  # noqa: BLE001
+        out["err"] = f"没有 {sym} 的行情数据"
+    return out
 
 
 def cancel_order(acc, order_id):
@@ -1082,6 +1179,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"rows": positions(q.get("account", ["large"])[0])})
             if u.path == "/api/orders":
                 return self._send(200, {"rows": orders(q.get("account", ["large"])[0])})
+            if u.path == "/api/lookup":
+                return self._send(200, symbol_lookup(q.get("symbol", [""])[0]))
             if u.path == "/api/regime":
                 return self._send(200, regime())
             if u.path == "/api/reports":

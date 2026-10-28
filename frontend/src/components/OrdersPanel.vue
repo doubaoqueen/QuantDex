@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { ref, computed, inject, watch } from 'vue'
 import { api, fmt } from '../api.js'
 
@@ -12,17 +12,19 @@ const qty = ref('')
 const price = ref('')
 const tab = ref('pending')       // pending | history | fees
 const feeData = ref({ summary: null, recent: [] })
-const cands = ref(null)
-const candsLoading = ref(false)
+const lookup = ref(null)         // 输入代码 -> 名称/行业/现价/涨跌停
+let lookupTimer = null
 
-async function loadCands() {
-  if (candsLoading.value) return
-  candsLoading.value = true
-  try {
-    cands.value = await api.get(`/api/candidates?account=${props.account}`)
-  } catch { cands.value = { rows: [] } }
-  candsLoading.value = false
-}
+// 边输边查标的：避免只看六位数字不知道是谁
+watch(sym, (v) => {
+  clearTimeout(lookupTimer)
+  const s = String(v || '').trim()
+  if (!/^\d{6}$/.test(s)) { lookup.value = null; return }
+  lookupTimer = setTimeout(async () => {
+    try { lookup.value = await api.get(`/api/lookup?symbol=${s}`) } catch { lookup.value = null }
+  }, 250)
+})
+
 const diff = ref({ rows: [], nav: null })
 
 async function loadDiff() {
@@ -93,9 +95,6 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
                 class="border-l border-slate-300 px-2.5 py-1" @click="tab='history'">成交记录</button>
         <button :class="tab==='fees' ? 'bg-slate-800 text-white' : 'bg-white'"
                 class="border-l border-slate-300 px-2.5 py-1" @click="tab='fees'">费用</button>
-        <button :class="tab==='cands' ? 'bg-slate-800 text-white' : 'bg-white'"
-                class="border-l border-slate-300 px-2.5 py-1"
-                @click="tab='cands'; loadCands()">候选池</button>
       </div>
     </div>
 
@@ -110,13 +109,16 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
         <table class="tabular w-full text-xs">
           <thead class="sticky top-0 bg-slate-50 text-slate-500">
             <tr>
-              <th class="px-2 py-1.5 text-left">代码</th><th>方向</th><th>数量</th>
+              <th class="px-2 py-1.5 text-left">标的</th><th>方向</th><th>数量</th>
               <th>当前权重</th><th>调整后</th><th>变动</th><th>成交日</th><th></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="r in diff.rows" :key="r.id" class="border-t border-slate-100">
-              <td class="px-2 py-1.5 font-medium">{{ r.symbol }}</td>
+              <td class="px-2 py-1.5">
+                <span class="font-medium">{{ r.name || r.symbol }}</span>
+                <span class="ml-1 text-[11px] text-slate-400">{{ r.symbol }}</span>
+              </td>
               <td class="text-center" :class="r.side==='buy' ? 'text-red-600' : 'text-emerald-600'">
                 {{ r.side==='buy' ? '买入' : '卖出' }}</td>
               <td class="text-right">{{ fmt.n(r.qty, 0) }}</td>
@@ -136,11 +138,14 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
       <div v-else-if="(orders||[]).length" class="max-h-[200px] overflow-auto">
         <table class="tabular w-full text-sm">
           <thead class="bg-slate-50 text-xs text-slate-500">
-            <tr><th class="px-2 py-1.5 text-left">代码</th><th>方向</th><th>数量</th><th>参考价</th><th>成交日</th><th></th></tr>
+            <tr><th class="px-2 py-1.5 text-left">标的</th><th>方向</th><th>数量</th><th>参考价</th><th>成交日</th><th></th></tr>
           </thead>
           <tbody>
             <tr v-for="o in orders" :key="o.id" class="border-t border-slate-100">
-              <td class="px-2 py-1.5 font-medium">{{ o.symbol }}</td>
+              <td class="px-2 py-1.5">
+                <span class="font-medium">{{ o.name || o.symbol }}</span>
+                <span class="ml-1 text-[11px] text-slate-400">{{ o.symbol }}</span>
+              </td>
               <td class="text-center" :class="o.side==='buy' ? 'text-red-600' : 'text-emerald-600'">{{ o.side==='buy' ? '买入' : '卖出' }}</td>
               <td class="tabular text-right">{{ fmt.n(o.qty, 0) }}</td>
               <td class="tabular text-right">{{ fmt.n(o.price) }}</td>
@@ -157,12 +162,15 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
     <div v-else-if="tab==='history'" class="max-h-[200px] overflow-auto">
       <table v-if="shownTrades.length" class="tabular w-full text-sm">
         <thead class="bg-slate-50 text-xs text-slate-500">
-          <tr><th class="px-2 py-1.5 text-left">日期</th><th class="text-left">代码</th><th>方向</th><th>数量</th><th>价</th><th>状态</th></tr>
+          <tr><th class="px-2 py-1.5 text-left">日期</th><th class="text-left">标的</th><th>方向</th><th>数量</th><th>价</th><th>状态</th></tr>
         </thead>
         <tbody>
           <tr v-for="(t, i) in shownTrades" :key="i" class="border-t border-slate-100">
             <td class="px-2 py-1.5 text-slate-500">{{ t.fill_date }}</td>
-            <td class="font-medium">{{ t.symbol }}</td>
+            <td>
+              <span class="font-medium">{{ t.name || t.symbol }}</span>
+              <span class="ml-1 text-[11px] text-slate-400">{{ t.symbol }}</span>
+            </td>
             <td class="text-center" :class="t.side==='buy' ? 'text-red-600' : 'text-emerald-600'">{{ t.side==='buy' ? '买' : '卖' }}</td>
             <td class="tabular text-right">{{ fmt.n(t.qty, 0) }}</td>
             <td class="tabular text-right">{{ fmt.n(t.price) }}</td>
@@ -195,12 +203,15 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
         </div>
         <table class="tabular w-full text-xs">
           <thead class="bg-slate-50 text-slate-500">
-            <tr><th class="px-2 py-1 text-left">日期</th><th class="text-left">代码</th><th>方向</th><th>金额</th><th>费用</th></tr>
+            <tr><th class="px-2 py-1 text-left">日期</th><th class="text-left">标的</th><th>方向</th><th>金额</th><th>费用</th></tr>
           </thead>
           <tbody>
             <tr v-for="(t, i) in feeData.recent" :key="i" class="border-t border-slate-100">
               <td class="px-2 py-1 text-slate-500">{{ t.fill_date }}</td>
-              <td class="font-medium">{{ t.symbol }}</td>
+              <td>
+                <span class="font-medium">{{ t.name || t.symbol }}</span>
+                <span class="ml-1 text-[11px] text-slate-400">{{ t.symbol }}</span>
+              </td>
               <td class="text-center" :class="t.side==='buy' ? 'text-red-600' : 'text-emerald-600'">{{ t.side==='buy' ? '买' : '卖' }}</td>
               <td class="text-right">{{ fmt.n(t.amount, 0) }}</td>
               <td class="text-right">{{ fmt.n(t.fee + t.stamp_duty, 2) }}</td>
@@ -212,46 +223,18 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
       <div v-else class="py-6 text-center text-sm text-slate-400">暂无已成交订单（无费用产生）</div>
     </div>
 
-    <!-- 候选池：全池海选前15名 + 备选状态 -->
-    <div v-else-if="tab==='cands'" class="max-h-[240px] overflow-auto">
-      <div v-if="candsLoading" class="py-8 text-center text-sm text-slate-400">
-        <span class="live-dot">●</span> 全池打分计算中（首次约半分钟，之后 15 分钟内秒开）…
-      </div>
-      <template v-else-if="cands && cands.rows && cands.rows.length">
-        <div class="mb-1 text-[11px] text-slate-400">
-          {{ cands.strategy }} · 截至 {{ cands.date }} · 全池海选前 15 名
-          <span v-if="cands.cash != null">· 可用现金 {{ fmt.n(cands.cash, 0) }} 元</span>
-          ——备选可直接在下方人工挂单
-        </div>
-        <table class="tabular w-full text-xs">
-          <thead class="sticky top-0 bg-slate-50 text-slate-500">
-            <tr><th class="px-2 py-1.5 text-left">#</th><th class="text-left">代码</th>
-                <th>分数</th><th>现价</th><th>一手成本</th><th>状态</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in cands.rows" :key="r.symbol" class="border-t border-slate-100">
-              <td class="px-2 py-1.5 text-slate-400">{{ r.rank }}</td>
-              <td class="font-medium">{{ r.symbol }}</td>
-              <td class="text-right">{{ r.score.toFixed(3) }}</td>
-              <td class="text-right">{{ fmt.n(r.close) }}</td>
-              <td class="text-right" :class="cands.cash != null && r.lot_cost > cands.cash ? 'text-rose-500' : ''">
-                {{ fmt.n(r.lot_cost, 0) }}</td>
-              <td class="text-center">
-                <span class="rounded-full px-2 py-0.5 text-[11px]"
-                      :class="r.status==='持仓中' ? 'bg-sky-100 text-sky-700' :
-                              r.status==='待成交' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'">
-                  {{ r.status }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </template>
-      <div v-else class="py-6 text-center text-sm text-slate-400">暂无候选数据</div>
-    </div>
-
     <!-- 人工挂单 -->
     <div class="mt-auto space-y-2 border-t border-slate-100 pt-3">
-      <div class="text-xs font-medium text-slate-500">人工挂单（T+1 开盘撮合 · {{ account==='large' ? '大账户' : '小账户' }}）</div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-medium text-slate-500">人工挂单（T+1 开盘撮合 · {{ account==='large' ? '大账户' : '小账户' }}）</span>
+        <span v-if="lookup && lookup.name" class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+          {{ lookup.name }}<template v-if="lookup.industry"> · {{ lookup.industry }}</template>
+          <template v-if="lookup.close != null"> · {{ fmt.n(lookup.close) }} 元</template>
+          <span v-if="lookup.limit" class="ml-1 font-medium"
+                :class="lookup.limit==='涨停' ? 'text-rose-600' : 'text-emerald-600'">{{ lookup.limit }}</span>
+        </span>
+        <span v-else-if="lookup && lookup.err" class="text-[11px] text-rose-600">{{ lookup.err }}</span>
+      </div>
       <div class="flex flex-wrap items-center gap-2 text-sm">
         <input v-model="sym" placeholder="代码 如 600519" maxlength="6" size="9"
                class="rounded-lg border border-slate-300 px-2 py-1.5 focus:border-sky-500 focus:outline-none" />

@@ -255,3 +255,4 @@ frontend/node_modules/
 backups/
 
 .commitmsg.txt
+.commitmsg_*.txt
