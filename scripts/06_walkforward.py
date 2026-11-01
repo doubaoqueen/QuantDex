@@ -1,4 +1,4 @@
-﻿"""
+"""
 第 6 步：walk-forward 防过拟合检验（多因子策略参数稳健性）。
 
 对每个测试年 Y（2022~2026，2026 为部分年份）：
@@ -26,6 +26,7 @@ from src.data import financials, universe
 from src.data.market import get_kline, load_price_matrix
 from src.data.storage import ParquetStore
 from src.strategies.multi_factor import (
+    snapshot_weights,
     topk_dropout_topn,
     turnover_lowvol_dividend_topn,
     turnover_lowvol_reversal_topn,
@@ -76,6 +77,13 @@ def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, opens: pd.DataFrame, co
     W = W[W.index.isin(p.index)]
     if W.empty:
         return None
+    # D-051：每折开局先建一次仓（用截至首日的截面分数），否则年初空仓，
+    # 样本外曲线会出现 40~60 个交易日的横线（零收益），严重扭曲收益与波动率。
+    first = p.index[0]
+    if W.index[0] > first:
+        row = snapshot_weights(panel, strategy, top_n=combo[0], asof=first)
+        if row is not None:
+            W = pd.concat([pd.DataFrame([row], index=[first]), W])
     return run_portfolio_backtest(
         W, p, fee=0.00025, min_fee=5.0, slippage=0.0005,
         stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,

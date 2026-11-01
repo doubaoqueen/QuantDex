@@ -1,4 +1,4 @@
-"""
+﻿"""
 多因子合成策略：截面打分 -> 定期调仓的 Top-N 等权目标权重矩阵。
 
 约定（与 src/backtest/portfolio.py 配套）：
@@ -11,6 +11,37 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+# 各策略的因子与方向（唯一来源：策略函数与"建仓快照"共用）
+STRATEGY_FACTORS: dict[str, list[tuple[str, int]]] = {
+    "corrected": [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+    "dividend": [("turnover_20", -1), ("vol_20", -1), ("dy_ttm", +1)],
+    "topkdrop": [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+}
+
+
+def snapshot_weights(
+    panel: pd.DataFrame,
+    strategy: str = "corrected",
+    top_n: int = 50,
+    asof=None,
+) -> pd.Series | None:
+    """按 asof 当天（含）的截面分数选 top_n，返回等权权重 Series。
+
+    用途（D-051）：walk-forward 每一折从空仓起步时，需要"在年初用截至当时的数据
+    建一次仓"，否则组合要等到下一个调仓日才满仓，样本外曲线会出现几十天的横线
+    （年初空仓、零收益），既低估收益也扭曲波动率/IR。
+    """
+    factors = STRATEGY_FACTORS.get(strategy, STRATEGY_FACTORS["corrected"])
+    sc = _daily_score(panel, factors)
+    if asof is not None:
+        sc = sc[sc.index <= pd.Timestamp(asof)]
+    if len(sc) == 0:
+        return None
+    s = sc.loc[sc.index[-1]].dropna().sort_values(ascending=False).head(top_n)
+    if s.empty:
+        return None
+    return pd.Series(1.0 / len(s), index=[str(x) for x in s.index])
 
 
 def composite_topn(
@@ -62,7 +93,7 @@ def turnover_lowvol_reversal_topn(
     """
     return composite_topn(
         panel,
-        [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+        STRATEGY_FACTORS["corrected"],
         top_n=top_n, rebalance_days=rebalance_days)
 
 
@@ -81,7 +112,7 @@ def turnover_lowvol_dividend_topn(
     """
     return composite_topn(
         panel,
-        [("turnover_20", -1), ("vol_20", -1), ("dy_ttm", +1)],
+        STRATEGY_FACTORS["dividend"],
         top_n=top_n, rebalance_days=rebalance_days)
 
 
