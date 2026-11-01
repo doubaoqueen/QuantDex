@@ -1,4 +1,4 @@
-"""
+﻿"""
 第 5 步：组合 / 截面回测 —— 20日动量 + 低波 Top-N 等权，定期调仓，对比基准。
 
 用法：
@@ -17,7 +17,7 @@ from src.analysis.factors import build_factor_panel
 from src.analysis.plot import plot_backtest
 from src.backtest.portfolio import portfolio_performance, run_portfolio_backtest
 from src.data import financials, universe
-from src.data.market import get_kline
+from src.data.market import get_kline, load_price_matrix
 from src.data.storage import ParquetStore
 from src.strategies.multi_factor import (
     momentum_lowvol_topn,
@@ -68,9 +68,14 @@ def main() -> None:
         W = turnover_lowvol_reversal_topn(panel, top_n=top_n, rebalance_days=rebalance)
     print(f"   信号日 {len(W)} 个，覆盖标的 {W.shape[1]} 只")
 
-    prices = panel.pivot(index="date", columns="symbol", values="close").sort_index()
-    opens = panel.pivot(index="date", columns="symbol", values="open").sort_index()  # D-034 开盘执行
-    print(f"   价格矩阵 {prices.shape[0]} 交易日 × {prices.shape[1]} 只")
+    # D-050：价格用**全历史**（不按 PIT 删行），PIT 只用于"能不能买"。
+    # 早先直接用 panel.pivot 会留下非成分期间的价格空洞，引擎 ffill 补洞后
+    # 在股票重回指数那天把几年涨跌压成一天，净值被系统性抬高。
+    prices, opens = load_price_matrix(symbols, start=START_DATE, store=store)
+    panel_dates = pd.DatetimeIndex(sorted(pd.to_datetime(panel["date"]).unique()))
+    prices = prices.reindex(panel_dates)
+    opens = opens.reindex(panel_dates)            # D-034 开盘执行
+    print(f"   价格矩阵 {prices.shape[0]} 交易日 × {prices.shape[1]} 只（全历史口径）")
 
     bench_ret = None
     try:

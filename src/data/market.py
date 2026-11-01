@@ -206,6 +206,43 @@ def get_kline(symbol: str, period: str = "daily", adjust: str = "qfq",
     return store.read(period, name)
 
 
+def load_price_matrix(symbols, start: str | None = None, adjust: str = "qfq",
+                      store: ParquetStore | None = None):
+    """全历史价格矩阵（**不做 PIT 删行**）：回测估值与成交用。
+
+    为什么需要它（D-050）：早先前复权面板先按"当天是不是指数成分"删行，
+    非成分期间价格变成 NaN；组合引擎用 ffill 补洞，于是股票重回指数那天
+    把几年涨跌压成一天（调样日批量 +300% 的假收益），回测净值被系统性抬高。
+    正确做法：估值/收益永远用完整历史，PIT 只用来决定"当天能不能买"。
+
+    返回 (prices, opens)，index=交易日，columns=标的；缺失视为停牌/未上市。
+    """
+    store = store or ParquetStore()
+    suffix = f"__{adjust}"
+    file_of = {n.split("__")[0]: n for n in store.list_names("daily") if n.endswith(suffix)}
+    frames = []
+    for s in symbols:
+        name = file_of.get(str(s))
+        if name is None:
+            continue
+        try:
+            df = store.read("daily", name, columns=["date", "symbol", "open", "close"])
+        except Exception:  # noqa: BLE001
+            continue
+        if df is None or df.empty:
+            continue
+        frames.append(df)
+    if not frames:
+        raise RuntimeError("没有可用日线，先跑 02/02b 更新行情")
+    panel = pd.concat(frames, ignore_index=True)
+    panel["date"] = pd.to_datetime(panel["date"])
+    if start:
+        panel = panel[panel["date"] >= pd.Timestamp(start)]
+    prices = panel.pivot(index="date", columns="symbol", values="close").sort_index()
+    opens = panel.pivot(index="date", columns="symbol", values="open").sort_index()
+    return prices, opens
+
+
 def get_local_last_date(symbol: str, period: str = "daily", adjust: str = "qfq",
                         store: ParquetStore | None = None):
     """本地数据的最后日期，无数据返回 None。"""

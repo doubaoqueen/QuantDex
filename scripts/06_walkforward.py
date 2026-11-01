@@ -1,4 +1,4 @@
-"""
+﻿"""
 第 6 步：walk-forward 防过拟合检验（多因子策略参数稳健性）。
 
 对每个测试年 Y（2022~2026，2026 为部分年份）：
@@ -23,7 +23,7 @@ from config import STORE_DIR
 from src.analysis.factors import build_factor_panel
 from src.backtest.portfolio import run_portfolio_backtest
 from src.data import financials, universe
-from src.data.market import get_kline
+from src.data.market import get_kline, load_price_matrix
 from src.data.storage import ParquetStore
 from src.strategies.multi_factor import (
     topk_dropout_topn,
@@ -95,10 +95,16 @@ def main() -> None:
     print(f">> 构建 PIT 因子面板（{index_code}，{len(symbols)} 只，strategy={strategy}）...")
     panel = build_factor_panel(store, symbols, start=START_DATE,
                                pit_constituents=pit, dividend_panel=div_panel)
-    prices = panel.pivot(index="date", columns="symbol", values="close").sort_index()
-    opens = panel.pivot(index="date", columns="symbol", values="open").sort_index()  # D-034 开盘执行
+    # D-050：价格用**全历史**（不按 PIT 删行），PIT 只用于"能不能买"。
+    # 早先 panel.pivot 会留下非成分期间的价格空洞，引擎 ffill 补洞后把几年涨跌
+    # 压成重回指数那天的一天假收益，样本外净值被系统性抬高。
+    prices, opens = load_price_matrix(symbols, start=START_DATE, store=store)
+    panel_dates = pd.DatetimeIndex(sorted(pd.to_datetime(panel["date"]).unique()))
+    prices = prices.reindex(panel_dates)
+    opens = opens.reindex(panel_dates)            # D-034 开盘执行
     print(f"   面板 {panel['date'].min().date()} ~ {panel['date'].max().date()}，"
-          f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
+          f"{panel['symbol'].nunique()} 只，{len(panel)} 行；"
+          f"价格矩阵 {prices.shape[0]}×{prices.shape[1]}（全历史口径）")
 
     bench = get_kline(index_code, adjust="none", store=store)
     bench_ret = bench.set_index("date")["close"].pct_change().rename("bench")
