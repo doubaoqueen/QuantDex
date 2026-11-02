@@ -471,6 +471,24 @@ def fees(acc):
 _CAND_CACHE = {}          # acc -> (时间戳, 候选结果, 全池 DataFrame)；切账户不用重算全池
 
 
+def _account_strategy(acc):
+    """账户 → 策略口径（唯一来源：registry）。换账户时因子面板/候选池都跟着变。"""
+    try:
+        from src.strategies.registry import enabled_accounts
+        cfg = enabled_accounts().get(str(acc), {})
+        key = str(cfg.get("strategy") or "corrected")
+        label = str(cfg.get("label") or acc)
+    except Exception:  # noqa: BLE001
+        key, label = "corrected", str(acc)
+    if key == "dividend":
+        mech = "全量重排：每期按分数重选前 N 只，等权配置"
+    elif key == "topkdrop":
+        mech = "少换：每期只换出分数最低的 5 只，其余不动（换手上界）"
+    else:
+        mech = "全量重排：每期按分数重选前 N 只，等权配置"
+    return {"key": key, "label": label, "mechanism": mech}
+
+
 def candidates(acc):
     """候选池（海选）：该账户策略在最新交易日对全部 PIT 成分打分的前 15 名。
 
@@ -489,7 +507,8 @@ def candidates(acc):
     from src.data.market import get_kline
 
     store = _store
-    is_div = (acc == "div")
+    strat = _account_strategy(acc)
+    is_div = strat["key"] == "dividend"
     symbols = universe.pit_union_symbols("000300", store)
     div_by = {}
     if is_div:
@@ -580,8 +599,8 @@ def candidates(acc):
                      "pct": (round(chg, 4) if chg is not None else None), "limit": _limit_tag(chg, sym, names.get(sym)),
                      "lot_cost": round(float(r["close"]) * 100, 0),
                      "status": status})
-    out = {"strategy": ("红利版：低换手+低波+股息率" if is_div else
-                        "现行版：低换手+低波+反转"),
+    out = {"strategy": f"{strat['label']}（{'低换手+低波+股息率' if is_div else '低换手+低波+反转'}）",
+           "strategy_key": strat["key"], "mechanism": strat["mechanism"],
            "date": latest, "cash": cash, "rows": rows}
     _CAND_CACHE[acc] = (now, out, df_full)
     return out
@@ -598,7 +617,8 @@ def factor_view(acc):
     if not hit or len(hit) < 3:
         return {"err": "因子面板暂不可用（候选池未就绪）"}
     df_full = hit[2]
-    is_div = (acc == "div")
+    strat = _account_strategy(acc)
+    is_div = strat["key"] == "dividend"
 
     held = set()
     conn = _db(acc)
@@ -643,6 +663,7 @@ def factor_view(acc):
         factors.append({"key": "rev_5", "label": "5日反转", "dir": -1,
                         "hint": "近 5 日涨幅，越低越好（短期反转）"})
     return {"date": out.get("date"), "strategy": out.get("strategy"),
+            "strategy_key": strat["key"], "mechanism": strat["mechanism"],
             "pool": int(len(df_full)), "factors": factors, "rows": rows,
             "note": "分位 = 该因子在当日全部 PIT 成分股中的百分位；综合分 = 三个因子方向的等权平均"}
 

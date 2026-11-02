@@ -50,6 +50,7 @@ function rawText(key, v) {
       <h3 class="text-sm font-semibold text-slate-800">因子</h3>
       <span class="text-[11px] text-slate-400">
         {{ data?.strategy || '' }}<template v-if="data?.date"> · {{ data.date }}</template>
+        <template v-if="data?.mechanism"> · {{ data.mechanism }}</template>
         <template v-if="data?.pool"> · 池 {{ data.pool }} 只</template>
       </span>
       <span v-if="data" class="ml-auto text-[11px] text-slate-400">
