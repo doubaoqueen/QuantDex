@@ -1,4 +1,4 @@
-﻿"""
+"""
 QuantDex 本地可视化控制台（Python 标准库，零依赖）。
 
 启动：python scripts/16_webapp.py
@@ -631,10 +631,10 @@ def factor_view(acc):
         rows.append(row)
 
     factors = [
-        {"key": "turnover_20", "label": "换手率 20日", "dir": -1,
-         "hint": "日均换手率，越低越好（拥挤度低、冲击成本小）"},
-        {"key": "vol_20", "label": "波动率 20日", "dir": -1,
-         "hint": "日收益标准差年化，越低越好（低波异象）"},
+        {"key": "turnover_20", "label": "换手率 20日(%)", "dir": -1,
+         "hint": "20 日平均换手率（百分数，0.67 即 0.67%），越低越好（拥挤度低、冲击成本小）"},
+        {"key": "vol_20", "label": "波动率 20日(年化)", "dir": -1,
+         "hint": "日收益标准差 × √250，越低越好（低波异象）"},
     ]
     if is_div:
         factors.append({"key": "dy_ttm", "label": "股息率 TTM", "dir": 1,

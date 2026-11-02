@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { ref, watch, computed } from 'vue'
 import { api } from '../api.js'
 
@@ -32,6 +32,15 @@ function tone(dir, rank) {
   if (good >= 0.66) return 'bg-emerald-400'
   if (good >= 0.33) return 'bg-amber-400'
   return 'bg-rose-400'
+}
+
+// 原值单位的坑：turnover_20 已经是百分数（0.67 = 0.67%）；vol_20 是**日**标准差，
+// 需 ×√250 年化才符合直觉（0.013 → 20.6%）；rev_5/dy_ttm 是比率，×100 成百分数。
+function rawText(key, v) {
+  if (v === null || v === undefined) return '-'
+  if (key === 'turnover_20') return v.toFixed(2) + '%'
+  if (key === 'vol_20') return (v * Math.sqrt(250) * 100).toFixed(1) + '%'
+  return (v * 100).toFixed(2) + '%'
 }
 </script>
 
@@ -94,7 +103,7 @@ function tone(dir, rank) {
                 </span>
               </div>
               <div class="text-right text-[10px] text-slate-400">
-                {{ f.key === 'dy_ttm' ? (r[f.key] * 100).toFixed(1) + '%' : (r[f.key] * 100).toFixed(2) + '%' }}
+                {{ rawText(f.key, r[f.key]) }}
               </div>
             </td>
             <td class="text-right font-medium">{{ r.score.toFixed(3) }}</td>
