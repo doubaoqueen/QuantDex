@@ -424,6 +424,12 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         except Exception as e:  # noqa: BLE001
             print(f"[replay] 自愈检查失败: {e}", flush=True)
 
+    # D-053 防线：现金账户不该出现负现金；出现即说明记账路径重复（当年是自愈重放
+    # 把同一天成交算了两遍，cash 被扣成 -869,765 而账面"看起来正常"）
+    if cash < -1e-6:
+        print(f"[warn] 现金为负 {cash:,.2f}——请核对是否有成交被重复记账"
+              f"（trade_log 与 positions 的股数/成交净额是否一致）", flush=True)
+
     # 3) 最新收盘价与净值
     day = panel[panel["date"] == latest]
     prices_close = dict(zip(day["symbol"].astype(str), day["close"].astype(float), strict=False))
