@@ -1,4 +1,4 @@
-"""
+﻿"""
 QuantDex 本地可视化控制台（Python 标准库，零依赖）。
 
 启动：python scripts/16_webapp.py
@@ -468,7 +468,7 @@ def fees(acc):
     return {"summary": summary, "recent": recent}
 
 
-_CAND_CACHE = {}          # acc -> (时间戳, 结果)；按账户缓存，切账户不用重算全池
+_CAND_CACHE = {}          # acc -> (时间戳, 候选结果, 全池 DataFrame)；切账户不用重算全池
 
 
 def candidates(acc):
@@ -532,12 +532,14 @@ def candidates(acc):
 
     df = pd.DataFrame(recs)
     for c in ("turnover_20", "vol_20", "rev_5"):
-        df[c] = df[c].rank(pct=True)
+        df["r_" + c] = df[c].rank(pct=True)
     if is_div:
-        df["dy_ttm"] = df["dy_ttm"].rank(pct=True)
-        df["score"] = ((1 - df["turnover_20"]) + (1 - df["vol_20"]) + df["dy_ttm"]) / 3
+        df["r_dy_ttm"] = df["dy_ttm"].rank(pct=True)
+        df["score"] = ((1 - df["r_turnover_20"]) + (1 - df["r_vol_20"]) + df["r_dy_ttm"]) / 3
     else:
-        df["score"] = ((1 - df["turnover_20"]) + (1 - df["vol_20"]) + (1 - df["rev_5"])) / 3
+        df["score"] = ((1 - df["r_turnover_20"]) + (1 - df["r_vol_20"]) + (1 - df["r_rev_5"])) / 3
+    df["symbol"] = df["symbol"].astype(str)
+    df_full = df.set_index("symbol")          # 全池，供因子面板取任意标的
     df = df.sort_values("score", ascending=False).head(15).reset_index(drop=True)
 
     held, pend, cash = set(), set(), None
@@ -581,8 +583,68 @@ def candidates(acc):
     out = {"strategy": ("红利版：低换手+低波+股息率" if is_div else
                         "现行版：低换手+低波+反转"),
            "date": latest, "cash": cash, "rows": rows}
-    _CAND_CACHE[acc] = (now, out)
+    _CAND_CACHE[acc] = (now, out, df_full)
     return out
+
+
+def factor_view(acc):
+    """因子面板：持仓标的 + 候选前 15 的因子原值 / 截面分位 / 综合分。
+
+    分位是"在当日 PIT 成分股池里的百分位"（0=最低，1=最高），只有分位才可跨因子比较；
+    原值用来理解量级（例如换手 0.8% vs 波动 21%）。
+    """
+    out = candidates(acc)                      # 顺带把全池结果算好并缓存
+    hit = _CAND_CACHE.get(acc)
+    if not hit or len(hit) < 3:
+        return {"err": "因子面板暂不可用（候选池未就绪）"}
+    df_full = hit[2]
+    is_div = (acc == "div")
+
+    held = set()
+    conn = _db(acc)
+    if conn is not None:
+        try:
+            pos = pd.read_sql_query(
+                "SELECT symbol FROM positions WHERE date=(SELECT MAX(date) FROM positions)", conn)
+            held = {str(s) for s in pos["symbol"]}
+        finally:
+            conn.close()
+
+    top = df_full.nlargest(15, "score")
+    order = list(dict.fromkeys([s for s in df_full.index if s in held]
+                               + [str(s) for s in top.index]))
+    names, inds = _meta_maps()
+    keys = ["turnover_20", "vol_20", ("dy_ttm" if is_div else "rev_5")]
+    rows = []
+    for sym in order:
+        if sym not in df_full.index:
+            continue
+        r = df_full.loc[sym]
+        row = {"symbol": sym, "name": names.get(sym, ""), "industry": inds.get(sym, ""),
+               "held": sym in held, "score": round(float(r["score"]), 4),
+               "rank": (int((df_full["score"] > float(r["score"])).sum()) + 1)}
+        for k in keys:
+            v = float(r[k])
+            rk = float(r.get("r_" + k, float("nan")))
+            row[k] = round(v, 4)
+            row["r_" + k] = (round(rk, 4) if pd.notna(rk) else None)
+        rows.append(row)
+
+    factors = [
+        {"key": "turnover_20", "label": "换手率 20日", "dir": -1,
+         "hint": "日均换手率，越低越好（拥挤度低、冲击成本小）"},
+        {"key": "vol_20", "label": "波动率 20日", "dir": -1,
+         "hint": "日收益标准差年化，越低越好（低波异象）"},
+    ]
+    if is_div:
+        factors.append({"key": "dy_ttm", "label": "股息率 TTM", "dir": 1,
+                        "hint": "近 12 个月分红 / 现价，越高越好"})
+    else:
+        factors.append({"key": "rev_5", "label": "5日反转", "dir": -1,
+                        "hint": "近 5 日涨幅，越低越好（短期反转）"})
+    return {"date": out.get("date"), "strategy": out.get("strategy"),
+            "pool": int(len(df_full)), "factors": factors, "rows": rows,
+            "note": "分位 = 该因子在当日全部 PIT 成分股中的百分位；综合分 = 三个因子方向的等权平均"}
 
 
 def position_alerts(acc):
@@ -1284,6 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, rebalance_diff(q.get("account", ["large"])[0]))
             if u.path == "/api/fees":
                 return self._send(200, fees(q.get("account", ["large"])[0]))
+            if u.path == "/api/factors":
+                return self._send(200, factor_view(q.get("account", ["large"])[0]))
             if u.path == "/api/candidates":
                 return self._send(200, candidates(q.get("account", ["large"])[0]))
             if u.path == "/api/school":

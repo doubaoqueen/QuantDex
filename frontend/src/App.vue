@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { ref, computed, onMounted, onUnmounted, provide } from 'vue'
 import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
@@ -7,6 +7,7 @@ import NavChart from './components/NavChart.vue'
 import BacktestPanel from './components/BacktestPanel.vue'
 import PositionsTable from './components/PositionsTable.vue'
 import CandidatesPanel from './components/CandidatesPanel.vue'
+import FactorPanel from './components/FactorPanel.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
 import RegimeCard from './components/RegimeCard.vue'
 import ReportViewer from './components/ReportViewer.vue'
@@ -278,6 +279,9 @@ function cumText(o) {
 
       <!-- 备选标的（全池海选前 15：名称/行业/涨跌停/一手成本） -->
       <CandidatesPanel :account="account" />
+
+      <!-- 因子（持仓 + 候选的因子原值/截面分位/综合分） -->
+      <FactorPanel :account="account" />
 
       <!-- 日报 + 操作记录 + 任务 -->
       <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">

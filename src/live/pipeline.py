@@ -142,6 +142,68 @@ def _replay_state(led, upto_date):
 
 
 # ---------------------------------------------------------------- 撮合
+def _replay_fills(led, last_snap_date, latest, done_ids) -> pd.DataFrame:
+    """需要自愈重放的成交：上一快照之后、不晚于 latest、且**不在本次已撮合集合**里。
+
+    D-053 事故：早先只按日期过滤（fill_date > last_snap_date），而当天刚撮合的成交
+    永远满足"fill_date 是今天、上一快照是昨天"，于是同一批成交被"撮合"与"重放"
+    各记一遍——换手账户 49 只持仓全部变成 2 倍、现金 -87 万，而净值只差 1%。
+    done_ids 就是本次撮合结果的 trade id 集合。
+    """
+    if last_snap_date is None:
+        return pd.DataFrame()
+    unre = led.unreconciled_fills(last_snap_date)
+    if unre.empty:
+        return unre
+    unre = unre[pd.to_datetime(unre["fill_date"]) <= pd.Timestamp(latest)]
+    return unre[~unre["id"].isin(done_ids)]
+
+
+def _self_check(led, cash: float, positions: pd.DataFrame) -> list[str]:
+    """账本自检：现金非负 / 股数与成交净额一致 / 权重合计不超 100%。
+
+    这三条正是 D-053 事故的三个指纹（当时现金 -869,765、股数全部 2 倍、
+    权重合计 185%，唯独净值看起来正常），所以写成日报里的常驻检查行。
+    """
+    lines = ["", "## 账本自检"]
+    ok = True
+    if cash < -1e-6:
+        lines.append(f"- ✗ 现金为负 {cash:,.2f}（现金账户不可能为负，疑似重复记账）")
+        ok = False
+    else:
+        lines.append(f"- ✓ 现金非负 {cash:,.2f}")
+    try:
+        tl = pd.read_sql_query(
+            "SELECT symbol, side, qty FROM trade_log WHERE status='filled'", led.connect())
+        sign = tl["side"].map({"buy": 1.0, "sell": -1.0}).fillna(0.0)
+        net = (pd.to_numeric(tl["qty"], errors="coerce").fillna(0.0) * sign).groupby(
+            tl["symbol"].astype(str)).sum()
+        pos = (positions.set_index("symbol")["shares"].astype(float)
+               if len(positions) else pd.Series(dtype=float))
+        diff = (pos - net.reindex(pos.index).fillna(0.0)).abs()
+        bad = diff[diff > 1e-6]
+        if len(bad):
+            sample = ", ".join(f"{s} {pos[s]:.0f} vs {net.get(s, 0.0):.0f}" for s in bad.index[:3])
+            lines.append(f"- ✗ 股数与成交净额不一致 {len(bad)} 只（{sample}）")
+            ok = False
+        else:
+            lines.append(f"- ✓ 股数与成交净额一致（{len(pos)} 只）")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"- ? 股数核对跳过（{e}）")
+    try:
+        wsum = float(positions["weight"].sum()) if len(positions) else 0.0
+        if wsum > 1.02:
+            lines.append(f"- ✗ 权重合计 {wsum:.1%}，超过 100%（疑似超额配置）")
+            ok = False
+        else:
+            lines.append(f"- ✓ 权重合计 {wsum:.1%}")
+    except Exception:  # noqa: BLE001
+        pass
+    if ok:
+        lines.append("> 自检通过。三项对应 D-053 的三个指纹：负现金 / 股数翻倍 / 权重>100%")
+    return lines
+
+
 def _fill_pending(led: Ledger, price_lookup: dict,
                   latest: pd.Timestamp,
                   last_dates: dict | None = None) -> list[dict]:
@@ -405,9 +467,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     done_ids = {r["id"] for r in fill_results if r.get("status") == "filled"}
     if last_snap_date is not None:
         try:
-            unre = led.unreconciled_fills(last_snap_date)
-            unre = unre[pd.to_datetime(unre["fill_date"]) <= latest]
-            unre = unre[~unre["id"].isin(done_ids)]
+            unre = _replay_fills(led, last_snap_date, latest, done_ids)
             for t in unre.itertuples(index=False):
                 q = float(t.qty) if t.qty else (
                     float(t.amount) / float(t.price) if t.price else 0.0)
@@ -651,6 +711,9 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             lines.append(f"| {r.symbol} | {r.side} | {r.qty:.0f} | {r.price:.2f} |")
     else:
         lines.append("- 无")
+
+    # D-053 防线：把三个"事故指纹"写成常驻自检行（负现金/股数翻倍/权重超100%）
+    lines += _self_check(led, cash, positions if len(positions) else pd.DataFrame())
 
     # 持仓预警：距持有期高点回撤 >=10%（仅提醒；个股止损类规则回测为负贡献，见 D-026）
     alert_rows = sorted(

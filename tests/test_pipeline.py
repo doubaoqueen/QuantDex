@@ -298,3 +298,69 @@ def test_small_account_budget_counts_holdings():
     assert len(sells) == 1, f"只应换掉跌出前 3 的那 1 只，实际卖 {len(sells)} 只: {orders}"
     assert len(buys) == 1, f"只应新买 600221 一只，实际买 {len(buys)} 只: {orders}"
     assert sells[0]["symbol"] == "600905", orders
+
+
+def test_replay_excludes_same_day_fills():
+    """D-053 回归：当天撮合的成交不能再被自愈重放记第二遍。
+
+    事故：49 只持仓全部变成 2 倍、现金 -87 万，而净值只差 1%（净额抵消）。
+    """
+    from src.live.pipeline import _replay_fills
+
+    tmp = Path("data/store/sim/_test_replay.sqlite")
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)
+    led = Ledger(tmp)
+    led.record_day("2026-10-19", cash=1_000_000.0, market_value=0.0)
+    led.add_pending(pd.DataFrame([
+        {"signal_date": "2026-10-19", "fill_date": D, "symbol": "600519",
+         "side": "buy", "qty": 100, "price": 1500.0, "amount": 150000.0,
+         "fee": 37.5, "stamp_duty": 0.0, "status": "pending", "note": "ref"},
+        {"signal_date": "2026-10-19", "fill_date": D, "symbol": "000001",
+         "side": "buy", "qty": 1000, "price": 10.0, "amount": 10000.0,
+         "fee": 2.5, "stamp_duty": 0.0, "status": "pending", "note": "ref"},
+    ]))
+    prices = {pd.Timestamp(D): {
+        "600519": {"open": 1500.0, "close": 1510.0, "prev_close": 1490.0},
+        "000001": {"open": 10.0, "close": 10.2, "prev_close": 9.8}}}
+    res = _fill_pending(led, prices, pd.Timestamp(D))
+    assert sum(1 for r in res if r["status"] == "filled") == 2, res
+
+    done = {r["id"] for r in res if r["status"] == "filled"}
+    # 修复后的行为：重放集合必须为空（不能把刚撮合的再记一遍）
+    assert _replay_fills(led, "2026-10-19", pd.Timestamp(D), done).empty
+    # 反证：不做去重时确实会取到这两笔——说明过滤真的在起作用，而不是碰巧为空
+    assert len(_replay_fills(led, "2026-10-19", pd.Timestamp(D), set())) == 2
+    led.close()
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)
+
+
+def test_self_check_flags_broken_ledger():
+    """D-053 防线：负现金 / 股数与成交净额不符 / 权重超 100% 必须被自检抓到。"""
+    from src.live.pipeline import _self_check
+
+    tmp = Path("data/store/sim/_test_selfcheck.sqlite")
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)
+    led = Ledger(tmp)
+    led.add_pending(pd.DataFrame([
+        {"signal_date": "2026-10-19", "fill_date": D, "symbol": "600519",
+         "side": "buy", "qty": 100, "price": 1500.0, "amount": 150000.0,
+         "fee": 37.5, "stamp_duty": 0.0, "status": "pending", "note": "ref"}]))
+    prices = {pd.Timestamp(D): {"600519": {"open": 1500.0, "close": 1510.0,
+                                           "prev_close": 1490.0}}}
+    _fill_pending(led, prices, pd.Timestamp(D))
+
+    # 正常账本：100 股 + 权重 50% + 现金充足 → 三项全过
+    good = pd.DataFrame([{"symbol": "600519", "shares": 100.0, "weight": 0.5}])
+    txt = "\n".join(_self_check(led, cash=1000.0, positions=good))
+    assert "✓ 股数与成交净额一致" in txt and "✗" not in txt, txt
+
+    # 事故形态：股数翻倍 + 现金为负 + 权重 150%
+    bad = pd.DataFrame([{"symbol": "600519", "shares": 200.0, "weight": 1.5}])
+    txt2 = "\n".join(_self_check(led, cash=-869765.0, positions=bad))
+    assert "✗ 现金为负" in txt2 and "✗ 股数与成交净额不一致" in txt2 and "✗ 权重合计" in txt2, txt2
+    led.close()
+    for suf in ("", "-wal", "-shm"):
+        Path(str(tmp) + suf).unlink(missing_ok=True)
