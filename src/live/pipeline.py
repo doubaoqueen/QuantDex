@@ -77,6 +77,18 @@ def _load_state(led: Ledger) -> tuple[float, dict[str, float], str | None]:
     return cash, shares, last_date
 
 
+def _held_trading_days(calendar, last_fill, latest) -> int | None:
+    """上次成交日到 latest 之间的交易日数（含 latest、不含成交当日）。
+
+    D-057：账户的调仓节奏按这个数字判断，而不是看"今天是不是全局调仓日"——
+    建仓日晚于排程时，两者会打架（账户只持有几天就被再换一遍）。
+    """
+    if last_fill is None:
+        return None
+    cal = pd.DatetimeIndex(sorted(pd.to_datetime(calendar).unique()))
+    return int(((cal > pd.Timestamp(last_fill)) & (cal <= pd.Timestamp(latest))).sum())
+
+
 def _next_trading_day(store: ParquetStore, date: pd.Timestamp):
     try:
         cal = pd.to_datetime(store.read("meta", "trade_calendar")["date"])
@@ -506,8 +518,19 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     nav_now = cash + mv
 
     # 4) 下单（调仓日或首次建仓；已有 pending 时不再重复下单）
-    rebalance_day = latest in W.index
+    # D-057：全局调仓日只是"候选日"，账户自己的持有天数不够就不调仓。
+    # 反例（事故前）：账户 10-20 半路建仓、11-02 是全局调仓日 → 只持有 9 个交易日
+    # 就再整仓换一遍，等于凭空多出一次换手，回测里没有这一段。
     bootstrap = snap_now.empty and len(W) > 0
+    cal = pd.DatetimeIndex(sorted(pd.to_datetime(panel["date"]).unique()))
+    last_fill = led.last_fill_date()
+    held_days = _held_trading_days(cal, last_fill, latest)
+    cadence_ok = (held_days is None) or (held_days >= rebalance)
+    scheduled = latest in W.index
+    rebalance_day = scheduled and cadence_ok
+    if scheduled and not cadence_ok and not bootstrap:
+        print(f"[cadence] 距上次成交 {held_days} 个交易日 < {rebalance}，"
+              f"本次全局调仓日跳过（账户按自己的持有天数走）", flush=True)
     orders_df = None
     if not dry_run and (rebalance_day or bootstrap) and led.pending_orders().empty:
         next_td = _next_trading_day(store, latest)
@@ -711,6 +734,11 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             lines.append(f"| {r.symbol} | {r.side} | {r.qty:.0f} | {r.price:.2f} |")
     else:
         lines.append("- 无")
+
+    # D-057：今天是全局调仓日、但账户持有天数不够 → 明确写进日报，避免看起来"该调没调"
+    if scheduled and not cadence_ok and not bootstrap:
+        lines += ["", f"> 调仓节奏：距上次成交 {held_days} 个交易日 < {rebalance} 天，"
+                      f"按账户自己的持有周期，本次不调仓（D-057）"]
 
     # D-053 防线：把三个"事故指纹"写成常驻自检行（负现金/股数翻倍/权重超100%）
     lines += _self_check(led, cash, positions if len(positions) else pd.DataFrame())

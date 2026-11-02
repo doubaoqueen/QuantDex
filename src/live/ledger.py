@@ -163,6 +163,14 @@ class Ledger:
             "SELECT * FROM trade_log WHERE status='filled' AND fill_date > ? ORDER BY id",
             self.connect(), params=(last_snap_date,))
 
+    def last_fill_date(self) -> str | None:
+        """最近一次成交日（无成交返回 None）——调仓节奏按它算持有天数（D-057）。"""
+        df = pd.read_sql_query(
+            "SELECT MAX(fill_date) d FROM trade_log WHERE status='filled'", self.connect())
+        if not len(df) or not df["d"].iloc[0]:
+            return None
+        return str(df["d"].iloc[0])
+
     # -------------------------------------------------- 待成交订单（T+1 两段式）
     def add_pending(self, orders: pd.DataFrame) -> int:
         """写入待成交订单（status='pending'），返回写入条数。

@@ -300,6 +300,22 @@ def test_small_account_budget_counts_holdings():
     assert sells[0]["symbol"] == "600905", orders
 
 
+def test_held_trading_days_and_cadence():
+    """D-057：账户按自己的持有天数调仓，不满 rebalance 天不得再换仓。
+
+    事故：账户 10-20 半路建仓，11-02 是全局调仓日 → 只持有 9 个交易日就整仓换一遍。
+    """
+    from src.live.pipeline import _held_trading_days
+
+    cal = pd.date_range("2026-10-19", periods=12, freq="B")   # 12 个工作日
+    assert _held_trading_days(cal, None, cal[-1]) is None      # 从未成交 → 无节奏约束
+    held = _held_trading_days(cal, "2026-10-20", pd.Timestamp("2026-10-30"))
+    assert held == 8, held                                     # 10-21..10-30 共 8 个交易日
+    assert held < 20                                           # 不满 20 天 → 不应调仓
+    full = _held_trading_days(cal, "2026-10-19", cal[-1])
+    assert full == 11, full                                    # 含 latest、不含成交当日
+
+
 def test_replay_excludes_same_day_fills():
     """D-053 回归：当天撮合的成交不能再被自愈重放记第二遍。
 
