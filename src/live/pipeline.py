@@ -400,10 +400,14 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             new_shares[r["symbol"]] = max(0.0, new_shares.get(r["symbol"], 0.0) - r["qty"])
 
     # R3-04 自愈：上期快照之后已成交但未入快照的订单重放（崩溃窗口不再丢钱）
+    # D-053：必须排除"本次刚撮合过"的成交，否则同一天成交会被算两遍
+    # （topk 账户 10-27 因此 49 只持仓全部变成 2 倍、现金 -87 万）
+    done_ids = {r["id"] for r in fill_results if r.get("status") == "filled"}
     if last_snap_date is not None:
         try:
             unre = led.unreconciled_fills(last_snap_date)
             unre = unre[pd.to_datetime(unre["fill_date"]) <= latest]
+            unre = unre[~unre["id"].isin(done_ids)]
             for t in unre.itertuples(index=False):
                 q = float(t.qty) if t.qty else (
                     float(t.amount) / float(t.price) if t.price else 0.0)
