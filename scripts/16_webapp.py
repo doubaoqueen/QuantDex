@@ -847,6 +847,39 @@ def cancel_order(acc, order_id):
         conn.close()
 
 
+def cancel_orders_bulk(acc, max_amount=None, ids=None):
+    """批量否决待成交单：按 id 列表，或按"成交额低于阈值"（清理凑权重的小额单）。
+
+    小额单的问题：最低佣金 5 元，单笔 500 元 → 佣金占比 1%，远高于它想修正的
+    权重偏差（<0.3% NAV）。这类单长期是负期望，所以给一个一键清理入口。
+    """
+    conn = _db(acc)
+    if conn is None:
+        return {"ok": False, "msg": "账户不存在"}
+    try:
+        if ids:
+            clean = [int(i) for i in ids if str(i).strip().lstrip("-").isdigit()]
+            if not clean:
+                return {"ok": False, "msg": "没有合法的订单号"}
+            marks = ",".join("?" * len(clean))
+            cur = conn.execute(
+                f"UPDATE trade_log SET status='cancelled', note=note || '（批量否决）' "
+                f"WHERE status='pending' AND id IN ({marks})", clean)
+        else:
+            thr = float(max_amount or 0)
+            if thr <= 0:
+                return {"ok": False, "msg": "阈值必须为正数"}
+            cur = conn.execute(
+                "UPDATE trade_log SET status='cancelled', note=note || '（小额单否决）' "
+                "WHERE status='pending' AND amount < ?", (thr,))
+        conn.commit()
+        n = cur.rowcount
+        return {"ok": n > 0, "n": n,
+                "msg": f"已否决 {n} 笔" if n else "没有匹配的待成交单"}
+    finally:
+        conn.close()
+
+
 def add_order(acc, symbol, side, qty, price=None):
     symbol = str(symbol).strip()
     if side not in ("buy", "sell"):
@@ -1320,6 +1353,15 @@ class Handler(BaseHTTPRequestHandler):
                 r = cancel_order(body.get("account", "large"), body.get("id"))
                 if r.get("ok"):
                     self._audit("cancel", f"{body.get('account')} #{body.get('id')}")
+                return self._send(200, r)
+            if u.path == "/api/orders/cancel_batch":
+                r = cancel_orders_bulk(body.get("account", "large"),
+                                       max_amount=body.get("max_amount"),
+                                       ids=body.get("ids"))
+                if r.get("ok"):
+                    self._audit("cancel_batch",
+                                f"{body.get('account')} n={r.get('n')} "
+                                f"max_amount={body.get('max_amount')}")
                 return self._send(200, r)
             if u.path == "/api/orders/add":
                 r = add_order(body.get("account", "large"),
