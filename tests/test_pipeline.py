@@ -270,3 +270,31 @@ def test_fill_pending_reject_when_one_lot_unaffordable():
     led.close()
     for suf in ("", "-wal", "-shm"):
         Path(str(tmp) + suf).unlink(missing_ok=True)
+
+
+def test_small_account_budget_counts_holdings():
+    """D-052：小账户的建仓预算 = 现金 + 现有持仓市值。
+
+    反例（修复前）：现金只剩 191 元时，预算也按 191 算，只能挑到最便宜的 1 手，
+    于是把 3 只持仓全卖掉、只买 1 只便宜票，账户被逐步清空。
+    """
+    from src.live.pipeline import _plan_small_orders
+
+    # 600221 分数最高（换手/波动/反转都最低），其余三只是当前持仓
+    day = pd.DataFrame({
+        "symbol": ["600221", "002736", "600018", "600905"],
+        "close": [1.17, 8.94, 5.73, 3.42],
+        "turnover_20": [0.05, 0.30, 0.40, 0.50],
+        "vol_20": [0.05, 0.30, 0.40, 0.50],
+        "rev_5": [0.05, 0.30, 0.40, 0.50],
+    })
+    prices = {"600221": 1.17, "002736": 8.94, "600018": 5.73, "600905": 3.42}
+    # 当前持仓 3 只各 1 手（市值 1809 元），现金只剩 191 元 → 总权益约 2000 元
+    cur = {"002736": 100.0, "600018": 100.0, "600905": 100.0}
+    orders = _plan_small_orders(day, cur, prices, cash=191.0, max_positions=3)
+    buys = [o for o in orders if o["side"] == "buy"]
+    sells = [o for o in orders if o["side"] == "sell"]
+    # 修复前：预算只按 191 元算 → 只买得起 1 手 600221，然后把 3 只全卖光
+    assert len(sells) == 1, f"只应换掉跌出前 3 的那 1 只，实际卖 {len(sells)} 只: {orders}"
+    assert len(buys) == 1, f"只应新买 600221 一只，实际买 {len(buys)} 只: {orders}"
+    assert sells[0]["symbol"] == "600905", orders

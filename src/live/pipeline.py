@@ -288,10 +288,20 @@ def _plan_small_orders(day: pd.DataFrame, cur_shares: dict[str, float],
 
     2000 元级别资金无法做 50 只等权（每只 40 元买不起 1 手），
     因此改用整手小组合；未被选中的持仓全部卖出。
+
+    D-052 修复：预算必须是**总权益**（现金 + 现有持仓市值），而不是剩余现金。
+    早先只用 cash，持仓把现金花光后新目标只能挑到最便宜的 1 手，
+    于是每期"卖光 3 只、只买 1 只便宜票"，账户被逐步清空。
     """
     cand = _ranked_candidates(day)
     targets: list[str] = []
-    budget = cash
+    held_value = 0.0
+    for sym, sh in cur_shares.items():
+        if sh > 0:
+            px = prices.get(str(sym))
+            if px is not None and px > 0:
+                held_value += float(sh) * float(px)
+    budget = float(cash) + held_value
     for r in cand.itertuples(index=False):
         px = prices.get(str(r.symbol))
         if px is None or px <= 0:

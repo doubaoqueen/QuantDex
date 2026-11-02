@@ -768,6 +768,46 @@ def orders(acc):
         conn.close()
 
 
+def kline(symbol, acc="large", days=250):
+    """单标的近 N 个交易日行情 + 该账户的持有起始日（点持仓看走势用）。"""
+    sym = str(symbol or "").strip()
+    if not (len(sym) == 6 and sym.isdigit()):
+        return {"err": "代码须为 6 位数字"}
+    names, inds = _meta_maps()
+    out = {"symbol": sym, "name": names.get(sym, ""), "industry": inds.get(sym, "")}
+    try:
+        k = get_kline(sym, adjust="qfq", store=_store)
+    except Exception:  # noqa: BLE001
+        return {**out, "err": f"没有 {sym} 的行情数据"}
+    if k is None or not len(k):
+        return {**out, "err": f"没有 {sym} 的行情数据"}
+    k = k.sort_values("date").tail(max(20, int(days)))
+    dts = pd.to_datetime(k["date"])
+    out.update({
+        "dates": [str(d)[:10] for d in dts],
+        "close": [round(float(v), 3) for v in k["close"]],
+        "pct": [(round(float(v) / 100.0, 4) if pd.notna(v) else None)
+                for v in (k["pct_chg"] if "pct_chg" in k.columns else [None] * len(k))],
+        "last": round(float(k["close"].iloc[-1]), 3),
+    })
+    for col in ("open", "high", "low"):
+        if col in k.columns:
+            out[col] = [round(float(v), 3) if pd.notna(v) else None for v in k[col]]
+    try:                                  # 该账户从哪天开始持有（非持仓返回空）
+        conn = _db(str(acc))
+        if conn is not None:
+            try:
+                row = pd.read_sql_query(
+                    "SELECT MIN(date) d FROM positions WHERE symbol=?", conn, params=(sym,))
+                if len(row) and row["d"].iloc[0]:
+                    out["held_since"] = str(row["d"].iloc[0])
+            finally:
+                conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def symbol_lookup(symbol):
     """手工下单时边输代码边看标的：名称/行业/最新价/涨跌停。"""
     sym = str(symbol or "").strip()
@@ -1227,6 +1267,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"rows": orders(q.get("account", ["large"])[0])})
             if u.path == "/api/lookup":
                 return self._send(200, symbol_lookup(q.get("symbol", [""])[0]))
+            if u.path == "/api/kline":
+                return self._send(200, kline(q.get("symbol", [""])[0],
+                                             q.get("account", ["large"])[0],
+                                             q.get("days", ["250"])[0]))
             if u.path == "/api/regime":
                 return self._send(200, regime())
             if u.path == "/api/reports":
