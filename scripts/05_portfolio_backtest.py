@@ -40,7 +40,7 @@ def main() -> None:
 
     print(f">> 构建 PIT 因子面板（{index_code}，{len(symbols)} 只历史成分）...")
     panel = build_factor_panel(store, symbols, start=START_DATE,
-                               pit_constituents=pit)
+                               pit_constituents=pit, exclude_st=("--include-st" not in sys.argv))  # D-071 剔除 ST
     print(f"   面板 {panel['date'].min().date()} ~ {panel['date'].max().date()}，"
           f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
 
@@ -54,7 +54,8 @@ def main() -> None:
             strategy = "corrected"
     if div_panel is not None:
         panel = build_factor_panel(store, symbols, start=START_DATE,
-                                   pit_constituents=pit, dividend_panel=div_panel)
+                                   pit_constituents=pit, dividend_panel=div_panel,
+                                   exclude_st=("--include-st" not in sys.argv))  # D-071
     print(f">> 策略[{strategy}]：每 {rebalance} 交易日调仓，Top {top_n} 等权")
     if strategy == "legacy":
         W = momentum_lowvol_topn(panel, top_n=top_n, rebalance_days=rebalance)

@@ -47,8 +47,26 @@ def _trade_fee(amount: float) -> float:
     return max(amount * FEE, MIN_FEE) + amount * TRANSFER
 
 
+_NAME_CACHE: dict | None = None
+
+
+def _symbol_name(symbol: str) -> str | None:
+    # symbol -> 证券简称（meta/bs_securities，进程内缓存）。撮合 ST 判定用（D-071）。
+    global _NAME_CACHE
+    if _NAME_CACHE is None:
+        try:
+            sec = pd.read_parquet(STORE_DIR / "meta" / "bs_securities.parquet",
+                                  columns=["symbol", "name"])
+            _NAME_CACHE = dict(zip(sec["symbol"].astype(str),
+                                   sec["name"].astype(str), strict=False))
+        except Exception:  # noqa: BLE001
+            _NAME_CACHE = {}
+    return _NAME_CACHE.get(str(symbol))
+
+
 def _board_limit(symbol: str) -> float:
-    return board_limit(symbol)
+    # 涨跌停幅度：带名称判 ST ±5%（D-071 修复 F-21——此前撮合只传代码，ST 按 ±10% 误判）
+    return board_limit(symbol, _symbol_name(symbol))
 
 
 # ---------------------------------------------------------------- 数据准备
@@ -62,8 +80,10 @@ def _load_panel(store: ParquetStore, index_code: str,
             div = financials.load_dividend_panel(store, symbols)
         except Exception as e:  # noqa: BLE001
             print(f"[dividend] 分红面板加载失败，dy_ttm 将全为空: {e}")
+    # D-071：实盘选股池剔除 ST/*ST（今日简称口径，无前视；截面 rank 前剔除）
     return build_factor_panel(store, symbols, start="20180101",
-                              pit_constituents=pit, dividend_panel=div)
+                              pit_constituents=pit, dividend_panel=div,
+                              exclude_st=True)
 
 
 def _load_state(led: Ledger) -> tuple[float, dict[str, float], str | None]:

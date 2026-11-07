@@ -518,8 +518,12 @@ def candidates(acc):
             div_by = {str(k): g for k, g in dpanel.groupby("symbol")}
         except Exception:  # noqa: BLE001
             is_div = False
+    # D-071：候选池剔除 ST/*ST（与实盘选股同口径——低换手因子会系统性给 ST 高分）
+    st_syms = {s for s, n in _meta_maps()[0].items() if "ST" in n.upper()}
     recs = []
     for sym in symbols:
+        if str(sym) in st_syms:
+            continue
         try:
             k = get_kline(str(sym), adjust="qfq", store=store)
         except Exception:  # noqa: BLE001

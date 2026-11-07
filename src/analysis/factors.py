@@ -88,6 +88,22 @@ def compute_raw_factors(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- 截面因子面板
+def st_symbol_set(store: ParquetStore) -> set:
+    """当前 ST/*ST 名头股票集合（按**今日**证券简称，实盘口径，D-071）。
+
+    ST 股的流动性枯竭是制度性风险（退市警示+机构禁持），不是因子模型里的
+    "冷门安静"——低换手因子会系统性给它们打高分（2026-11-08 候选池 rank4/5
+    实测），所以策略选股池默认剔除。名称是当前快照：用于实盘选股无前视；
+    用于历史回测是轻度前视（当时未必 ST），量级有限（33/949）。
+    """
+    try:
+        sec = store.read("meta", "bs_securities", columns=["symbol", "name"])
+        return {str(s) for s, n in zip(sec["symbol"], sec["name"])
+                if "ST" in str(n).upper()}
+    except Exception:  # noqa: BLE001  证券表缺失时不误杀（宁可放过不可错杀）
+        return set()
+
+
 def build_factor_panel(
     store: ParquetStore,
     symbols: list[str],
@@ -97,6 +113,7 @@ def build_factor_panel(
     pit_constituents: pd.DataFrame | None = None,
     dividend_panel: pd.DataFrame | None = None,
     expr_factors: dict[str, str] | None = None,
+    exclude_st: bool = False,
 ) -> pd.DataFrame:
     """
     读取多标的日线 -> 算原始因子 -> 拼成长表 -> 每个交易日截面 rank(pct)。
@@ -180,6 +197,12 @@ def build_factor_panel(
         )
         panel = merged[keep_rows].drop(columns=["in_date", "out_date"])
         panel = panel.reset_index(drop=True)
+
+    # ST 剔除必须在截面 rank 之前：ST 的极端低换手会污染全池分位数（D-071）
+    if exclude_st:
+        st = st_symbol_set(store)
+        if st:
+            panel = panel[~panel["symbol"].isin(st)].reset_index(drop=True)
 
     # 截面 rank：同一天所有股票横向排名为百分位（一次 groupby 完成全部因子）
     rank_cols = [*factor_names, *extra]

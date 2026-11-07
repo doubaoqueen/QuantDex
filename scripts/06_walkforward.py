@@ -101,7 +101,7 @@ def main() -> None:
     if strategy == "dividend":
         div_panel = financials.load_dividend_panel(store, symbols)
     print(f">> 构建 PIT 因子面板（{index_code}，{len(symbols)} 只，strategy={strategy}）...")
-    panel = build_factor_panel(store, symbols, start=START_DATE,
+    panel = build_factor_panel(store, symbols, start=START_DATE, exclude_st=("--include-st" not in sys.argv),  # D-071 剔除 ST
                                pit_constituents=pit, dividend_panel=div_panel)
     # D-050：价格用**全历史**（不按 PIT 删行），PIT 只用于"能不能买"。
     # 早先 panel.pivot 会留下非成分期间的价格空洞，引擎 ffill 补洞后把几年涨跌
