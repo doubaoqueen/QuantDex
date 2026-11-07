@@ -80,3 +80,17 @@ def test_board_limit_and_limit_tag():
     assert tag(None, "600519") is None
     assert tag(float("nan"), "600519") is None
     assert tag("bad", "600519") is None
+
+
+def test_limit_watch_structure():
+    """全池涨跌停观察（D-063）：结构完整、方向正确、与 board_limit 同源。"""
+    out = webapp.limit_watch()
+    assert out["date"] is not None or out.get("note")
+    for item in out["up"] + out["down"]:
+        assert set(item) == {"symbol", "name", "industry", "pct"}
+    # 涨停必为正收益、跌停必为负，且与判定阈值同源（board_limit 容差 1e-3）
+    from config import board_limit
+    for x in out["up"]:
+        assert x["pct"] >= board_limit(x["symbol"]) - 1e-3 > 0
+    for x in out["down"]:
+        assert x["pct"] <= -(board_limit(x["symbol"]) - 1e-3) < 0

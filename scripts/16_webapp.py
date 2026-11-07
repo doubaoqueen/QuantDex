@@ -114,7 +114,7 @@ def _check_token(tok: str) -> bool:
     except Exception:  # noqa: BLE001
         return False
 _store = ParquetStore()
-_cache = {"regime": (0.0, None)}
+_cache = {"regime": (0.0, None), "limit": (0.0, None)}
 # busy：非子进程阶段的占用（快照更新线程），让 UI 能看到"正在跑"并阻止重复点击
 _job = {"proc": None, "name": None, "busy": None}
 _job_lock = threading.Lock()
@@ -1039,8 +1039,59 @@ def add_order(acc, symbol, side, qty, price=None):
         conn.commit()
         return {"ok": True, "msg": f"已挂单：{symbol} {side} {qty} 股，成交日 {fill}",
                 "_audit": f"add_order {acc} {symbol} {side} {qty}"}
+    except sqlite3.IntegrityError:
+        # D-059：同一 (signal_date, symbol, side) 的 pending 已存在（ux_trade_pending）
+        conn.rollback()
+        return {"ok": False,
+                "msg": "该标的当日已有同方向的待成交订单（防重复下单保护，D-059）"}
     finally:
         conn.close()
+
+
+def limit_watch():
+    """全池涨跌停观察（D-063 用户需求）：当日触及涨/跌停的标的清单。
+
+    持仓行的涨跌停徽章只在"自己持仓触板"时可见（低换手组合很少触板），
+    这里给全池视角：今天市场上谁在板上。判定与撮合侧同源
+    （config.board_limit：ST ±5%、创/科 ±20%、主板 ±10%，名称判 ST）；
+    价格口径=收盘 vs 昨收（日线分区一次读全市场，300 秒缓存）。
+    """
+    now = time.time()
+    if _cache["limit"][1] is not None and now - _cache["limit"][0] < 300:
+        return _cache["limit"][1]
+    names, inds = _meta_maps()
+    pdir = STORE_DIR / "market" / "daily_by_date"
+    parts = sorted(p.stem for p in pdir.glob("*.parquet")) if pdir.exists() else []
+    if len(parts) < 2:
+        out = {"date": None, "up": [], "down": [], "note": "按日分区缺失（先跑 18 号重建）"}
+        _cache["limit"] = (now, out)
+        return out
+    date = parts[-1]
+    try:
+        today = pd.read_parquet(pdir / f"{date}.parquet", columns=["symbol", "close"])
+        prev = pd.read_parquet(pdir / f"{parts[-2]}.parquet", columns=["symbol", "close"])
+    except Exception as e:  # noqa: BLE001
+        out = {"date": date, "up": [], "down": [], "note": f"分区读取失败: {e}"}
+        _cache["limit"] = (now, out)
+        return out
+    m = today.merge(prev, on="symbol", how="inner", suffixes=("", "_prev"))
+    m = m[(m["close"] > 0) & (m["close_prev"] > 0)]
+    m["pct"] = m["close"] / m["close_prev"] - 1.0
+    up, down = [], []
+    for r in m.itertuples(index=False):
+        sym = str(r.symbol)
+        tag = _limit_tag(float(r.pct), sym, names.get(sym))
+        if tag is None:
+            continue
+        item = {"symbol": sym, "name": names.get(sym, sym),
+                "industry": inds.get(sym, "-"), "pct": round(float(r.pct), 4)}
+        (up if tag == "涨停" else down).append(item)
+    up.sort(key=lambda x: -x["pct"])
+    down.sort(key=lambda x: x["pct"])
+    out = {"date": date, "up": up, "down": down,
+           "n_pool": int(len(m)), "note": "收盘口径；撮合侧用开盘价判定，边界股可能有出入"}
+    _cache["limit"] = (now, out)
+    return out
 
 
 def regime():
@@ -1389,6 +1440,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, kline(q.get("symbol", [""])[0],
                                              q.get("account", ["large"])[0],
                                              q.get("days", ["250"])[0]))
+            if u.path == "/api/limit_watch":
+                return self._send(200, limit_watch())
             if u.path == "/api/regime":
                 return self._send(200, regime())
             if u.path == "/api/reports":

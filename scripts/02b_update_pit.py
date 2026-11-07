@@ -66,36 +66,43 @@ def main() -> None:
     for code, err in failed[:10]:
         print(f"   FAIL {code}: {str(err)[:100]}", flush=True)
 
-    # R3-02/D-041a 护栏：增量写入后行级自洽校验（序列涨跌 vs pct_chg，阈值 0.5%），
-    # 破裂=除权锚点断裂，自动全史重抓修复——除权季每期制造的新缺口当日清零
-    ok_syms = [c for c, v in r.items() if isinstance(v, int) and v > 0]
-    broken = []
-    for c in ok_syms:
-        pth = store._path("daily", f"{c}__qfq")
-        if not pth.exists():
-            continue
-        k = pd.read_parquet(pth, columns=["date", "close", "pct_chg"])
-        if len(k) < 2:
-            continue
-        chg = k["close"] / k["close"].shift(1) - 1
-        pct = pd.to_numeric(k["pct_chg"], errors="coerce") / 100
-        if ((chg - pct).abs() > 0.005).any():
-            broken.append(c)
-    if broken:
-        print(f"[guardrail] 自洽破裂 {len(broken)} 只（除权锚点断裂），全史重抓修复", flush=True)
-        for c in broken:
-            try:
-                fetch_kline(c, start=DEFAULT_START_DATE, asset="stock", adjust="qfq",
-                            source="bs", store=store)
-            except Exception as e:  # noqa: BLE001
-                print(f"[guardrail] {c} 重抓失败: {e}", flush=True)
-        print(f"[guardrail] 完成（{len(broken)} 只）", flush=True)
+    # R3-02/D-041a 护栏（D-062 下沉为共享函数）：全量行级自洽校验
+    # （序列涨跌 vs pct_chg，阈值 0.5%），破裂=除权锚点断裂，自动全史重抓修复。
+    # 全量扫描（而非只查本次写入的）——webapp 快照路径等任何写路径的断裂也被覆盖。
+    from src.data.market import ensure_qfq_integrity
+    ensure_qfq_integrity(symbols, store=store)
 
     # 基准指数不在股票池里，必须单独更新（否则报告/市场状态一直是旧值）
     from src.data.snapshot import update_indexes
     print(">> 更新基准指数（沪深300 / 中证500）...", flush=True)
     ir = update_indexes(store)
     print(f">> 指数完成：{len(ir)} 个", flush=True)
+
+    # 分时数据：baostock 5 分钟线每日增量（D-060）。收盘后运行；失败只告警
+    # 不阻断（日线/流水线不依赖它）。QUANTDEX_MINUTE=0 可关闭。
+    # 与 29 号回填脚本互斥用独立的 .minute.lock（拿不到=回填在跑，当晚跳过——
+    # 回填本身会带到最新）；backfill_missing=False：调度窗口只做增量，
+    # 全史回填约 3 分钟/只，不能发生在调度里。
+    if os.environ.get("QUANTDEX_MINUTE", "1") != "0":
+        from src.live.proclock import try_lock as _try_minute_lock
+        mlf = _try_minute_lock(STORE_DIR / "sim" / ".minute.lock")
+        if mlf is None:
+            print(">> [minute] 5 分钟线回填脚本正在运行，今晚增量跳过", flush=True)
+        else:
+            try:
+                from src.data.market import update_minute_batch
+                print(">> 更新 5 分钟线（baostock）...", flush=True)
+                mr = update_minute_batch(symbols, freq="5", full_start=DEFAULT_START_DATE,
+                                         store=store, backfill_missing=False)
+                mf = mr.pop("__failed__", [])
+                n_up = sum(1 for v in mr.values() if v == "uptodate")
+                n_none = sum(1 for v in mr.values() if v == "no-local")
+                print(f">> 分钟线完成：处理 {len(mr)} 只（已最新 {n_up}、"
+                      f"未回填 {n_none}），失败 {len(mf)} 只", flush=True)
+                for code, err in mf[:5]:
+                    print(f"   FAIL {code}: {err}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[minute] 5 分钟线更新失败（不影响后续流程）: {e}", flush=True)
 
 
 if __name__ == "__main__":

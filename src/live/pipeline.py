@@ -171,11 +171,13 @@ def _replay_fills(led, last_snap_date, latest, done_ids) -> pd.DataFrame:
     return unre[~unre["id"].isin(done_ids)]
 
 
-def _self_check(led, cash: float, positions: pd.DataFrame) -> list[str]:
+def _self_check(led, cash: float, positions: pd.DataFrame) -> tuple[list[str], bool]:
     """账本自检：现金非负 / 股数与成交净额一致 / 权重合计不超 100%。
 
     这三条正是 D-053 事故的三个指纹（当时现金 -869,765、股数全部 2 倍、
     权重合计 185%，唯独净值看起来正常），所以写成日报里的常驻检查行。
+    返回 (日报行, 是否全部通过)：D-059 起失败会传导到邮件标题前缀与
+    10_daily_run 的退出码——异常必须"有人响应"，不能只躺在日报文本里。
     """
     lines = ["", "## 账本自检"]
     ok = True
@@ -211,9 +213,27 @@ def _self_check(led, cash: float, positions: pd.DataFrame) -> list[str]:
             lines.append(f"- ✓ 权重合计 {wsum:.1%}")
     except Exception:  # noqa: BLE001
         pass
+    # D-062 第四项：滞留待成交（成交日已过 30 天仍 pending）——退市/数据长缺会
+    # 卡死下单链路（pending 非空 → 不再下新单），F-23 的预警哨兵
+    try:
+        pend = led.pending_orders()
+        stale = (pend[pd.to_datetime(pend["fill_date"])
+                      < pd.Timestamp.now().normalize() - pd.Timedelta(days=30)]
+                 if len(pend) else pend)
+        if len(stale):
+            sample = ", ".join(f"{r.symbol}@{r.fill_date}"
+                               for r in stale.head(3).itertuples(index=False))
+            lines.append(f"- ✗ 滞留待成交 {len(stale)} 笔（{sample}）——疑似退市/数据洞，"
+                         f"会卡死下单链路")
+            ok = False
+        else:
+            lines.append(f"- ✓ 无滞留待成交（在途 {len(pend)} 笔）")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"- ? 滞留订单核对跳过（{e}）")
     if ok:
-        lines.append("> 自检通过。三项对应 D-053 的三个指纹：负现金 / 股数翻倍 / 权重>100%")
-    return lines
+        lines.append("> 自检通过。前四项对应 D-053 三指纹 + D-062 滞留订单："
+                     "负现金 / 股数翻倍 / 权重>100% / pending 卡死")
+    return lines, ok
 
 
 def _fill_pending(led: Ledger, price_lookup: dict,
@@ -241,7 +261,17 @@ def _fill_pending(led: Ledger, price_lookup: dict,
         if dp is None:
             last = (last_dates or {}).get(str(o.symbol))
             if last is None or pd.Timestamp(last) < fd:
-                # 行情尚未更新到成交日：保持待成交（不是停牌）
+                # 行情尚未更新到成交日：保持待成交（不是停牌）。
+                # D-062：但成交日已过 30 个自然日仍无行情 = 大概率退市/数据长期
+                # 缺失——永远 pending 会卡死下单链路（pending 非空 → 不再下新单，
+                # 账户无声停摆），超期拒单解锁并在日报自检可见。
+                if (latest - fd).days > 30:
+                    led.mark_rejected(o.id, "rejected_delisted",
+                                      f"成交日 {fd.date()} 已过 30 天无行情（疑似退市）")
+                    results.append({"id": o.id, "symbol": o.symbol,
+                                    "status": "rejected_delisted",
+                                    "msg": "超 30 天无行情，疑似退市拒单"})
+                    continue
                 results.append({"id": o.id, "symbol": o.symbol, "status": "pending",
                                 "msg": f"行情未更新到 {fd.date()}，保持待成交"})
                 continue
@@ -659,12 +689,20 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                 f"fills={filled_n} pending={pend_n} nav={nav_now:,.2f}")
         except Exception as e:  # noqa: BLE001
             print(f"[daily_ops] 记录失败: {e}")
+        # D-062：累计费用与账本自检必须在 close 之前算好——close 后再 connect
+        # 会重开连接且永不关闭（Windows 文件锁），与 D-029 修过的是同一类错误
+        cum_cost = _cum_cost(led)
+        check_lines, check_ok = _self_check(
+            led, cash, positions if len(positions) else pd.DataFrame())
         # 先取待成交列表再关连接：close 后再调用会重开连接且永不关闭（Windows 文件锁）
         pending_after = led.pending_orders()
         led.daily_backup()
         led.close()
     else:
         pending_after = pd.DataFrame()
+        cum_cost = _cum_cost(led)
+        check_lines, check_ok = _self_check(
+            led, cash, positions if len(positions) else pd.DataFrame())
 
     # ---- 日报 ----
     report_dir = STORE_DIR / "reports" / label
@@ -692,7 +730,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
              f"- 总净值: {nav_now:,.2f}",
              f"- 今日盈亏: {day_pnl:+,.2f}（{day_ret:+.2%}）",
              f"- 累计收益: {cum_ret:+.2%}",
-             f"- 累计交易费用（含滑点估算）: {_cum_cost(led):,.2f} 元",
+             f"- 累计交易费用（含滑点估算）: {cum_cost:,.2f} 元",
              f"- 涨跌家数: {chg_txt}",
              f"- 基准(沪深300): {bench_close:,.2f}",
              f"- 持仓数: {len(positions)}",
@@ -740,8 +778,9 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         lines += ["", f"> 调仓节奏：距上次成交 {held_days} 个交易日 < {rebalance} 天，"
                       f"按账户自己的持有周期，本次不调仓（D-057）"]
 
-    # D-053 防线：把三个"事故指纹"写成常驻自检行（负现金/股数翻倍/权重超100%）
-    lines += _self_check(led, cash, positions if len(positions) else pd.DataFrame())
+    # D-053 防线：账本自检四行（负现金/股数翻倍/权重超100%/滞留 pending），
+    # 已在 close 前算好（D-062 连接泄漏修复）
+    lines += check_lines
 
     # 持仓预警：距持有期高点回撤 >=10%（仅提醒；个股止损类规则回测为负贡献，见 D-026）
     alert_rows = sorted(
@@ -771,6 +810,9 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     report_path = report_dir / f"{latest.date()}.md"
     # 该交易日是否已生成过日报（重复运行/周末重跑）——决定是否重复推送邮件
     already_reported = report_path.exists()
+    # D-062：发送失败标记——"报告文件存在"作为已推送水位会吞掉 SMTP 失败
+    # （写文件成功+发送失败 → 当日永不补发）。失败落标记，重跑时重试。
+    send_fail_marker = report_path.with_name(report_path.name + ".send_failed")
     if not dry_run:
         report_path.write_text(report, encoding="utf-8")
 
@@ -778,16 +820,31 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     if not dry_run:
         print(f"\n报表已写入: {report_path}")
         # 邮件推送：每个交易日的日报只推一次（D-029）——
-        # 重跑/歇市重跑静默更新报告但不重发；若上次运行失败未生成报告，本次补跑仍会推送
-        if push and already_reported:
+        # 重跑/歇市重跑静默更新报告但不重发；上次发送失败（有标记）则本次重试
+        if push and already_reported and not send_fail_marker.exists():
             print(f"[notifier] {latest.date()} 日报此前已推送，跳过重复发送")
         elif push:
             try:
                 from src.live.notifier import is_configured, send_report
                 if is_configured():
-                    send_report(f"影子盘日报[{label}] {latest.date()}", report)
+                    # D-059：自检失败时邮件标题必须带警示——收件人不开电脑也知道要处理
+                    subj = f"影子盘日报[{label}] {latest.date()}"
+                    if not check_ok:
+                        subj = f"⚠️自检异常 {subj}"
+                    sent = send_report(subj, report)
+                    if sent:
+                        send_fail_marker.unlink(missing_ok=True)
+                    else:
+                        send_fail_marker.write_text(
+                            f"send failed {pd.Timestamp.now()}\n", encoding="utf-8")
+                        print("[notifier] 推送失败——已落标记，下次运行自动重试（D-062）")
             except Exception as e:  # noqa: BLE001
-                print(f"[notifier] 推送异常: {e}")
+                send_fail_marker.write_text(
+                    f"send error {pd.Timestamp.now()}: {e}\n", encoding="utf-8")
+                print(f"[notifier] 推送异常（已落标记，下次运行自动重试）: {e}")
+    if not check_ok:
+        print(">> [self-check] ⚠️ 自检未通过（负现金/股数不符/权重超限）——请核对账本，"
+              "不要只看净值（D-053 的教训：两处错误会互相抵消）", flush=True)
     print(f"（dry_run={dry_run}，撮合 {sum(1 for r in fill_results if r['status']=='filled')} 笔，"
           f"拒单 {sum(1 for r in fill_results if r['status'].startswith('rejected'))} 笔，"
           f"待成交 {len(pending_after) if not dry_run else 0} 笔，净值 {nav_now:,.2f}）")
@@ -796,6 +853,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             "report": str(report_path), "report_text": report,
             "new_report": not already_reported,
             "emailed": bool(push and not already_reported),
+            "self_check_ok": check_ok,
             "day_ret": day_ret, "cum_ret": cum_ret}
 
 

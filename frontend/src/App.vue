@@ -10,6 +10,7 @@ import CandidatesPanel from './components/CandidatesPanel.vue'
 import FactorPanel from './components/FactorPanel.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
 import RegimeCard from './components/RegimeCard.vue'
+import LimitWatch from './components/LimitWatch.vue'
 import ReportViewer from './components/ReportViewer.vue'
 import OpsTable from './components/OpsTable.vue'
 import JobLog from './components/JobLog.vue'
@@ -261,6 +262,9 @@ function cumText(o) {
         </div>
         <RegimeCard :regime="regime" />
       </div>
+
+      <!-- 涨跌停观察（全池视角，D-063）：持仓徽章只在触板时可见，这里补市场视角 -->
+      <LimitWatch />
 
       <!-- 净值曲线 -->
       <NavChart :account="account" :label="accLabel" />

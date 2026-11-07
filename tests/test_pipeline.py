@@ -177,7 +177,11 @@ def test_report_email_sent_once_per_day():
     sent = []
     orig_cfg, orig_send = notifier.is_configured, notifier.send_report
     notifier.is_configured = lambda: True
-    notifier.send_report = lambda *a, **k: sent.append(a[0])
+
+    def _fake_send(*a, **k):
+        sent.append(a[0])
+        return True  # 与真实 send_report 契约一致：成功返回 True（D-062 重试逻辑依赖）
+    notifier.send_report = _fake_send
     try:
         r1 = run_pipeline(push=True, db_path=tmp_db, label="zz_test_dup",
                           _panel=panel, capital=1_000_000)
@@ -370,12 +374,16 @@ def test_self_check_flags_broken_ledger():
 
     # 正常账本：100 股 + 权重 50% + 现金充足 → 三项全过
     good = pd.DataFrame([{"symbol": "600519", "shares": 100.0, "weight": 0.5}])
-    txt = "\n".join(_self_check(led, cash=1000.0, positions=good))
+    txt, ok = _self_check(led, cash=1000.0, positions=good)
+    txt = "\n".join(txt)
+    assert ok is True, txt
     assert "✓ 股数与成交净额一致" in txt and "✗" not in txt, txt
 
     # 事故形态：股数翻倍 + 现金为负 + 权重 150%
     bad = pd.DataFrame([{"symbol": "600519", "shares": 200.0, "weight": 1.5}])
-    txt2 = "\n".join(_self_check(led, cash=-869765.0, positions=bad))
+    txt2, ok2 = _self_check(led, cash=-869765.0, positions=bad)
+    txt2 = "\n".join(txt2)
+    assert ok2 is False, txt2  # D-059：失败必须可传导（邮件标题/退出码），不能只躺文本里
     assert "✗ 现金为负" in txt2 and "✗ 股数与成交净额不一致" in txt2 and "✗ 权重合计" in txt2, txt2
     led.close()
     for suf in ("", "-wal", "-shm"):

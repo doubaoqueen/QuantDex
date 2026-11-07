@@ -17,6 +17,7 @@ Parquet 数据仓库：分区存储、读取、增量更新（upsert）、数据
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 
 import pandas as pd
 
@@ -160,6 +161,19 @@ class ParquetStore:
         mask = (reg["dataset"] == kind) & (reg["name"] == name)
         return pd.concat([reg[~mask], entry], ignore_index=True)
 
+    @staticmethod
+    def _write_parquet_atomic(df: pd.DataFrame, path) -> None:
+        """先写临时文件再原子替换（D-059）。
+
+        注册表是高频读改写的单点文件：直写目标路径时进程中断会留下半截
+        parquet（读取方才报错），并发写会互相覆盖丢条目（实测已发生 6 条）。
+        os.replace 在同一文件系统上是原子的。
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".parquet.tmp")
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+
     def _write_registry_entry(self, kind: str, name: str,
                               entry: pd.DataFrame) -> None:
         if REGISTRY_PATH.exists():
@@ -167,8 +181,7 @@ class ParquetStore:
             reg = self._merge_entry(reg, kind, name, entry)
         else:
             reg = entry
-        REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        reg.to_parquet(REGISTRY_PATH, index=False)
+        self._write_parquet_atomic(reg, REGISTRY_PATH)
 
     @contextmanager
     def batch_write(self):
@@ -191,8 +204,7 @@ class ParquetStore:
         reg = pd.read_parquet(REGISTRY_PATH) if REGISTRY_PATH.exists() else pd.DataFrame()
         for (kind, name), entry in self._reg_buf.items():
             reg = self._merge_entry(reg, kind, name, entry)
-        REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        reg.to_parquet(REGISTRY_PATH, index=False)
+        self._write_parquet_atomic(reg, REGISTRY_PATH)
         self._reg_buf.clear()
 
     def registry(self) -> pd.DataFrame:

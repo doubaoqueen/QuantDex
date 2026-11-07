@@ -4,7 +4,9 @@
 - 北向资金（沪深港通）历史：北向/沪股通/深股通
 - 融资融券：沪深两市全历史汇总 + 深交所单日明细
 - 龙虎榜明细
-金额单位：北向为亿元；两融汇总为万元（数据源原始口径）。
+金额单位（D-062 实测纠正）：北向 net_buy/buy/sell 为亿元；cum_net_buy 为**万亿元**、
+holdings_mv 为**元**（同一张表三种口径，消费前必须核对）；两融各列实为**元**
+（注释旧写"万元"差 1e4 倍，实测 total_balance≈1.3e12）。
 """
 import time
 import pandas as pd
@@ -20,7 +22,8 @@ def fetch_northbound(channel: str = "北向资金",
                      store: ParquetStore | None = None) -> pd.DataFrame:
     """
     北向资金历史（东财）。channel: 北向资金 / 沪股通 / 深股通。
-    返回 date,net_buy,buy_amount,sell_amount,cum_net_buy,holdings_mv（亿元）。
+    返回 date,net_buy,buy_amount,sell_amount,cum_net_buy,holdings_mv
+（net/buy/sell=亿元；cum_net_buy=万亿元；holdings_mv=元，见 D-062 单位审计）。
     """
     store = store or ParquetStore()
     df = retry_call(ak.stock_hsgt_hist_em, symbol=channel, label="northbound")
@@ -49,7 +52,7 @@ def fetch_northbound(channel: str = "北向资金",
 def fetch_margin_hist(market: str = "sh",
                       store: ParquetStore | None = None) -> pd.DataFrame:
     """
-    两市融资融券历史汇总（2010 至今，单位万元）。market: sh / sz。
+    两市融资融券历史汇总（2010 至今，**单位元**——旧注释"万元"有误，D-062 实测纠正）。market: sh / sz。
     """
     store = store or ParquetStore()
     if market == "sh":

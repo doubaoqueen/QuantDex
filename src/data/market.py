@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 行情数据：日/周/月线、分钟线、实时快照；支持批量增量更新。
 - 个股 / ETF：akshare 东财接口（快、字段全）
@@ -9,14 +8,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
-from config import DEFAULT_START_DATE, REQUEST_INTERVAL
-from src.data.storage import ParquetStore
-from src.data.sources import ak, ensure_bs_login, bs_query, retry_call
+from config import DEFAULT_START_DATE
 from src.data.schema import (
-    normalize_code, to_bs_code, to_sina_code, kline_file_name,
-    standardize_ak_daily, standardize_ak_min, standardize_bs_daily,
+    kline_file_name,
+    normalize_code,
+    standardize_ak_daily,
+    standardize_ak_min,
+    standardize_bs_daily,
+    standardize_bs_min,
     standardize_sina_daily,
+    to_bs_code,
+    to_sina_code,
 )
+from src.data.sources import ak, bs_query, ensure_bs_login, retry_call
+from src.data.storage import ParquetStore
 
 _VALID_ASSET = ("stock", "etf", "index")
 _VALID_PERIOD = ("daily", "weekly", "monthly")
@@ -173,6 +178,189 @@ def fetch_minute(
     store.upsert(std, "minute", name, keys=["symbol", "datetime"],
                  source="akshare", date_col="datetime", adjust=adj)
     return std
+
+
+# ---------------------------------------------------------------- 分钟线（baostock）
+def fetch_minute_bs(
+    symbol: str,
+    start: str = "2018-01-01",
+    end: str | None = None,
+    freq: str = "5",
+    store: ParquetStore | None = None,
+) -> pd.DataFrame:
+    """
+    抓取单标的 baostock 分钟线并增量写入仓库（D-060）。
+
+    与东财 fetch_minute（只有滚动约 1-2 个月）不同，baostock 提供
+    5/15/30/60 分钟线自 2011 年至今的**全历史**（1 分钟线无免费全历史源）。
+    freq: "5"/"15"/"30"/"60"。
+
+    口径：**不复权**（adjustflag=3）——分钟级不做复权锚点，从根上避开日线
+    qfq 的增量锚点断裂问题（D-041a）；跨除权日研究可用复权因子后处理。
+    baostock 单连接串行协议，调用会经 bs_query 串行化，严禁自行开线程并发。
+    """
+    store = store or ParquetStore()
+    code = normalize_code(symbol)
+    end = end or pd.Timestamp.now().strftime("%Y-%m-%d")
+    if str(freq) not in ("5", "15", "30", "60"):
+        raise ValueError(f"baostock 分钟线 freq 仅支持 5/15/30/60，收到 {freq}")
+    bs = ensure_bs_login()
+    bs_code = to_bs_code(code)
+    fields = "date,time,code,open,high,low,close,volume,amount"
+    raw = bs_query(
+        bs.query_history_k_data_plus, bs_code, fields,
+        start_date=start, end_date=end, frequency=str(freq), adjustflag="3",
+    )
+    if raw.empty:
+        return pd.DataFrame()
+    std = standardize_bs_min(raw, code)
+    name = f"{code}__{freq}__none"
+    store.upsert(std, "minute", name, keys=["symbol", "datetime"],
+                 source="baostock/min", date_col="datetime", adjust="none")
+    return std
+
+
+def update_minute_batch(
+    symbols: list[str],
+    freq: str = "5",
+    full_start: str = "20180101",
+    store: ParquetStore | None = None,
+    backfill_missing: bool = True,
+) -> dict:
+    """
+    【串行】批量增量更新分钟线（baostock 单连接协议，禁止线程池）：
+      - 本地最后数据日 >= 最近收盘交易日的标的跳过（周末/盘后重跑秒级）；
+      - 其余从本地最后日期起抓（含最后一天，允许同日重抓纠错，与日线 D-019 同语义）；
+      - backfill_missing=True（回填模式，29 号脚本）：无本地数据的标的从 full_start
+        全史抓取；本地最早日期晚于 full_start 时向前补早段（双向断点续传）；
+      - backfill_missing=False（每日调度模式）：无本地数据的标的直接跳过——
+        全史抓取约 3 分钟/只（10 万行传输开销），调度窗口内跑不完全池，
+        缺失股的回填是 29 号脚本的职责。
+    返回 {symbol: 新增行数或"uptodate"/"no-local"}，失败标的收集在 __failed__ 中。
+    注册表在 batch_write 内缓冲，全部结束统一写盘一次。
+    """
+    store = store or ParquetStore()
+    report: dict = {"__failed__": []}
+    last_closed = last_closed_trade_date(store)
+    start_full = f"{full_start[:4]}-{full_start[4:6]}-{full_start[6:]}"
+    n = len(symbols)
+
+    def _local_span(name):
+        """返回 (最早日期, 最晚日期)（均 normalize 到日）；无数据返回 (None, None)。"""
+        if not store.exists("minute", name):
+            return None, None
+        df = store.read("minute", name, columns=["datetime"])
+        if not len(df):
+            return None, None
+        dt = pd.to_datetime(df["datetime"])
+        return dt.min().normalize(), dt.max().normalize()
+
+    consec_fail = {"n": 0}
+
+    def _fetch_retry(sym, start, end=None):
+        """单只重试（2/5/10s 退避，第 2 次起强制重连）——服务端断流自愈，D-062。
+
+        连续失败熔断：每累计 10 只全失败，退避 60 秒再继续（服务端限流特征，
+        硬冲只会把整个分片烧成失败清单——2026-11-07 上午 5 并发 4.5 小时后被断流的教训）。
+        """
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                df = fetch_minute_bs(sym, start=start, end=end, freq=freq, store=store)
+                consec_fail["n"] = 0
+                return df
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if attempt >= 1:
+                    from src.data.sources import force_relogin
+                    force_relogin()
+                time.sleep((2, 5, 10)[min(attempt, 2)])
+        consec_fail["n"] += 1
+        if consec_fail["n"] % 10 == 0:
+            print(f"  [circuit] 连续失败 {consec_fail['n']} 只，退避 60s（疑似服务端限流）",
+                  flush=True)
+            time.sleep(60)
+        raise last_err  # type: ignore[misc]
+
+    with store.batch_write():
+        for i, sym in enumerate(symbols, 1):
+            code = normalize_code(sym)
+            try:
+                name = f"{code}__{freq}__none"
+                first, last = _local_span(name)
+                if first is None:
+                    if not backfill_missing:
+                        report[code] = "no-local"
+                    else:
+                        df = _fetch_retry(code, start_full)
+                        report[code] = len(df)
+                else:
+                    if last_closed is None or last < last_closed:
+                        df = _fetch_retry(code, last.strftime("%Y-%m-%d"))
+                        report[code] = len(df)
+                    else:
+                        report[code] = "uptodate"
+                    if backfill_missing and first > pd.Timestamp(start_full):
+                        # 向前补早段：此前从更晚的起始日回填过，现在扩早史（upsert 自动合并）
+                        df = _fetch_retry(code, start_full,
+                                          end=(first - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+                        if isinstance(report.get(code), int):
+                            report[code] += len(df)
+            except Exception as e:  # noqa: BLE001  单只失败不拖垮批次
+                report["__failed__"].append((code, str(e)))
+            if i % 50 == 0 or i == n:
+                nf = len(report["__failed__"])
+                print(f"  分钟线进度 {i}/{n}，失败 {nf}", flush=True)
+    return report
+
+
+# ---------------------------------------------------------------- qfq 锚点护栏（D-041a/D-062）
+def ensure_qfq_integrity(
+    symbols: list[str],
+    store: ParquetStore | None = None,
+    threshold: float = 0.005,
+) -> list[str]:
+    """行级自洽校验 + 自动修复：|序列涨跌 - pct_chg| > 阈值 视为复权锚点断裂。
+
+    D-041a 上线的护栏原本只在 02b 有、且只检查"本次写入的标的"（isinstance
+    筛选还漏掉 bs_fallback/sina_fallback 字符串返回值）——D-062 起下沉为共享
+    函数并**全量扫描**：任何写路径（02b 增量、10_daily_run、webapp 快照回填）
+    造成的断裂都会在下一次调用时被发现并全史重抓修复。
+
+    返回修复失败的标的列表（空 = 全部干净或修复成功）。
+    """
+    store = store or ParquetStore()
+    broken: list[str] = []
+    for code in symbols:
+        c = normalize_code(code)
+        pth = store._path("daily", f"{c}__qfq")
+        if not pth.exists():
+            continue
+        try:
+            k = pd.read_parquet(pth, columns=["close", "pct_chg"])
+        except Exception:  # noqa: BLE001  读取失败按破裂处理（重抓覆盖）
+            broken.append(c)
+            continue
+        if len(k) < 2:
+            continue
+        chg = k["close"] / k["close"].shift(1) - 1
+        pct = pd.to_numeric(k["pct_chg"], errors="coerce") / 100
+        if ((chg - pct).abs() > threshold).any():
+            broken.append(c)
+    if not broken:
+        return []
+    print(f"[guardrail] qfq 自洽破裂 {len(broken)} 只（除权锚点断裂），全史重抓修复",
+          flush=True)
+    failed: list[str] = []
+    for c in broken:
+        try:
+            fetch_kline(c, start=DEFAULT_START_DATE, asset="stock", adjust="qfq",
+                        source="bs", store=store)
+        except Exception as e:  # noqa: BLE001
+            failed.append(c)
+            print(f"[guardrail] {c} 重抓失败: {e}", flush=True)
+    print(f"[guardrail] 完成（{len(broken)} 只，失败 {len(failed)}）", flush=True)
+    return failed
 
 
 # ---------------------------------------------------------------- 实时快照

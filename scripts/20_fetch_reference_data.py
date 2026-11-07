@@ -37,10 +37,29 @@ def do_adjfactor(store: ParquetStore, limit: int = 0) -> None:
     symbols = universe.pit_union_symbols("000300", store)
     if limit:
         symbols = symbols[:limit]
-    todo = [s for s in symbols
-            if not store.exists("fin_bs", f"{s}__adjfactor")]
-    print(f">> [3/3] 复权因子：PIT 并集 {len(symbols)} 只，待抓 {len(todo)} 只"
-          f"（已有 {len(symbols) - len(todo)}，断点续跑）", flush=True)
+    # D-062 修复"存在即跳过"：adjfactor 每次除权都会变，全库 944 个文件停在
+    # 首抓日永不更新。保鲜策略：无文件 → 抓；60 天内抓过 → 跳过；
+    # 最新除权记录已过 40 天 → 刷新（新除权事件补进来）。
+    import time as _time
+
+    import pandas as _pd
+    todo: list[str] = []
+    for s in symbols:
+        path = store._path("fin_bs", f"{s}__adjfactor")
+        if not path.exists():
+            todo.append(s)
+            continue
+        if _time.time() - path.stat().st_mtime < 60 * 86400:
+            continue
+        try:
+            df = _pd.read_parquet(path, columns=["dividOperateDate"])
+            newest = _pd.to_datetime(df["dividOperateDate"], errors="coerce").max()
+            if _pd.isna(newest) or (_pd.Timestamp.now() - newest).days > 40:
+                todo.append(s)
+        except Exception:  # noqa: BLE001
+            todo.append(s)
+    print(f">> [3/3] 复权因子：PIT 并集 {len(symbols)} 只，待刷新 {len(todo)} 只"
+          f"（新鲜 {len(symbols) - len(todo)}，保鲜策略 D-062）", flush=True)
     failed: list[tuple[str, str]] = []
     with store.batch_write():
         for i, s in enumerate(todo, 1):
@@ -54,6 +73,7 @@ def do_adjfactor(store: ParquetStore, limit: int = 0) -> None:
     print(f"   完成：失败 {len(failed)} 只（多为 2008 前退市/无除权记录）", flush=True)
     for code, err in failed[:10]:
         print(f"   FAIL {code}: {err}")
+    sys.exit(1 if failed else 0)  # 入调度后用退出码说话（D-062）
 
 
 def main() -> None:

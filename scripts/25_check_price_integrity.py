@@ -65,6 +65,8 @@ def main() -> None:
     print(f"复权断裂总数（|假跳空|>1% 的除权日）: {total}")
     for n, sym in worst[:10]:
         print(f"  {sym}: {n} 处")
+    # D-059：入调度后用退出码说话（0 干净 / 1 有断裂）——调度器据此告警
+    sys.exit(1 if total else 0)
 
 
 if __name__ == "__main__":

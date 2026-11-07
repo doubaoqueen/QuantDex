@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """数据源会话管理：baostock 登录单例、结果转换、统一重试。"""
 import threading
 import time
-import pandas as pd
+
+import akshare as ak  # noqa: F401  再导出：market/snapshot 经 sources 统一引用（D-062 被 ruff 误删修复）
 import baostock as bs
-import akshare as ak
+import pandas as pd
 
 from config import MAX_RETRIES, RETRY_SLEEP
 
@@ -25,6 +25,19 @@ def ensure_bs_login():
                 raise RuntimeError(f"baostock 登录失败: {lg.error_code} {lg.error_msg}")
             _BS_LOGGED_IN = True
     return bs
+
+
+def force_relogin() -> None:
+    """强制重连：服务端断流/限流后重建连接（分钟线批量自愈用，D-062）。"""
+    global _BS_LOGGED_IN
+    with _bs_lock:
+        if _BS_LOGGED_IN:
+            try:
+                bs.logout()
+            except Exception:  # noqa: BLE001  旧连接可能已死，重登即可
+                pass
+            _BS_LOGGED_IN = False
+    ensure_bs_login()
 
 
 def bs_logout() -> None:

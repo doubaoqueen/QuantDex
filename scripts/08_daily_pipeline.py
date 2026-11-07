@@ -14,6 +14,7 @@ import sys
 
 import _bootstrap  # noqa: F401
 
+from config import STORE_DIR
 from src.live.pipeline import run_pipeline
 
 
@@ -34,6 +35,15 @@ def _str_arg(name: str, default: str | None = None):
 
 
 def main() -> None:
+    # D-059：手动入口也要拿同一把 .pipeline.lock——08 与定时 19:00 的 10_daily_run
+    # 并发写同一账本 sqlite 时，两边都会读到"pending 为空"而各下一批单
+    # （防重索引是第二道防线，锁是第一道）。
+    from src.live.proclock import try_lock
+    lf = try_lock(STORE_DIR / "sim" / ".pipeline.lock")
+    if lf is None:
+        print(">> [lock] 另一个流水线实例正在运行，本次退出（D-059）")
+        sys.exit(3)
+
     run_pipeline(
         top_n=_arg("--top-n", 50),
         rebalance=_arg("--rebalance", 20),

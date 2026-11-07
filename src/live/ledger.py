@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS daily_ops (
     created_at TEXT NOT NULL,
     PRIMARY KEY (date, account, action)
 );
+-- D-059：防重复下单的数据库级最后防线（D-053 同类事故在下单侧的对称风险）。
+-- 同一 (signal_date, symbol, side) 只允许一条 pending——两个进程同时读到
+-- "pending 为空"再各写一批同款订单时，第二个进程的写入在此被数据库拒绝，
+-- 而不是靠应用层的 check-then-act。成交/拒单后解除占用，不影响后续正常下单。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_trade_pending
+    ON trade_log(signal_date, symbol, side) WHERE status = 'pending';
 """
 
 _TRADE_COLS = ["signal_date", "fill_date", "symbol", "side", "qty", "price",
@@ -173,10 +179,14 @@ class Ledger:
 
     # -------------------------------------------------- 待成交订单（T+1 两段式）
     def add_pending(self, orders: pd.DataFrame) -> int:
-        """写入待成交订单（status='pending'），返回写入条数。
+        """写入待成交订单（status='pending'），返回实际写入条数。
 
         订单字段：signal_date / fill_date(预期成交日) / symbol / side / qty /
         price(参考价,信号日收盘) / amount / fee / stamp_duty / status / note
+
+        D-059：INSERT OR IGNORE + (signal_date, symbol, side) pending 部分唯一
+        索引兜底——并发入口同时读到"pending 为空"再各写一批时，重复订单被
+        数据库拒绝而不是静默双份（D-053 同类指纹：持仓 2 倍、现金减半）。
         """
         if orders is None or len(orders) == 0:
             return 0
@@ -189,11 +199,16 @@ class Ledger:
                       for v in r) for r in t.itertuples(index=False)]
         conn = self.connect()
         with conn:
+            before = conn.total_changes
             conn.executemany(
-                "INSERT INTO trade_log(signal_date,fill_date,symbol,side,qty,price,"
-                "amount,fee,stamp_duty,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO trade_log(signal_date,fill_date,symbol,side,qty,"
+                "price,amount,fee,stamp_duty,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 rows)
-        return len(rows)
+            inserted = conn.total_changes - before
+        if inserted < len(rows):
+            print(f"[ledger] {len(rows) - inserted} 笔订单被防重索引忽略"
+                  f"（同 signal_date+symbol+side 的 pending 已存在，D-059）")
+        return inserted
 
     def pending_orders(self) -> pd.DataFrame:
         """返回全部待成交订单。"""

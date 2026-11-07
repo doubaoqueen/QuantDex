@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
 """
 数据标准化：代码格式转换、列名映射、类型清洗。
 全系统内部统一使用 6 位纯代码（如 600519 / 510300 / 000300）。
 """
+import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------- 代码转换
@@ -121,13 +121,21 @@ _NUM_COLS = ["open", "high", "low", "close", "volume", "amount",
 
 
 def standardize_ak_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """标准化 akshare 东财日线（个股/ETF/指数通用）。"""
+    """标准化 akshare 东财日线（个股/ETF/指数通用）。
+
+    单位换算（D-059）：东财日/周/月线的"成交量"单位是**手**，×100 统一为
+    **股**（与仓库约定、snapshot.py 快照路径、README 一致；amount 各源均为元）。
+    指数现行走 baostock（fetch_kline 强制 source=bs），若将来接入东财指数
+    需单独核对成交量单位。
+    """
     out = df.rename(columns=AK_DAILY_MAP).copy()
     out["symbol"] = normalize_code(symbol)
     out["date"] = pd.to_datetime(out["date"])
     for c in _NUM_COLS:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
+    if "volume" in out.columns:
+        out["volume"] = out["volume"] * 100.0
     for c in DAILY_STD_COLS:
         if c not in out.columns:
             out[c] = pd.NA
@@ -136,18 +144,62 @@ def standardize_ak_daily(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return out
 
 
+def em_volume_in_lots(df: pd.DataFrame) -> pd.Series:
+    """行级检测：akshare/em 行的 volume 是否仍是"手"（未 ×100，D-059 修复用）。
+
+    判据：隐含 VWAP = amount/volume 若高于当日 high 的 3 倍，volume 必然是
+    "手"口径——正常 VWAP 必落在 [low, high] 内，3 倍以上只可能是 100 倍单位差。
+    该检测是幂等的：已修复的行（VWAP 回到 high 之下）不再满足条件，
+    修复脚本重跑不会二次放大。
+    """
+    v = pd.to_numeric(df.get("volume"), errors="coerce")
+    a = pd.to_numeric(df.get("amount"), errors="coerce")
+    h = pd.to_numeric(df.get("high"), errors="coerce")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        implied = a / v
+    return (v > 0) & (a > 0) & (h > 0) & (implied > 3 * h)
+
+
 def standardize_ak_min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """标准化 akshare 东财分钟线。"""
+    """标准化 akshare 东财分钟线（成交量单位为手，×100 统一为股，D-059）。"""
     out = df.rename(columns=AK_MIN_MAP).copy()
     out["symbol"] = normalize_code(symbol)
     out["datetime"] = pd.to_datetime(out["datetime"])
     for c in _NUM_COLS:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
+    if "volume" in out.columns:
+        out["volume"] = out["volume"] * 100.0
     for c in MIN_STD_COLS:
         if c not in out.columns:
             out[c] = pd.NA
     out["source"] = "akshare/em"
+    out = out[MIN_STD_COLS].sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
+    return out
+
+
+def standardize_bs_min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """标准化 baostock 分钟线（5/15/30/60 分钟，不复权口径，D-060）。
+
+    baostock 分钟线只有 date/time/code/OHLC/volume/amount 字段：
+    turnover/pct_chg/change/amplitude 置 NA；volume 单位为股（与日线一致，
+    入库前经 amount/volume 对价验证）；datetime 由 time 列（YYYYMMDDHHMMSSsss）解析。
+
+    存储选不复权（adjust=none）：分钟级不做复权锚点，从根上避开日线 qfq 的
+    增量锚点断裂问题（D-041a）；跨除权日的研究可用复权因子后处理。
+    """
+    out = df.rename(columns={"date": "date", "time": "time", "code": "symbol",
+                             "open": "open", "high": "high", "low": "low",
+                             "close": "close", "volume": "volume",
+                             "amount": "amount"}).copy()
+    out["symbol"] = normalize_code(symbol)
+    out["datetime"] = pd.to_datetime(out["time"], format="%Y%m%d%H%M%S%f")
+    for c in ["open", "high", "low", "close", "volume", "amount"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    for c in MIN_STD_COLS:
+        if c not in out.columns:
+            out[c] = pd.NA
+    out["source"] = "baostock/min"
     out = out[MIN_STD_COLS].sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
     return out
 
