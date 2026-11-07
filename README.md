@@ -194,7 +194,8 @@ python scripts/demo_analysis.py 600519
 
 财务表已标准化：统一携带 `symbol`（6 位）与 `bs_code`（sh./sz. 前缀），披露日统一为 `pub_date`、报告期统一为 `report_date`。做基本面因子时必须按 `pub_date`（当时已披露）对齐，而非 `report_date`，否则引入前视偏差。
 
-**金额单位注意**：北向资金为 **亿元**；两融汇总为 **万元**（数据源原始口径）。
+**金额单位注意**（D-062 实测纠正）：北向 net_buy/买卖额为 **亿元**，但同表
+cum_net_buy 为 **万亿元**、holdings_mv 为 **元**；两融各列实为 **元**（旧注释"万元"差 1e4 倍）。
 
 
 
@@ -394,7 +395,7 @@ python scripts/04_factor_research.py 000300 300
 
 * baostock 0.9.4 无 CPI/PPI/GDP/PMI 接口：CPI 由 akshare 提供；PPI/GDP/PMI 可按需接其他源。
 
-* 分钟线由数据源返回最近约 1–2 个月，非全历史；实时快照默认不落盘（`save=True` 可存）。
+* 分钟线两条路（D-060）：东财 `fetch_minute` 只有滚动约 1–2 个月；**baostock `fetch_minute_bs` 提供 5/15/30/60 分钟线自 2011 年至今全历史**（存不复权口径，避开 qfq 锚点问题），已入每日调度（02b/10_daily_run 尾部增量，`29_fetch_minute.py` 可全史回填）。1 分钟线无免费全历史源。实时快照默认不落盘（`save=True` 可存）。
 
 * 北向资金 2024 年后披露口径调整，接口保留历史数据。
 
