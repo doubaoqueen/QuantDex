@@ -242,7 +242,7 @@ data/store/sim/backups/
 # 行情本地读缓存（派生数据，可重建：scripts/18_rebuild_daily_cache.py）
 # D-035：数据整体出 git（架构/代码/文档入库，数据本地保留+backups/ 打包备份）
 # 克隆后按 README §四 三步重建：00(PIT) -> 01(池) -> 02b/04(行情)
-data/
+/data/  # 根目录锚定：D-035 数据出 git；裸 data/ 会误伤 src/data/ 新文件（2026-11-07）
 
 # Obsidian 知识库（个人笔记，不推送）
 quantdex_vault/

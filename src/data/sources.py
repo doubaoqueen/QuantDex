@@ -20,6 +20,12 @@ def ensure_bs_login():
     global _BS_LOGGED_IN
     with _bs_lock:
         if not _BS_LOGGED_IN:
+            # D-062：socket 全局超时 60s——baostock 服务端偶发"收单不响应"
+            # （TCP 半开），无超时会永远阻塞在 recv（进程 0% CPU 挂死，
+            # 2026-11-07 下午实测）。超时把挂死变成异常，交给上层重试+重连。
+            import socket
+            if socket.getdefaulttimeout() is None:
+                socket.setdefaulttimeout(60)
             lg = bs.login()
             if lg.error_code != "0":
                 raise RuntimeError(f"baostock 登录失败: {lg.error_code} {lg.error_msg}")
