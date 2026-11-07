@@ -11,6 +11,7 @@ import FactorPanel from './components/FactorPanel.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
 import RegimeCard from './components/RegimeCard.vue'
 import LimitWatch from './components/LimitWatch.vue'
+import StrategyOutlook from './components/StrategyOutlook.vue'
 import ReportViewer from './components/ReportViewer.vue'
 import OpsTable from './components/OpsTable.vue'
 import JobLog from './components/JobLog.vue'
@@ -265,6 +266,9 @@ function cumText(o) {
 
       <!-- 涨跌停观察（全池视角，D-063）：持仓徽章只在触板时可见，这里补市场视角 -->
       <LimitWatch />
+
+      <!-- 策略动向（影子调仓，D-072）：打开 20 日调仓之间的黑箱——只展示，不构成建议 -->
+      <StrategyOutlook :account="account" />
 
       <!-- 净值曲线 -->
       <NavChart :account="account" :label="accLabel" />

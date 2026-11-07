@@ -610,6 +610,79 @@ def candidates(acc):
     return out
 
 
+def strategy_outlook(acc):
+    """策略动向卡片（D-072，用户 2026-11-07 构想）：把 20 日调仓之间的黑箱打开。
+
+    展示三块——① 调仓节奏（已持有 X/20 交易日，D-057 语义）；② 行业迁移对比
+    （当前持仓 vs 影子 Top50 的申万一级分布——"策略此刻偏向什么经济体"）；
+    ③ 影子调仓（如果今天调仓的新 Top50 与当前持仓的重合度 + 新增/出局明细折叠）。
+
+    纪律边界：数据与流水线完全同分（candidates 的全池打分，含 ST 剔除），
+    只展示、不构成调仓建议、无任何操作入口——实际执行严格按 20 日纪律
+    （防御性/择时性提前调仓已被 D-022/026/033/061/069 五轮回测否定）。
+    """
+    out = candidates(acc)                      # 顺带把全池打分算好并缓存
+    hit = _CAND_CACHE.get(acc)
+    if not hit or len(hit) < 3:
+        return {"err": "策略动向暂不可用（候选池未就绪）"}
+    df_full = hit[2]
+    held, last_fill = set(), None
+    conn = _db(acc)
+    if conn is not None:
+        try:
+            pos = pd.read_sql_query(
+                "SELECT symbol FROM positions WHERE date=(SELECT MAX(date) FROM positions)", conn)
+            held = {str(s) for s in pos["symbol"]}
+            lf = pd.read_sql_query(
+                "SELECT MAX(fill_date) d FROM trade_log WHERE status='filled'", conn)
+            last_fill = str(lf["d"].iloc[0]) if len(lf) and lf["d"].iloc[0] else None
+        finally:
+            conn.close()
+
+    shadow = df_full.nlargest(50, "score")
+    shadow_syms = [str(s) for s in shadow.index]
+    keep = [s for s in shadow_syms if s in held]
+    new = [s for s in shadow_syms if s not in held]
+    exit_ = sorted(held - set(shadow_syms))
+    names, inds = _meta_maps()
+
+    def _row(sym):
+        r = df_full.loc[sym]
+        return {"symbol": sym, "name": names.get(sym, sym),
+                "industry": inds.get(sym, "-"),
+                "score": round(float(r["score"]), 4)}
+
+    # 行业分布（等权组合：只数占比）
+    from collections import Counter
+    dist_held = Counter(inds.get(s, "其他") for s in held)
+    dist_shadow = Counter(inds.get(s, "其他") for s in shadow_syms)
+
+    # 调仓节奏（D-057 语义：已持有交易日数 / 20；满 20 后在下一个全局排程日执行）
+    held_days = next_sched = None
+    try:
+        cal = pd.DatetimeIndex(sorted(pd.to_datetime(pd.read_parquet(
+            STORE_DIR / "meta" / "trade_calendar.parquet", columns=["date"])["date"]).unique()))
+        latest = cal[cal <= pd.Timestamp.now().normalize()].max()
+        if last_fill:
+            held_days = int(((cal > pd.Timestamp(last_fill)) & (cal <= latest)).sum())
+        sched = cal[::20]                       # 与 composite_topn 的 dates[::20] 同构
+        upcoming = sched[sched > latest]
+        next_sched = str(upcoming[0].date()) if len(upcoming) else None
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"date": (str(out.get("date")) if out.get("date") else None),
+            "pool": int(len(df_full)),
+            "held_days": held_days, "rebalance": 20, "next_sched": next_sched,
+            "last_fill": last_fill,
+            "overlap_pct": round(len(keep) / max(len(shadow_syms), 1), 3),
+            "counts": {"keep": len(keep), "new": len(new), "exit": len(exit_)},
+            "industry_held": dict(dist_held), "industry_shadow": dict(dist_shadow),
+            "rows_new": [_row(s) for s in new],
+            "rows_exit": [_row(s) for s in exit_],
+            "note": "影子调仓仅展示策略的当前打分结果，不构成调仓建议；实际执行严格按 20 日纪律"}
+
+
 def factor_view(acc):
     """因子面板：持仓标的 + 候选前 15 的因子原值 / 截面分位 / 综合分。
 
@@ -1424,6 +1497,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, fees(q.get("account", ["large"])[0]))
             if u.path == "/api/factors":
                 return self._send(200, factor_view(q.get("account", ["large"])[0]))
+            if u.path == "/api/strategy_outlook":
+                return self._send(200, strategy_outlook(q.get("account", ["large"])[0]))
             if u.path == "/api/candidates":
                 return self._send(200, candidates(q.get("account", ["large"])[0]))
             if u.path == "/api/school":
