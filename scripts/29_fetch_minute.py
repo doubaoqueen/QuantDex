@@ -26,15 +26,19 @@ worker 失败清单会暴露）。双向断点续传：重跑时已完成的秒�
 """
 import faulthandler
 import os
-import signal
 import subprocess
 import sys
 
 import _bootstrap  # noqa: F401
 
-# 卡死诊断（2026-11-09 夜间卡死 2h、原因未定位）：Ctrl+Break(SIGBREAK) 触发
-# 全线程堆栈转储到日志——下次卡死可直接定位阻塞行
-faulthandler.register(signal.SIGBREAK, file=sys.stderr)
+
+# 卡死诊断（2026-11-09 夜间卡死 2h、原因未定位）：看门狗线程每 30 分钟把全线程
+# 堆栈追加到文件——卡死时主线程阻塞也能转储（本机 Anaconda 构建的 faulthandler
+# 无 register/信号接口，只能用定时转储）。卡死即看 logs/minute_worker_*.stack。
+def _arm_stack_dump(tag: str) -> None:
+    fh = open(STORE_DIR / "logs" / f"minute_worker_{tag}_{os.getpid()}.stack", "w",
+              encoding="utf-8")
+    faulthandler.dump_traceback_later(1800, repeat=True, file=fh)
 
 from config import STORE_DIR
 from src.data import universe
@@ -69,6 +73,7 @@ def main() -> None:
         symbols = universe.pit_union_symbols("000300", store)
         mine = symbols[shard_idx::n_shards]
         print(f">> [worker {shard_idx + 1}/{n_shards}] 分到 {len(mine)} 只", flush=True)
+        _arm_stack_dump(f"w{shard_idx + 1}")
         sys.exit(1 if _run_shard(store, mine, start) else 0)
 
     # ---- 父进程：持 .minute.lock（只与每日调度的分钟增量互斥；不拿
@@ -89,6 +94,7 @@ def main() -> None:
     print(f">> 5 分钟线回填：{len(symbols)} 只，起始 {start}，{n_shards} 进程分片"
           f"（双向断点续传）", flush=True)
     if n_shards <= 1:
+        _arm_stack_dump("solo")
         sys.exit(1 if _run_shard(store, symbols, start) else 0)
 
     procs = [subprocess.Popen(
