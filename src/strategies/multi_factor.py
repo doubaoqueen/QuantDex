@@ -17,6 +17,9 @@ STRATEGY_FACTORS: dict[str, list[tuple[str, int]]] = {
     "corrected": [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
     "dividend": [("turnover_20", -1), ("vol_20", -1), ("dy_ttm", +1)],
     "topkdrop": [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+    # D-074 实验策略：去 rev_5 双因子（闸门+分解实验+A/B 三重指向其拖累；
+    # 尚无账户使用——WF 验证通过并由用户拍板后才会接入注册表）
+    "corrected_2f": [("turnover_20", -1), ("vol_20", -1)],
 }
 
 

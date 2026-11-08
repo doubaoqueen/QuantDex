@@ -26,6 +26,8 @@ from src.data import financials, universe
 from src.data.market import get_kline, load_price_matrix
 from src.data.storage import ParquetStore
 from src.strategies.multi_factor import (
+    STRATEGY_FACTORS,
+    composite_topn,
     snapshot_weights,
     topk_dropout_topn,
     turnover_lowvol_dividend_topn,
@@ -58,7 +60,10 @@ def _weights_for(panel: pd.DataFrame, combo, strategy: str) -> pd.DataFrame:
     key = (strategy, combo)
     if key not in _W_CACHE:
         top_n, reb = combo
-        if strategy == "dividend":
+        if strategy == "corrected_2f":
+            w = composite_topn(panel, STRATEGY_FACTORS["corrected_2f"],
+                               top_n=top_n, rebalance_days=reb)
+        elif strategy == "dividend":
             w = turnover_lowvol_dividend_topn(panel, top_n=top_n, rebalance_days=reb)
         elif strategy == "topkdrop":
             w = topk_dropout_topn(panel,
