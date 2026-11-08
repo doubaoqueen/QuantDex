@@ -24,11 +24,17 @@ worker 失败清单会暴露）。双向断点续传：重跑时已完成的秒�
     python scripts/29_fetch_minute.py 20110101     # 指定更早起始日（baostock 5 分钟线自 2011 起）
     python scripts/29_fetch_minute.py 20180101 5   # 只跑前 5 只（调试）
 """
+import faulthandler
 import os
+import signal
 import subprocess
 import sys
 
 import _bootstrap  # noqa: F401
+
+# 卡死诊断（2026-11-09 夜间卡死 2h、原因未定位）：Ctrl+Break(SIGBREAK) 触发
+# 全线程堆栈转储到日志——下次卡死可直接定位阻塞行
+faulthandler.register(signal.SIGBREAK, file=sys.stderr)
 
 from config import STORE_DIR
 from src.data import universe
@@ -79,7 +85,7 @@ def main() -> None:
     symbols = universe.pit_union_symbols("000300", store)
     if limit:
         symbols = symbols[:limit]
-    n_shards = int(os.environ.get("QUANTDEX_MINUTE_SHARDS", "3"))
+    n_shards = int(os.environ.get("QUANTDEX_MINUTE_SHARDS", "2"))  # D-071 拉黑教训：默认 2 并发
     print(f">> 5 分钟线回填：{len(symbols)} 只，起始 {start}，{n_shards} 进程分片"
           f"（双向断点续传）", flush=True)
     if n_shards <= 1:

@@ -274,6 +274,7 @@ def update_minute_batch(
                 if attempt >= 1:
                     from src.data.sources import force_relogin
                     force_relogin()
+                print(f"  [retry] {sym} 第 {attempt + 1} 次失败: {str(e)[:80]}", flush=True)
                 time.sleep((2, 5, 10)[min(attempt, 2)])
         consec_fail["n"] += 1
         if consec_fail["n"] % 10 == 0:
@@ -311,6 +312,8 @@ def update_minute_batch(
             if i % 50 == 0 or i == n:
                 nf = len(report["__failed__"])
                 print(f"  分钟线进度 {i}/{n}，失败 {nf}", flush=True)
+            # D-071 节流：符号间微休眠（拉黑教训——礼貌是免费数据源可用性的前提）
+            time.sleep(0.3)
     return report
 
 
