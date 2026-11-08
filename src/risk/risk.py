@@ -24,8 +24,11 @@ def cap_weights(weights: pd.Series, max_single: float = 0.10,
 
 def drawdown_multiplier(nav: pd.Series, max_dd: float = -0.15,
                         scale: float = 0.5) -> pd.Series:
-    """回撤断路器：当前回撤深于 max_dd（如 -15%，**必须传负数**）时，仓位乘 scale（如 0.5）。
+    """回撤断路器（**已按证据从实盘移除**，函数保留仅供研究复现）。
 
+    D-033/D-069 五轮回测：-10%~-40% 全部阈值收益 -12~-43pp 而 MDD 不改善——
+    此类低波/低换手均值回归组合的回撤恢复恰来自低位持仓，砍仓=卖在恢复前夜。
+    防御的正确位置在仓位层（D-009 风险预算），不在交易层。
     注意：dd = nav/cummax - 1 恒 ≤ 0，阈值必须为负数；传正数会导致任何一天都触发。
     """
     dd = nav / nav.cummax() - 1.0

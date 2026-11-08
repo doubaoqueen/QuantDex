@@ -593,11 +593,10 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                                         max_positions=max_positions)
         else:
             w_row = (W.loc[latest] if rebalance_day else W.iloc[-1]).astype(float)
-            nav_hist = None
-            if not snap_now.empty:
-                nav_hist = pd.Series(snap_now["total_nav"].values,
-                                     index=pd.to_datetime(snap_now["date"]))
-            w_series = apply_risk(w_row.to_frame().T, nav=nav_hist,
+            # D-069：回撤断路器已按证据移除（-15% 减半设计意图被五轮回测否定；
+            # R3-05 bug 使其实际从未触发——"意外 no-op"被证实恰是最优行为）。
+            # 保留 apply_risk 的单票上限功能（真风控），不再传入 nav。
+            w_series = apply_risk(w_row.to_frame().T, nav=None,
                                   max_single=max_single, max_total=1.0).iloc[0]
             target_w = {str(k): float(v) for k, v in w_series.items() if float(v) > 0}
             orders = _plan_orders(target_w, new_shares, prices_close, nav_now, cash)
