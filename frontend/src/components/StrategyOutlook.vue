@@ -27,7 +27,8 @@ const industries = computed(() => {
   return keys.map(k => ({ name: k, held: h[k] || 0, shadow: s[k] || 0, maxH }))
     .sort((a, b) => (b.held - a.held) || (b.shadow - a.shadow))
 })
-const showInd = computed(() => industries.value.slice(0, 9))
+const expanded = ref(false)
+const showInd = computed(() => (expanded.value ? industries.value : industries.value.slice(0, 9)))
 const restCount = computed(() => Math.max(0, industries.value.length - 9))
 const pace = computed(() => {
   const d = data.value
@@ -89,7 +90,14 @@ const showRows = (list) => (list || []).slice(0, 20)
               </div>
             </div>
           </div>
-          <div v-if="restCount > 0" class="text-[11px] text-slate-400">还有 {{ restCount }} 个行业…</div>
+          <button v-if="restCount > 0 && !expanded" @click="expanded = true"
+                  class="text-[11px] text-sky-600 hover:text-sky-700">
+            展开全部 {{ industries.length }} 个行业（还有 {{ restCount }} 个）▾
+          </button>
+          <button v-else-if="expanded && industries.length > 9" @click="expanded = false"
+                  class="text-[11px] text-slate-400 hover:text-slate-600">
+            收起 ▴
+          </button>
         </div>
       </div>
 
