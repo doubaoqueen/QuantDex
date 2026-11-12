@@ -9,7 +9,8 @@
 +23pp（20 日节奏下它是拖累）；但另一解法未测：**给新鲜高分开 5-10 日快车道**，
 让 5 日 alpha 在窗口内兑现。用户的构想恰好指向这个缺口。
 
-两个检验：
+两个检验（全向量化——本机 14600KF 在 pandas 原生逐行操作中偶发硬崩，
+11-08/11-09 三次实测，故全部用矩阵化运算消除逐事件 .loc）：
   E1 事件研究：池内标的**首次**进入全池综合分 Top-15（此前 ≥5 日在榜外）→
      后续 1/5/10/20 日超额 vs 当日池中位；分"持续进入"（≥3 日连留）与
      "一日闪现"对比——检验漂移信号的持续性与衰减。
@@ -19,6 +20,7 @@
 纪律：分年方向一致才可采纳（D-064/D-075 同款）；4-7 日噪声不定罪。
 用法：python scripts/43_fast_track_test.py
 """
+import faulthandler
 import sys
 
 import _bootstrap  # noqa: F401
@@ -38,6 +40,7 @@ from src.strategies.multi_factor import (
 )
 
 OUT_DIR = STORE_DIR / "research_results"
+SCORE_CACHE = OUT_DIR / "fast_track_score_cache.parquet"
 TOP_K = 15          # 候选前 15 = 高分区定义（与 live 同口径）
 MIN_OUT_DAYS = 5    # "新面孔"要求此前连续在榜外 ≥5 日
 FWD = (1, 5, 10, 20)
@@ -55,91 +58,87 @@ def build_score(panel: pd.DataFrame) -> pd.DataFrame:
     return score.sort_index()
 
 
-def fresh_entries(score: pd.DataFrame, top_k: int = TOP_K,
-                  min_out: int = MIN_OUT_DAYS) -> pd.DataFrame:
-    """新面孔事件：榜外 ≥min_out 日后首次进入 Top-K，附连续在榜天数 persist。"""
-    in_top = score.rank(ascending=False, axis=1) <= top_k
-    dates = score.index
-    events = []
-    for sym in in_top.columns:
-        seq = in_top[sym].to_numpy()
-        out_run = 0
-        for i, v in enumerate(seq):
-            if not v:
-                out_run += 1
-                continue
-            if out_run >= min_out:
-                n = 1
-                k = i + 1
-                while k < len(seq) and seq[k]:
-                    n += 1
-                    k += 1
-                events.append({"symbol": sym, "date": dates[i], "persist": n})
-            out_run = 0
-    return pd.DataFrame(events, columns=["symbol", "date", "persist"])
-
-
 def main() -> None:
-    faulthandler_ok = True
+    faulthandler.enable(file=sys.stderr)  # 段错误也打印堆栈（本机原生崩溃诊断）
     store = ParquetStore()
     pit = universe.load_pit_constituents("000300", store)
     symbols = universe.pit_union_symbols("000300", store)
-    print(f">> 构建面板（{len(symbols)} 只，exclude_st=True）...", flush=True)
-    panel = build_factor_panel(store, symbols, start="20180101",
-                               pit_constituents=pit, exclude_st=True)
-    panel_dates = pd.DatetimeIndex(sorted(pd.to_datetime(panel["date"]).unique()))
+
+    if SCORE_CACHE.exists():
+        panel = pd.read_parquet(SCORE_CACHE)
+        panel["date"] = pd.DatetimeIndex(panel["date"])
+        panel["symbol"] = panel["symbol"].astype(str)
+        print(f">> 面板缓存命中：{len(panel)} 行", flush=True)
+    else:
+        print(f">> 构建面板（{len(symbols)} 只，exclude_st=True）...", flush=True)
+        panel = build_factor_panel(store, symbols, start="20180101",
+                                   pit_constituents=pit, exclude_st=True)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        panel.to_parquet(SCORE_CACHE)
+        print(">> 面板已缓存", flush=True)
+    panel["date"] = pd.DatetimeIndex(panel["date"]).astype("datetime64[ns]")
+    panel["symbol"] = panel["symbol"].astype(str)
+    score = build_score(panel)
+    panel_dates = pd.DatetimeIndex(sorted(score.index))
     prices, opens = load_price_matrix(symbols, start="20180101", store=store)
     prices = prices.reindex(panel_dates)
     opens = opens.reindex(panel_dates)
     b = get_kline("000300", adjust="none", store=store).set_index("date")["close"]
     bench_ret = b.pct_change()
-    px = prices.ffill()
-    pool_med = px.median(axis=1)
+    px = prices.ffill().reindex(columns=score.columns)  # 对齐到面板列（D-079 修复列数不匹配）
+    pool_ret_med = {n: (px.shift(-n) / px - 1.0).median(axis=1) for n in FWD}
 
-    score = build_score(panel)
-
-    # ---- E1 事件研究 ----
+    # ---- E1 事件研究（全向量化）----
     print(f">> E1 事件研究：Top{TOP_K} 新面孔（榜外 ≥{MIN_OUT_DAYS} 日后首次进入）",
           flush=True)
-    ev = fresh_entries(score, TOP_K, MIN_OUT_DAYS)
-    ev["date"] = pd.to_datetime(ev["date"])
-    ev["year"] = ev["date"].dt.year
-    rows = []
-    for r in ev.itertuples(index=False):
-        t = pd.Timestamp(r.date)
-        if t not in px.index:
-            continue
-        row = {"date": t, "year": t.year, "symbol": r.symbol,
-               "persist": int(r.persist)}
-        for n in FWD:
-            if r.symbol not in px.columns:
-                continue
-            f = px.shift(-n).loc[t, r.symbol] / px.loc[t, r.symbol] - 1.0
-            m = pool_med.loc[t]
-            if pd.notna(f) and pd.notna(m):
-                row[f"fwd{n}"] = float(f - m)
-        rows.append(row)
-    evdf = pd.DataFrame(rows)
+    in_top = score.rank(ascending=False, axis=1) <= TOP_K
+    out5 = (~in_top).rolling(MIN_OUT_DAYS, min_periods=MIN_OUT_DAYS).sum().shift(1)
+    fresh = in_top & (out5 == MIN_OUT_DAYS)
+    # 前向连续在榜天数（反向累计，向量化）
+    arr = in_top.to_numpy()
+    streak = np.zeros_like(arr, dtype=np.int64)
+    for i in range(len(arr) - 2, -1, -1):
+        streak[i] = np.where(arr[i], streak[i + 1] + 1, 0)
+    streak_df = pd.DataFrame(streak, index=in_top.index, columns=in_top.columns)
+
+    parts = []
+    for n in FWD:
+        marr = fresh.to_numpy()
+        fut = px.shift(-n).to_numpy()
+        cur = px.to_numpy()
+        stk = streak_df.to_numpy()
+        dts = px.index.to_numpy()
+        syms = px.columns.to_numpy()
+        med_arr = pool_ret_med[n].reindex(px.index).to_numpy(float)
+        recs = []
+        for i in range(len(dts)):
+            for j in range(len(syms)):
+                if marr[i, j] and np.isfinite(fut[i, j]) and np.isfinite(cur[i, j])                         and cur[i, j] > 0:
+                    f = fut[i, j] / cur[i, j] - 1.0
+                    recs.append((dts[i], syms[j], f, f - med_arr[i], int(stk[i, j])))
+        part = pd.DataFrame(recs, columns=["date", "symbol", "fwd", "exc", "persist"])
+        part["horizon"] = n
+        parts.append(part)
+        print(f"   窗口 {n} 日：{len(part)} 条", flush=True)
+    evdf = pd.concat(parts, ignore_index=True)
+    evdf["year"] = evdf["date"].dt.year
     evdf["persistent"] = evdf["persist"] >= 3
-    print(f"   新面孔事件 {len(evdf)} 起（持续 ≥3 日 {int(evdf['persistent'].sum())}）",
-          flush=True)
+    print(f"   新面孔事件（事件×窗口）{len(evdf)} 条", flush=True)
 
     print("\n== E1 新面孔进入 Top15 后超额（vs 当日池中位）==")
     for n in FWD:
-        sub = evdf.dropna(subset=[f"fwd{n}"])
-        if sub.empty:
-            continue
-        by_day = sub.groupby("date")[f"fwd{n}"].mean().dropna()
+        sub = evdf[evdf["horizon"] == n]
+        by_day = sub.groupby("date")["exc"].mean().dropna()
         nw = _newey_west_tstat(by_day, 19) if len(by_day) > 30 else np.nan
         pers = sub[sub["persistent"]]
         flash = sub[~sub["persistent"]]
-        print(f"  fwd{n:<3} 全体 均值 {sub[f'fwd{n}'].mean():+.3%} 中位 "
-              f"{sub[f'fwd{n}'].median():+.3%} | 跑赢池比例 "
-              f"{(sub[f'fwd{n}'] > 0).mean():.0%} | NW-t {nw:+.2f}")
-        print(f"        持续进入(n={len(pers)}) {pers[f'fwd{n}'].mean():+.3%} | "
-              f"一日闪现(n={len(flash)}) {flash[f'fwd{n}'].mean():+.3%}")
-    y5m = evdf.dropna(subset=["fwd5"]).groupby("year")["fwd5"].median()
-    print("  分年 fwd5 中位：" + " | ".join(f"{y}: {v:+.2%}" for y, v in y5m.items()))
+        print(f"  fwd{n:<3} 全体 均值 {sub['exc'].mean():+.3%} 中位 "
+              f"{sub['exc'].median():+.3%} | 跑赢池比例 "
+              f"{(sub['exc'] > 0).mean():.0%} | NW-t {nw:+.2f}")
+        print(f"        持续进入(n={len(pers)}) {pers['exc'].mean():+.3%} | "
+              f"一日闪现(n={len(flash)}) {flash['exc'].mean():+.3%}")
+    y5m = evdf[evdf["horizon"] == 5].groupby("year")["exc"].median()
+    print("  分年 fwd5 超额中位：" + " | ".join(f"{y}: {v:+.2%}" for y, v in y5m.items()))
 
     # ---- E2 策略 A/B ----
     print("\n>> E2 策略回测（快车道 vs 基线）...", flush=True)
@@ -165,7 +164,7 @@ def main() -> None:
             stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
             init_capital=1_000_000.0, benchmark_returns=bench_ret,
             open_prices=opens)
-        nav, ret = res["nav"], res["daily_ret"]
+        nav = res["nav"]
         ann = nav.iloc[-1] ** (250 / max(len(nav), 1)) - 1
         mdd = float((nav / nav.cummax() - 1).min())
         row = {"arm": tag, "total": float(nav.iloc[-1] - 1), "ann": float(ann),
