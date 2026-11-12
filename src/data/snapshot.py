@@ -74,12 +74,38 @@ def snapshot_date(store: ParquetStore | None = None,
     return None if intraday else closed
 
 
-def fetch_spot() -> pd.DataFrame:
+# 快照重试参数：间隔 45s（服务端限流/抖动的恢复窗口），不用 retry_call 的 1.5/3s
+# 短退避——东财断连后立即重试大概率还是断（2026-11-13）。
+_SPOT_RETRY_ATTEMPTS = 3
+_SPOT_RETRY_DELAY_S = 45.0
+
+
+def fetch_spot(max_attempts: int | None = None,
+               delay_s: float | None = None) -> pd.DataFrame:
+    """东财全市场快照（单次 HTTP），带**长间隔**重试。
+
+    教训：这里曾是无保护裸调——一次 RemoteDisconnected 就让自动链转 baostock
+    全量兜底（949 只逐只 + 分钟线，10~20 分钟）。实测东财通常可用，失败多为
+    瞬时断连；长间隔重试 2 次即可挡住绝大多数抖动（market.py 同接口本就有
+    retry_call 保护，唯独快照漏了）。重试仍失败才抛给调用方的兜底路径。
+    """
+    attempts = max_attempts or _SPOT_RETRY_ATTEMPTS
+    delay = _SPOT_RETRY_DELAY_S if delay_s is None else delay_s
     from src.data.sources import ak
-    df = ak.stock_zh_a_spot_em()
-    if df is None or len(df) == 0:
-        raise RuntimeError("快照为空（东财接口无数据）")
-    return df
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            df = ak.stock_zh_a_spot_em()
+            if df is None or len(df) == 0:
+                raise RuntimeError("快照为空（东财接口无数据）")
+            return df
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            if attempt < attempts:
+                print(f"[spot] 东财快照第 {attempt}/{attempts} 次失败（{str(e)[:80]}），"
+                      f"{delay:.0f}s 后重试", flush=True)
+                time.sleep(delay)
+    raise RuntimeError(f"东财快照重试 {attempts} 次仍失败") from last_exc
 
 
 def _check_session_payload(d: pd.DataFrame) -> None:

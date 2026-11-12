@@ -286,6 +286,7 @@ def update_minute_batch(
     with store.batch_write():
         for i, sym in enumerate(symbols, 1):
             code = normalize_code(sym)
+            fetched = False              # 本只是否真正发起了 baostock 请求
             try:
                 name = f"{code}__{freq}__none"
                 first, last = _local_span(name)
@@ -294,10 +295,12 @@ def update_minute_batch(
                         report[code] = "no-local"
                     else:
                         df = _fetch_retry(code, start_full)
+                        fetched = True
                         report[code] = len(df)
                 else:
                     if last_closed is None or last < last_closed:
                         df = _fetch_retry(code, last.strftime("%Y-%m-%d"))
+                        fetched = True
                         report[code] = len(df)
                     else:
                         report[code] = "uptodate"
@@ -305,6 +308,7 @@ def update_minute_batch(
                         # 向前补早段：此前从更晚的起始日回填过，现在扩早史（upsert 自动合并）
                         df = _fetch_retry(code, start_full,
                                           end=(first - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+                        fetched = True
                         if isinstance(report.get(code), int):
                             report[code] += len(df)
             except Exception as e:  # noqa: BLE001  单只失败不拖垮批次
@@ -312,8 +316,11 @@ def update_minute_batch(
             if i % 50 == 0 or i == n:
                 nf = len(report["__failed__"])
                 print(f"  分钟线进度 {i}/{n}，失败 {nf}", flush=True)
-            # D-071 节流：符号间微休眠（拉黑教训——礼貌是免费数据源可用性的前提）
-            time.sleep(0.3)
+            # D-071 节流：符号间微休眠（拉黑教训——礼貌是免费数据源可用性的前提）。
+            # 仅在实际发起了请求后休眠：uptodate/no-local 只读本地、无请求可礼貌，
+            # 无条件 0.3s×949 曾让每次常规运行白睡 ~4.75 分钟（2026-11-13 修）。
+            if fetched:
+                time.sleep(0.3)
     return report
 
 
