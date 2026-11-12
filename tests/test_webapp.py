@@ -88,9 +88,84 @@ def test_limit_watch_structure():
     assert out["date"] is not None or out.get("note")
     for item in out["up"] + out["down"]:
         assert set(item) == {"symbol", "name", "industry", "pct"}
-    # 涨停必为正收益、跌停必为负，且与判定阈值同源（board_limit 容差 1e-3）
+    # 涨停必为正收益、跌停必为负，且与判定阈值同源（board_limit 容差 1e-3）；
+    # 必须传名称——ST 股 ±5%，2026-11-12 ST棕榈 +7.44% 涨停暴露了漏传导致的假失败
     from config import board_limit
     for x in out["up"]:
-        assert x["pct"] >= board_limit(x["symbol"]) - 1e-3 > 0
+        assert x["pct"] >= board_limit(x["symbol"], x["name"]) - 1e-3 > 0
     for x in out["down"]:
-        assert x["pct"] <= -(board_limit(x["symbol"]) - 1e-3) < 0
+        assert x["pct"] <= -(board_limit(x["symbol"], x["name"]) - 1e-3) < 0
+
+
+def _run_spot_work(spots, holes, d0, auto=False, reports=("large",)):
+    """跑一遍 _spot_work（全部外部动作打桩），返回 (started_jobs, notes, state_updates)。"""
+    import pandas as pd
+
+    import src.data.snapshot as snap
+    started, notes, states = [], [], []
+    orig = (snap.missing_trade_days, snap.snapshot_date, snap.update_indexes,
+            webapp.update_spot_snapshot, webapp.start_job, webapp._note,
+            webapp._report_missing, webapp._set_state)
+    try:
+        snap.missing_trade_days = lambda *a, **k: list(holes)
+        snap.snapshot_date = lambda *a, **k: (pd.Timestamp(d0) if d0 else None)
+        snap.update_indexes = lambda *a, **k: {}
+        webapp.update_spot_snapshot = lambda *a, **k: dict(spots)
+        webapp.start_job = lambda name: (started.append(name), {"ok": True})[1]
+        webapp._note = lambda msg: notes.append(msg)
+        webapp._report_missing = lambda day: list(reports)
+        webapp._set_state = lambda **kw: states.append(dict(kw))
+        webapp._job["busy"] = "spot"
+        webapp._spot_work(auto=auto)
+    finally:
+        (snap.missing_trade_days, snap.snapshot_date, snap.update_indexes,
+         webapp.update_spot_snapshot, webapp.start_job, webapp._note,
+         webapp._report_missing, webapp._set_state) = orig
+    return started, notes, states
+
+
+def test_spot_work_starts_gap_repair_when_day_missing():
+    """D-080：快照只能写最近一个收盘日，漏跑的那天必须靠区间重抓补（手动=02b）。"""
+    started, notes, _ = _run_spot_work({"ok": True, "date": "2026-11-10"},
+                                       ["2026-11-09"], "2026-11-10")
+    assert started == ["update"], started           # 手动模式只补行情、不发信
+    assert any("[gap]" in n and "2026-11-09" in n for n in notes), notes
+    assert any("跑流水线" in n for n in notes), notes   # 手动补完还要提示去补日报
+
+
+def test_spot_work_auto_chain_runs_daily_on_gap():
+    started, notes, _ = _run_spot_work({"ok": True, "date": "2026-11-10"},
+                                       ["2026-11-09"], "2026-11-10", auto=True)
+    assert started == ["daily"], started            # 自动链补数据+流水线+日报
+    assert any("[gap]" in n for n in notes), notes
+
+
+def test_spot_work_skips_intraday_without_holes():
+    """盘中不落库，也不该启动任何后台任务（避免把盘中价写成收盘价）。"""
+    started, notes, _ = _run_spot_work({"ok": False, "kind": "intraday"}, [], None)
+    assert started == [], started
+    assert any("盘中" in n for n in notes), notes
+
+
+def test_spot_work_reports_when_spot_filled_the_missed_day():
+    """凌晨补跑的正确结局：快照把 11-09 补上后不再整批重抓，只跑流水线发日报。"""
+    started, notes, _ = _run_spot_work({"ok": True, "date": "2026-11-09"}, [],
+                                       "2026-11-09", auto=True)
+    assert started == ["report"], started
+    assert not any("[gap]" in n for n in notes), notes
+
+
+def test_spot_work_manual_noop_when_already_current():
+    started, _, _ = _run_spot_work({"ok": True, "date": "2026-11-09"}, [],
+                                   "2026-11-09", auto=False)
+    assert started == [], started
+
+
+def test_spot_work_releases_cooldown_when_nothing_done():
+    """D-081：自动链空跑（盘中）不能占掉 60 分钟节流窗口——否则下一次打开被挡住，
+    用户只能手动点，邮件也就不会自己发（2026-11-10 02:03 的真实经过）。"""
+    started, _, states = _run_spot_work({"ok": False, "kind": "intraday"}, [], None,
+                                        auto=True)
+    assert started == [], started
+    assert any(s.get("last_auto_update") == 0 for s in states), states
+

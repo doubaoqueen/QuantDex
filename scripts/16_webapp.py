@@ -1274,10 +1274,31 @@ def job_status():
     return {"running": running, "name": busy or _job["name"], "log": tail}
 
 
+def _missing_days(ttl: int = 60) -> list:
+    """本地日线"整天缺失"的交易日（D-080）。/api/freshness 每 15 秒被轮询一次，
+    所以带 60 秒 TTL——够快，也不会把 2878 个分区的目录扫成瓶颈。"""
+    now = time.time()
+    hit = _cache.get("holes")
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    from src.data.snapshot import missing_trade_days
+    holes = missing_trade_days(_store)
+    _cache["holes"] = (now, holes)
+    return holes
+
+
 def freshness_info():
     try:
         f = data_freshness(_store)
         f["missing_reports"] = _report_missing(f.get("last_closed"))
+        try:
+            f["missing_days"] = _missing_days()
+            if f["missing_days"]:
+                # 中间整天缺失 = 没更新到最新（最新日期看着对，洞在序列中间）
+                f["stale"] = True
+        except Exception as e:  # noqa: BLE001
+            f["missing_days"] = []
+            f["gap_error"] = str(e)
         ts = _state().get("last_auto_update")
         f["last_auto"] = time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else None
         return f
@@ -1300,6 +1321,43 @@ def ops(acc, limit=14):
         conn.close()
 
 
+def _holes_now() -> list:
+    """当前"整天缺失"的交易日（重新检测，不吃 60 秒缓存）。检测失败返回空：
+    检测本身出问题不应该挡住行情更新。"""
+    try:
+        return _missing_days(ttl=0)
+    except Exception as e:  # noqa: BLE001
+        _note(f"[gap] 缺失交易日检查失败（不影响快照）：{e}")
+        return []
+
+
+def _gap_repair(auto: bool, holes: list) -> bool:
+    """漏跑交易日 → 启动"区间重抓"（快照只能写最近一个收盘日，补不了历史）。
+
+    自动链跑完整每日流程（重抓 + 四账户流水线 + 合并日报），手动点「更新行情」
+    只补行情不发信（与两个按钮原本的语义一致）。返回任务是否真的启动了。
+    """
+    span = holes[0] if len(holes) == 1 else f"{holes[0]} … {holes[-1]}"
+    act = ("完整每日流程（区间重抓 + 流水线 + 日报邮件）" if auto
+           else "区间重抓（02b，只补行情不发信）")
+    _note(f"[gap] 本地日线整天缺失 {len(holes)} 个交易日（{span}）→ 启动{act}")
+    jr = start_job("daily" if auto else "update")
+    if not jr.get("ok"):
+        _note(f"[gap] 补齐任务未启动：{jr.get('msg')}")
+        return False
+    return True
+
+
+def _note_pending_reports(day: str | None) -> None:
+    """行情已到位但当日日报/邮件还没生成 → 明确告诉用户点哪里（D-045：手动更新不发信）。"""
+    if not day:
+        return
+    miss = _report_missing(day)
+    if miss:
+        _note(f"[spot] 行情已到 {day}，但 {day} 的日报/邮件还没生成（{'/'.join(miss)}）"
+              f"→ 点「跑流水线」即可补（下次打开控制台也会自动补）")
+
+
 def _spot_work(auto=False):
     """先更新指数（基准），再快照股票；失败则回退 baostock 补齐。
 
@@ -1307,9 +1365,29 @@ def _spot_work(auto=False):
       - 快照成功 → 当日日报缺失则只跑流水线+发信（report）
       - 快照失败 → 跑完整每日流程（更新行情+流水线+发信，daily）
     手动点「更新行情」auto=False：只更新行情，不发信（保持原行为）。
+
+    D-080：① 落库日期交给 snapshot_date（开盘前=上一个交易日，凌晨补跑才拉得到昨天）；
+           ② 日期为 None（盘中）时不写任何文件——旧实现先 update_indexes 再判日期，
+              会把指数推到个股前面，留下"指数有一天、个股没有"的假象；
+           ③ 快照写完后若本地**仍有**整天缺失的交易日（快照刚补上的那天不算），
+              只能靠区间重抓补——纯增量永远看不到中间的洞。
+    D-081：自动链**没干成任何事**时不占用 60 分钟节流窗口（此前一次失败的空跑会把
+           下一次打开也挡住，用户 2026-11-10 02:03 就卡在这里，邮件因此没发出）；
+           手动更新完成后若当日日报仍缺，日志明确提示"点跑流水线"。
     """
-    from src.data.snapshot import update_indexes
+    from src.data.snapshot import snapshot_date, update_indexes
+    did = False                       # 这次自动链是否真的推进了（决定要不要占节流窗口）
     try:
+        d0 = snapshot_date(_store)
+        if d0 is None:
+            # 交易日 09:15~15:00：快照是盘中价，落库会污染收盘价
+            holes = _holes_now()
+            if holes:
+                _note(f"[gap] 本地日线整天缺失 {len(holes)} 个交易日（{holes[0]} 起），"
+                      f"当前盘中不落库 → 收盘后再打开会自动补齐")
+            else:
+                _note("[spot] 交易日盘中（09:15~15:00）不落库；收盘后再打开会自动更新")
+            return
         try:
             update_indexes(_store)
         except Exception as e:  # noqa: BLE001
@@ -1319,15 +1397,24 @@ def _spot_work(auto=False):
             r = update_spot_snapshot(_store)
             if r.get("ok"):
                 fed = r.get("date")
-            elif "盘中" in str(r.get("reason", "")):
+            elif r.get("kind") == "intraday":
                 _note("[spot] 盘中，收盘前不落库；收盘后再打开会自动更新")
                 return
         except Exception as e:  # noqa: BLE001
             _note(f"[spot] 东财快照源不可用（{e}），自动改用 baostock 逐只补齐")
+        # 快照会补上"最近那一个"收盘日，所以必须在写完之后再检测一次
+        holes = _holes_now()
+        if holes:
+            did = _gap_repair(auto, holes)
+            if not auto:
+                _note("[spot] 补齐只更新行情、不发信；完成后要日报/邮件请点「跑流水线」")
+            return
         if not auto:
             if fed:
+                _note_pending_reports(fed)
                 return
             jr = start_job("update")
+            did = bool(jr.get("ok"))
             if not jr.get("ok"):
                 _note(f"[spot] 快照未取到数据，且补齐任务未启动：{jr.get('msg')}")
             return
@@ -1338,14 +1425,18 @@ def _spot_work(auto=False):
                 _note(f"[auto] 行情已更新到 {fed}，但日报缺失（{'/'.join(miss)}）"
                       f"→ 跑流水线并合并发信")
                 _set_state(last_report_update=time.time())
-                start_job("report")
+                did = bool(start_job("report").get("ok"))
             else:
                 _note("[auto] 行情已更新且当日日报齐全，无需再跑流水线")
         else:
             _note("[auto] 快照不可用 → 跑完整每日流程（更新行情 + 四账户流水线 + 合并日报邮件）")
-            start_job("daily")
+            did = bool(start_job("daily").get("ok"))
     finally:
         _job["busy"] = None
+        if auto and not did:
+            # 什么也没推进（盘中/源不可用且无洞/已是最新）→ 归还节流窗口：
+            # 否则这次"空跑"会把下一次打开也按 60 分钟挡住，用户只能手动点。
+            _set_state(last_auto_update=0)
 
 
 def start_spot_update(auto=False):
@@ -1365,16 +1456,19 @@ def auto_update_on_start():
         day = f.get("last_closed")
         stale = bool(f.get("stale"))
         miss = f.get("missing_reports") or []
+        holes = f.get("missing_days") or []
         _log_start(event="startup", stale=stale, up_to_date=f.get("up_to_date"),
-                   sample=f.get("sample"), last_closed=day, missing_reports=miss)
+                   sample=f.get("sample"), last_closed=day, missing_reports=miss,
+                   missing_days=holes)
         now = time.time()
         st = _state()
         if stale:
             last = float(st.get("last_auto_update") or 0)
             left = AUTO_UPDATE_COOLDOWN - (now - last)
             if last and left > 0:
+                more = (f"；另有 {len(holes)} 个交易日整天缺失（{holes[0]} 起）" if holes else "")
                 _note(f"[startup] 距上次自动更新仅 {int((now - last) / 60)} 分钟，本次跳过"
-                      f"（{int(left / 60)} 分钟后才会再自动补；急用请点「更新行情」）")
+                      f"（{int(left / 60)} 分钟后才会再自动补；急用请点「更新行情」）{more}")
                 _log_start(event="skip-cooldown", reason="stale",
                            minutes=int((now - last) / 60))
                 return

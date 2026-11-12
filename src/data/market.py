@@ -355,10 +355,14 @@ def ensure_qfq_integrity(
     print(f"[guardrail] qfq 自洽破裂 {len(broken)} 只（除权锚点断裂），全史重抓修复",
           flush=True)
     failed: list[str] = []
+    # 与 update_kline_batch 同一条纪律（D-080）：上界固定为最近收盘日，盘中重抓也不会
+    # 把当日未收盘的半截日线写进去（那样的行第二天会被判 uptodate，永不自愈）。
+    closed = last_closed_trade_date(store)
+    end_arg = pd.Timestamp(closed).strftime("%Y%m%d") if closed is not None else None
     for c in broken:
         try:
-            fetch_kline(c, start=DEFAULT_START_DATE, asset="stock", adjust="qfq",
-                        source="bs", store=store)
+            fetch_kline(c, start=DEFAULT_START_DATE, end=end_arg, asset="stock",
+                        adjust="qfq", source="bs", store=store)
         except Exception as e:  # noqa: BLE001
             failed.append(c)
             print(f"[guardrail] {c} 重抓失败: {e}", flush=True)
@@ -459,6 +463,24 @@ def last_closed_trade_date(store: ParquetStore | None = None):
 
 
 # ---------------------------------------------------------------- 批量增量更新
+def _incremental_start(last, last_closed, gap_start, full_start) -> str | None:
+    """增量更新的起抓日（YYYYMMDD）；返回 None = 已最新、无需请求。
+
+    gap_start = 最近窗口里最早的**整天缺失**交易日（D-080）。只做"本地最后日期+1"
+    的增量有一个死角：快照把这批标的推到了最新交易日之后，中间的洞再也不会被请求
+    （`last >= last_closed` 直接判 uptodate）——所以有洞时起抓日回退到洞的第一天。
+    """
+    if last is None:
+        return full_start
+    last = pd.Timestamp(last)
+    base = (last + pd.Timedelta(days=1)).strftime("%Y%m%d")
+    if gap_start is not None:
+        return min(base, pd.Timestamp(gap_start).strftime("%Y%m%d"))
+    if last_closed is not None and last >= pd.Timestamp(last_closed):
+        return None
+    return base
+
+
 def update_kline_batch(
     symbols: list[str],
     asset: str = "stock",
@@ -479,6 +501,8 @@ def update_kline_batch(
       - index / source="bs" 的 baostock 查询在 sources.bs_query 内串行化
         （协议单连接，并发会损坏数据流）；
       - 注册表在 batch_write 内缓冲，全部结束统一写盘一次（避免并发写竞争）。
+      - D-080：先扫"最近窗口有没有整天缺失"，有洞则整批从洞的第一天起重抓（快照
+        补不了历史）；抓取上界固定为"最近收盘日"，盘中跑也不会写进未收盘的半截日线。
     source: "em"(东财) / "bs"(baostock，稳且覆盖退市股，本机默认，见 D-012)
             / "sina"(新浪，仅个股；依赖 py_mini_racer，本机会段错误，见 D-008)。
     sina_fallback: 东财失败降级新浪（默认 False——py_mini_racer 段错误会连带
@@ -490,24 +514,39 @@ def update_kline_batch(
     report: dict = {"__failed__": []}
     n = len(symbols)
     last_closed = last_closed_trade_date(store)
+    # 抓取上界 = 最近已收盘交易日：盘中/开盘前跑 02b 时，东财/baostock 的"当日"
+    # 日线是半截的，写进去第二天又会因 uptodate 被判"已最新"而永不自愈（D-080）。
+    end_arg = (pd.Timestamp(last_closed).strftime("%Y%m%d")
+               if last_closed is not None else None)
+    gap_start = None
+    try:
+        from src.data.snapshot import missing_trade_days
+        holes = missing_trade_days(store)
+        if holes:
+            gap_start = holes[0]
+            span = holes[0] if len(holes) == 1 else f"{holes[0]} … {holes[-1]}"
+            print(f">> [gap] 本地日线有 {len(holes)} 个交易日整天缺失（{span}）"
+                  f"→ 本批从 {gap_start} 起重抓补齐", flush=True)
+    except Exception as e:  # noqa: BLE001  检测失败不阻断正常增量
+        print(f"[gap] 缺失交易日检测失败（不影响增量）：{e}", flush=True)
 
     def _one(sym):
         code = normalize_code(sym)
         try:
             last = get_local_last_date(code, period, adjust, store)
-            if last is not None and last_closed is not None and last >= last_closed:
+            start = _incremental_start(last, last_closed, gap_start, full_start)
+            if start is None:
                 return code, "uptodate"
-            start = (full_start if last is None
-                     else (last + pd.Timedelta(days=1)).strftime("%Y%m%d"))
         except Exception:  # noqa: BLE001  读本地失败也按全新标的处理
             start = full_start
         last_err = None
         for attempt in range(3):
             try:
                 if source == "sina":
-                    df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
+                    df = fetch_daily_sina(code, start=start, end=end_arg,
+                                          adjust=adjust, store=store)
                 else:
-                    df = fetch_kline(code, start=start, asset=asset,
+                    df = fetch_kline(code, start=start, end=end_arg, asset=asset,
                                      period=period, adjust=adjust,
                                      source=source, store=store)
                 return code, len(df)
@@ -517,14 +556,16 @@ def update_kline_batch(
         # 个股降级：新浪（会崩，默认关闭）/ baostock（稳，推荐）
         if sina_fallback and source == "em" and asset == "stock":
             try:
-                df = fetch_daily_sina(code, start=start, adjust=adjust, store=store)
+                df = fetch_daily_sina(code, start=start, end=end_arg,
+                                      adjust=adjust, store=store)
                 return code, f"sina_fallback:{len(df)}"
             except Exception as e:  # noqa: BLE001
                 last_err = e
         if bs_fallback and asset == "stock":
             try:
-                df = fetch_kline(code, start=start, asset=asset, period=period,
-                                 adjust=adjust, source="bs", store=store)
+                df = fetch_kline(code, start=start, end=end_arg, asset=asset,
+                                 period=period, adjust=adjust, source="bs",
+                                 store=store)
                 return code, f"bs_fallback:{len(df)}"
             except Exception as e:  # noqa: BLE001
                 last_err = e
