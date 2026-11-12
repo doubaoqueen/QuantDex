@@ -55,11 +55,14 @@
 | 脚本 | 用途 |
 |---|---|
 | `net_diag.py` | 数据源连通性诊断（代理环境 / 东财 / 新浪 / baostock），抓取异常时先跑它 |
+| `make_demo_pack.py` | 生成 demo 数据包 `demo/store/`（5 只×2 年 qfq 日线，~0.24MB，随仓库提交，D-082） |
+| `demo_quickstart.py` | **30 秒离线出图**：指向 demo 数据包（QUANTDEX_STORE_DIR 隔离），不碰真实仓库、不需要网络 |
 | `_bootstrap.py` | 把项目根目录加入 `sys.path` 的引导模块（被其他脚本 import） |
 
 ## 常用命令
 
 ```bash
+python scripts/demo_quickstart.py                # 30 秒离线出图（demo 数据包，clone 后即可跑）
 python scripts/00_fetch_pit_constituents.py      # 第 0 步：PIT 成分表
 python scripts/00_fetch_calendar.py              # 补交易日历（让增量跳过生效）
 python scripts/04_factor_research.py             # 因子研究（首次约 20~40 分钟，可断点续跑）
