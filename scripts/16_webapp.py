@@ -390,7 +390,11 @@ def school_data():
     """量化学院动态数据（D-044：内容数据在 src/analysis/school_content，统计实时算）。"""
     from src.analysis import expr_factors as EF
     from src.analysis.factors import FACTOR_NAMES
-    from src.analysis.school_content import OPS_TABLE, PITFALLS, STATUS_STYLE, STRATEGY_MAP
+    from src.analysis.school_content import (OPS_TABLE, PITFALLS, PORTFOLIO_STEPS,
+                                             POSTMORTEM, POSTMORTEM_LESSON, RISK_BUDGET,
+                                             RISK_CALLOUT, RISK_NOTE, STATUS_STYLE,
+                                             STRATEGY_MAP, WF_FOLDS, WF_LESSON,
+                                             WF_SUMMARY)
     st = {"n_factors": len(FACTOR_NAMES) + len(EF.EXPR_FACTORS) + 1,
           "n_expr": len(EF.EXPR_FACTORS)}
     try:
@@ -407,16 +411,32 @@ def school_data():
     pth = STORE_DIR / "factor_results" / "expr_ic_summary.parquet"
     if pth.exists():
         df = pd.read_parquet(pth)
+        has_q = "q20" in df.columns          # 旧档可能没有 FDR q 值列
         for _, r in df.head(18).iterrows():
+            q = float(r["q20"]) if has_q and pd.notna(r.get("q20")) else None
             ic.append({"factor": r["factor"], "family": r["family"],
                        "ic20": round(float(r["ic20"]), 4),
                        "t20": round(float(r["t20"]), 2),
                        "sig": bool(abs(r["t20"]) > 2),
+                       "ic5": round(float(r["ic5"]), 4) if "ic5" in df.columns else None,
+                       "icir20": round(float(r["icir20"]), 2) if "icir20" in df.columns else None,
+                       "q20": round(q, 3) if q is not None else None,
+                       "fdr": bool(q is not None and q <= 0.1),
                        "coverage": round(float(r["coverage"]), 2),
                        "desc": EF.EXPR_FACTORS.get(r["factor"], {}).get("desc", "")})
     st["ic_rows"] = ic
     st["ops_rows"] = [{"op": o, "desc": d, "eg": e} for o, d, e in OPS_TABLE]
     st["pitfalls"] = [{"title": t, "desc": d} for t, d in PITFALLS]
+    st["wf_folds"] = [{"year": y, "params": p, "train_ir": ti, "oos_ir": oi}
+                      for y, p, ti, oi in WF_FOLDS]
+    st["wf_summary"] = WF_SUMMARY
+    st["wf_lesson"] = WF_LESSON
+    st["portfolio_steps"] = [{"step": s, "desc": d, "where": w} for s, d, w in PORTFOLIO_STEPS]
+    st["risk_budget"] = RISK_BUDGET
+    st["risk_note"] = RISK_NOTE
+    st["risk_callout"] = RISK_CALLOUT
+    st["postmortem"] = POSTMORTEM
+    st["postmortem_lesson"] = POSTMORTEM_LESSON
     st["strategies"] = [{**sm, "style": STATUS_STYLE[sm["status"]][0]}
                         for sm in STRATEGY_MAP]
     accounts = []

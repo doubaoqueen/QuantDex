@@ -169,3 +169,18 @@ def test_spot_work_releases_cooldown_when_nothing_done():
     assert started == [], started
     assert any(s.get("last_auto_update") == 0 for s in states), states
 
+
+
+def test_school_payload_shape():
+    """/api/school：量化学院扩充后的内容字段齐备（2026-11-13）。"""
+    st = webapp.school_data()
+    for k in ("pitfalls", "wf_folds", "wf_summary", "wf_lesson", "portfolio_steps",
+              "risk_budget", "risk_note", "risk_callout", "postmortem",
+              "postmortem_lesson", "ops_rows", "strategies", "accounts"):
+        assert k in st and st[k], f"missing school field: {k}"
+    assert len(st["pitfalls"]) >= 8
+    assert len(st["wf_folds"]) == 5
+    assert len(st["risk_budget"]) == 3
+    assert len(st["postmortem"]) == 2
+    for r in st["ic_rows"]:                     # 本地有 expr_ic_summary 时必须带 FDR 字段
+        assert {"ic5", "icir20", "q20", "fdr"} <= set(r)

@@ -1,26 +1,43 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { api } from '../api.js'
 
+const emit = defineEmits(['back'])
 const d = ref(null)
 onMounted(async () => {
   try { d.value = await api.get('/api/school') } catch { d.value = { ic_rows: [], strategies: [] } }
+  window.addEventListener('keydown', onKey)
 })
+onUnmounted(() => window.removeEventListener('keydown', onKey))
+const onKey = (e) => { if (e.key === 'Escape') emit('back') }
+
 const sections = [
   { id: 'world', t: '一、世界观' }, { id: 'data', t: '二、数据' },
   { id: 'factor', t: '三、因子' }, { id: 'ops', t: '四、算子' },
-  { id: 'test', t: '五、检验' }, { id: 'strategy', t: '六、策略图谱' },
-  { id: 'backtest', t: '七、回测' }, { id: 'exec', t: '八、执行' },
-  { id: 'discipline', t: '九、纪律' }
+  { id: 'test', t: '五、检验' }, { id: 'portfolio', t: '六、组合构建' },
+  { id: 'strategy', t: '七、策略图谱' }, { id: 'backtest', t: '八、回测' },
+  { id: 'exec', t: '九、执行' }, { id: 'discipline', t: '十、纪律' },
+  { id: 'budget', t: '十一、风险预算' }, { id: 'pitfalls', t: '十二、踩坑清单' }
 ]
 </script>
 
 <template>
   <div class="mx-auto max-w-5xl px-6 py-8 text-slate-200">
+    <!-- 返回栏：sticky 在锚点导航上方，Esc 也可退出 -->
+    <div class="sticky top-0 z-20 -mx-6 mb-4 flex h-14 items-center justify-between border-b border-slate-800 bg-slate-900/95 px-6 backdrop-blur">
+      <div class="text-xs text-slate-500">QuantDex 量化学院 · 面向新人的量化入门</div>
+      <button @click="emit('back')"
+              class="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 transition hover:border-sky-400 hover:text-sky-300">
+        ← 返回控制台（Esc）
+      </button>
+    </div>
+
     <h1 class="text-2xl font-bold text-white">QuantDex 量化学院</h1>
     <p class="mb-6 mt-1 text-xs text-slate-400">
-      面向新人的量化入门——页面上的每个数字都来自旁边正在运行的项目
-      <span v-if="d?.daily_syms">（{{ d.daily_syms }} 只标的 / {{ d.total_rows }} 行 / {{ d.n_factors }} 个因子 / {{ d.experiments }} 份实验存档）</span>
+      页面上的每个数字都来自旁边正在运行的项目
+      <span v-if="d?.daily_syms">（{{ d.daily_syms }} 只标的 / {{ d.total_rows }} 行 /
+        {{ d.n_factors }} 个因子<span v-if="d?.n_expr"> / 其中 {{ d.n_expr }} 个表达式因子</span> /
+        {{ d.experiments }} 份实验存档）</span>
     </p>
 
     <div class="mb-6 flex flex-wrap gap-2">
@@ -43,6 +60,7 @@ const sections = [
         <span class="text-sky-400">↺ 循环迭代</span>
       </div>
       <p class="text-sm text-slate-300">量化不是预测水晶球，是把投资决策变成<b>可检验的流水线</b>：数据回答"世界长什么样"，因子把数据压成"分数"，策略把分数变成"买卖规则"，回测验证规则"历史上行不行"，执行把规则跑起来，复盘回答"哪里错了"。任何一环偷懒，后面全白费。本项目四条流水线（四账户）正在这条循环上真实运行。</p>
+      <p class="mt-2 text-sm text-slate-400">两条必修的底层认知：<b class="text-slate-200">① 期望收益来自便宜</b>——低波/低换手这类因子赚钱的机理，是回撤时恰好在买变便宜的资产，所以"跌了要动作"的直觉注定负贡献（见「九、执行」三连败）；<b class="text-slate-200">② 诚实比聪明值钱</b>——本页所有数字都标注口径与决策编号（D-xxx），错了用更正批注改，不用记忆改。</p>
       <div class="mt-2 rounded-lg border border-blue-900 bg-blue-950/40 p-3 text-xs text-blue-200">qlib 第 1 课：整条流水线可以被"一坨配置"描述——可序列化 = 可复现 = 可改进。这正是我们做实验存档的原因。</div>
     </section>
 
@@ -55,25 +73,32 @@ const sections = [
         <tr class="border-t border-slate-700"><td class="p-2 font-semibold">公司行为</td><td class="p-2">分红除权、涨跌停、停牌</td><td class="p-2 text-slate-400">835 只分红记录 + qfq 复权</td></tr>
         <tr class="border-t border-slate-700"><td class="p-2 font-semibold">财务 / 估值</td><td class="p-2">利润/现金流（基本面原料）、PE/PB/市值</td><td class="p-2 text-slate-400">示例级——P1-a/b 待补</td></tr>
         <tr class="border-t border-slate-700"><td class="p-2 font-semibold">资金 / 宏观</td><td class="p-2">北向/两融/龙虎榜、CPI/利率</td><td class="p-2 text-slate-400">北向+两融全历史、6 表</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2 font-semibold">分钟线</td><td class="p-2">5/15/30/60 分钟（1 分钟无免费全历史）</td><td class="p-2 text-slate-400">baostock 自 2011，存不复权口径（D-060）</td></tr>
       </tbody></table>
-      <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">新人第一课：单位陷阱——北向=亿元、两融=万元、有的源量是"手"有的是"股"。不同源混用前先定量纲。</div>
+      <p class="mt-3 text-sm text-slate-300">数据层的两道<b>自愈护栏</b>（都来自真实事故）：<b class="text-slate-200">qfq 锚点护栏</b>——每天全量扫描自洽性，除权锚点断裂（源数据晚更新一天）的股票自动全史重抓，曾有 16 只一夜断裂被次日自动修复；<b class="text-slate-200">保鲜检查</b>——增量更新靠"最后日期 + 交易日历"判断缺口，漏掉整天会触发区间重抓，而不是永远跳过。</p>
+      <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">新人第一课：单位陷阱——北向=亿元、两融=万元、有的源量是"手"有的是"股"。不同源混用前先定量纲。东财快照量纲曾手→股污染 100 倍、279 行被自检逮住（D-059）。</div>
     </section>
 
     <section id="factor" class="mb-10">
       <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">三、因子：把数据压成分数</h2>
       <p class="text-sm text-slate-300">因子 = 每天给每只股票算的一个<b>分数</b>。它不是预测，是可检验的猜想：分数高的股票未来是否真的更好？方向不预设——IC 的符号会告诉你。</p>
-      <h3 class="mb-1 mt-3 text-sm text-slate-300">实时 IC 榜（20 日前瞻，★ = |NW-t|>2）</h3>
-      <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">因子</th><th class="p-2">家族</th><th class="p-2">IC</th><th class="p-2">NW-t</th><th class="p-2">覆盖</th><th class="p-2">含义</th></tr></thead>
+      <p class="mt-2 text-sm text-slate-400"><b class="text-slate-200">IC 怎么读</b>：每天把因子值、N 日后收益各自排名，算横截面相关（rank IC）。为什么用排名不用数值——去量纲、抗极值。|IC|&gt;0.03 有戏、&gt;0.05 不错；持有期 &gt;1 天时 IC 序列自相关，普通 t 值虚高，显著性以 Newey-West t（|t|&gt;2）为准。表达式因子按家族分类（K线/动量/波动/均线/位置/量能…），榜上"家族"列即出处。</p>
+      <h3 class="mb-1 mt-3 text-sm text-slate-300">实时 IC 榜（20 日前瞻；★ = FDR q≤0.1 真显著，(t&gt;2) 仅为候选）</h3>
+      <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">因子</th><th class="p-2">家族</th><th class="p-2">IC5</th><th class="p-2">IC20</th><th class="p-2">NW-t</th><th class="p-2">ICIR</th><th class="p-2">FDR q</th><th class="p-2">覆盖</th><th class="p-2">含义</th></tr></thead>
       <tbody>
         <tr v-for="r in d?.ic_rows || []" :key="r.factor" class="border-t border-slate-700">
           <td class="p-2 font-mono text-sky-300">{{ r.factor }}</td><td class="p-2 text-slate-400">{{ r.family }}</td>
+          <td class="p-2 text-slate-500">{{ r.ic5 == null ? '-' : r.ic5.toFixed(4) }}</td>
           <td class="p-2">{{ r.ic20.toFixed(4) }}</td>
-          <td class="p-2" :class="r.sig ? 'font-bold text-rose-400' : 'text-slate-400'">{{ r.t20.toFixed(2) }}{{ r.sig ? ' ★' : '' }}</td>
+          <td class="p-2" :class="r.fdr ? 'font-bold text-rose-400' : 'text-slate-400'">{{ r.t20.toFixed(2) }}<span v-if="r.fdr"> ★</span><span v-else-if="r.sig" class="text-slate-500"> (t&gt;2)</span></td>
+          <td class="p-2 text-slate-500">{{ r.icir20 == null ? '-' : r.icir20.toFixed(2) }}</td>
+          <td class="p-2" :class="r.fdr ? 'text-rose-400' : 'text-slate-500'">{{ r.q20 == null ? '-' : r.q20.toFixed(3) }}</td>
           <td class="p-2 text-slate-400">{{ (r.coverage * 100).toFixed(0) }}%</td>
           <td class="p-2 text-slate-500">{{ r.desc }}</td>
         </tr>
       </tbody></table>
-      <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">看榜纪律：这份榜是全样本筛的——从榜上挑因子再做回测 = 用同一份数据又选又考。挑进策略前必须过 walk-forward。</div>
+      <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">诚实警告（D-042）：同一份数据测几十个因子，总有几个 |t|&gt;2 是运气——BH-FDR 控制错误发现率之后，我们 46 个因子里 <b>0 个</b>通过 q&lt;0.1。所以榜上的 ★ 极难出现，(t&gt;2) 只是"候选"不是"显著"；"显著名单 ≠ 准入名单"。看榜纪律：从榜上挑因子再回测 = 用同一份数据又选又考，必须过 walk-forward（见「五、检验」）。</div>
+      <div class="mt-2 rounded-lg border border-blue-900 bg-blue-950/40 p-3 text-xs text-blue-200">入池闸门（D-073）：一个因子要进策略，需三关全过——① 经济先验说得通（为什么它该赚钱）；② walk-forward 样本外为正；③ 加入组合有增量证据（不是已有因子的影子）。我们曾测出 82 对相关性 &gt;0.7 的因子、其中 6 对 r=1.0——55 个因子实际约 30 个独立信号（D-062）。</div>
     </section>
 
     <section id="ops" class="mb-10">
@@ -89,17 +114,44 @@ const sections = [
     </section>
 
     <section id="test" class="mb-10">
-      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">五、检验：猜想必须过三关</h2>
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">五、检验：猜想必须过几关</h2>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <div class="rounded-xl border border-slate-700 bg-slate-800/60 p-3"><b class="text-sm text-white">① RankIC / NW-t</b><p class="mt-1 text-xs text-slate-300">因子排名 vs 未来收益排名的日截面相关。|IC|>0.03 有戏、>0.05 不错；持有期>1 天时以 Newey-West t（|t|>2）为准——普通 t 虚高。</p></div>
         <div class="rounded-xl border border-slate-700 bg-slate-800/60 p-3"><b class="text-sm text-white">② ICIR / 分层</b><p class="mt-1 text-xs text-slate-300">稳定性 = IC均值/标准差；按分数分 5 组看单调性。算术净值会被肥尾欺骗——以中位数口径为准。</p></div>
-        <div class="rounded-xl border border-slate-700 bg-slate-800/60 p-3"><b class="text-sm text-white">③ walk-forward</b><p class="mt-1 text-xs text-slate-300">每年只用之前的数据选参数，下一年考试——参数不许偷看未来。它回答"这不是运气吗"。</p></div>
+        <div class="rounded-xl border border-slate-700 bg-slate-800/60 p-3"><b class="text-sm text-white">③ 多重检验（FDR）</b><p class="mt-1 text-xs text-slate-300">测得越多，纯运气的"显著"越多。BH-FDR 控制错误发现率后我们 46 个因子 0 个通过——所以还要看第④关。</p></div>
         <div class="rounded-xl border border-slate-700 bg-slate-800/60 p-3"><b class="text-sm text-white">④ 影子盘对照</b><p class="mt-1 text-xs text-slate-300">终极检验：真实记账、T+1 开盘撮合、费用全扣。回测 vs 影子盘的偏差 = 你所有疏漏的总和。</p></div>
       </div>
+      <h3 class="mb-1 mt-4 text-sm text-slate-300">walk-forward 实录（每年用之前的数据选参数，当年样本外考试）</h3>
+      <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">测试年</th><th class="p-2">选中参数</th><th class="p-2">训练 IR</th><th class="p-2">样本外 IR</th></tr></thead>
+      <tbody>
+        <tr v-for="f in d?.wf_folds || []" :key="f.year" class="border-t border-slate-700">
+          <td class="p-2 font-mono text-slate-300">{{ f.year }}</td>
+          <td class="p-2 text-slate-400">{{ f.params }}</td>
+          <td class="p-2 text-slate-500">{{ f.train_ir }}</td>
+          <td class="p-2 font-semibold" :class="f.oos_ir.startsWith('-') ? 'text-emerald-400' : 'text-rose-300'">{{ f.oos_ir }}</td>
+        </tr>
+      </tbody></table>
+      <p class="mt-2 text-xs text-slate-400">{{ d?.wf_summary }}</p>
+      <div class="mt-2 rounded-lg border border-blue-900 bg-blue-950/40 p-3 text-xs text-blue-200">{{ d?.wf_lesson }}</div>
+      <p class="mt-2 text-xs text-slate-500">颜色约定：A 股口径红涨绿跌——样本外 IR 为正显示红色（赚钱）、为负显示绿色（亏钱）。</p>
+    </section>
+
+    <section id="portfolio" class="mb-10">
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">六、组合构建：从分数到订单</h2>
+      <p class="mb-2 text-sm text-slate-300">因子分再好，也要经过<b>组合层</b>才变成钱：谁入选、给多少权重、什么时候换。这一层最常见的坑是"悄悄加动作"——每加一个规则都要回测发言。</p>
+      <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">步骤</th><th class="p-2">做法</th><th class="p-2">在哪看</th></tr></thead>
+      <tbody>
+        <tr v-for="p in d?.portfolio_steps || []" :key="p.step" class="border-t border-slate-700">
+          <td class="p-2 font-semibold text-slate-200">{{ p.step }}</td>
+          <td class="p-2 text-slate-300">{{ p.desc }}</td>
+          <td class="p-2 text-slate-500">{{ p.where }}</td>
+        </tr>
+      </tbody></table>
+      <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">持有期错配教训：rev_5（5 日反转）的预测力 5 天就衰减，却挂在 20 日调仓的组合里——等于把强信号掺进 15 天噪音。因子衰减周期和调仓节奏必须匹配（第二篇）。</div>
     </section>
 
     <section id="strategy" class="mb-10">
-      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">六、策略图谱：主流打法 × 我们的进度</h2>
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">七、策略图谱：主流打法 × 我们的进度</h2>
       <div class="mb-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">诚实披露：四策略并行后存在<b>择优偏差</b>——样本外最强的天然被展示，真实预期应打折扣。</div>
       <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">策略</th><th class="p-2">思想</th><th class="p-2">因子</th><th class="p-2">数据</th><th class="p-2">进度</th></tr></thead>
       <tbody>
@@ -113,31 +165,79 @@ const sections = [
     </section>
 
     <section id="backtest" class="mb-10">
-      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">七、回测：诚实的时光机</h2>
-      <p class="mb-2 text-sm text-slate-300">回测最大的敌人不是算错，是悄悄作弊。四条保真铁律（每条来自真实踩坑）：</p>
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">八、回测：诚实的时光机</h2>
+      <p class="mb-2 text-sm text-slate-300">回测最大的敌人不是算错，是悄悄作弊。保真铁律（每条来自真实踩坑）：</p>
       <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">铁律</th><th class="p-2">我们踩的坑</th></tr></thead>
       <tbody class="text-slate-300">
         <tr class="border-t border-slate-700"><td class="p-2">T+1：信号次日成交，且<b>口径必须统一</b></td><td class="p-2">回测收盘价 vs 实盘开盘价差过 12pp（D-034）</td></tr>
-        <tr class="border-t border-slate-700"><td class="p-2">成本：佣金+最低佣金+印花+过户+滑点</td><td class="p-2">最低佣金对小资金 = 0.8% 起步</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2">成本：佣金+最低佣金+印花+过户+滑点</td><td class="p-2">最低佣金对小资金 = 0.8% 起步；滑点 0.0005 是按成交额校准过的准数，不是拍脑袋（D-067）</td></tr>
         <tr class="border-t border-slate-700"><td class="p-2">不可成交：涨跌停/停牌</td><td class="p-2">分板块 10%/20%，容差 0.1%</td></tr>
         <tr class="border-t border-slate-700"><td class="p-2">PIT：只用当时真实存在的成分</td><td class="p-2">幸存者偏差曾把最强因子从 +0.042 改写成 -0.003</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2">现金约束：买入不许超可用现金</td><td class="p-2">含费用预留、最小一手——2000 元账户因此天然降杠杆（D-038）</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2">费用可见性：每笔代价单列</td><td class="p-2">日报单列交易代价——费用是行为补丁，看得见才守得住（D-043）</td></tr>
       </tbody></table>
     </section>
 
     <section id="exec" class="mb-10">
-      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">八、执行：从纸面到账户</h2>
-      <p class="text-sm text-slate-300">每日收盘后流水线生成挂单 → 人工审批（可否决）→ 次日开盘按开盘价撮合 → 涨跌停/停牌自动拒单 → 每晚一封合并日报。三个账户用不同策略并行，谁好谁坏让净值说话。</p>
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">九、执行：从纸面到账户</h2>
+      <p class="mb-2 text-sm text-slate-300">T+1 两段式口径（D-001）：今日收盘后生成挂单 → 次日开盘按开盘价撮合。中间隔着人工审批，过了还有五道闸，每道都来自真实事故：</p>
+      <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">闸</th><th class="p-2">规则</th><th class="p-2">来历</th></tr></thead>
+      <tbody class="text-slate-300">
+        <tr class="border-t border-slate-700"><td class="p-2 font-semibold">审批</td><td class="p-2">人工可否决挂单，但真实否决率以账本为准</td><td class="p-2 text-slate-500">"我以为全否了"实际只拦 30%（D-053，见「十、纪律」）</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2 font-semibold">拒单</td><td class="p-2">涨跌停买不进/卖不出、停牌记拒单</td><td class="p-2 text-slate-500">撮合口径与回测同源（board_limit）</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2 font-semibold">幂等</td><td class="p-2">同 信号日+标的+方向 的挂单有唯一索引，重复提交直接被拒</td><td class="p-2 text-slate-500">防"手滑双击变双仓"（D-059）</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2 font-semibold">自检</td><td class="p-2">数字审计（净值恒等式/现金连续性）退出码非 0 即失败</td><td class="p-2 text-slate-500">东财量纲手→股污染 279 行被自检逮住（D-059）</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2 font-semibold">退市解锁</td><td class="p-2">退市股的 pending 挂单自动解锁清理，不再卡队列</td><td class="p-2 text-slate-500">退市股曾永久卡住撮合（D-062）</td></tr>
+      </tbody></table>
       <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">防御性减仓三连败（回测否决了三次直觉）：弱市减仓、个股止损、组合断路器全部负贡献。防御的正确位置是"投入多少钱"（风险预算），不是"跌了怎么办"（交易规则）。</div>
     </section>
 
-    <section id="discipline" class="mb-6">
-      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">九、纪律：比策略更值钱的部分</h2>
+    <section id="discipline" class="mb-10">
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">十、纪律：比策略更值钱的部分</h2>
       <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">机制</th><th class="p-2">作用</th><th class="p-2">我们的实现</th></tr></thead>
       <tbody class="text-slate-300">
-        <tr class="border-t border-slate-700"><td class="p-2">决策日志</td><td class="p-2">记录"当时为什么这么定"，防事后自欺</td><td class="p-2 text-slate-400">36+ 条（D-001~）</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2">决策日志</td><td class="p-2">记录"当时为什么这么定"，防事后自欺</td><td class="p-2 text-slate-400">80+ 条（D-001~D-082）</td></tr>
         <tr class="border-t border-slate-700"><td class="p-2">实验存档</td><td class="p-2">参数↔结果↔代码版本绑定，三个月后可追溯</td><td class="p-2 text-slate-400">{{ d?.experiments || 0 }} 份 JSON</td></tr>
-        <tr class="border-t border-slate-700"><td class="p-2">风险预算</td><td class="p-2">最大可承受亏损 ÷ 策略历史回撤 = 最大投入</td><td class="p-2 text-slate-400">实盘前最后一道门</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2">抓而不用=浪费</td><td class="p-2">每份抓来的数据必须有 ≥1 个消费者才值得入库</td><td class="p-2 text-slate-400">5 分钟线入库前先写好三个用途（D-060）</td></tr>
+        <tr class="border-t border-slate-700"><td class="p-2">更正批注</td><td class="p-2">记录错了就改，但用批注改——让后来者知道这里错过</td><td class="p-2 text-slate-400">"确认无成交"的错误复核即被批注更正</td></tr>
       </tbody></table>
+      <h3 class="mb-2 mt-4 text-sm text-slate-300">事故复盘（直觉会绕回来，账本要接得住）</h3>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div v-for="p in d?.postmortem || []" :key="p.date" class="rounded-xl border border-slate-700 bg-slate-800/60 p-3">
+          <div class="flex items-center justify-between"><b class="text-sm text-white">{{ p.title }}</b><span class="font-mono text-[10px] text-slate-500">{{ p.date }}</span></div>
+          <p class="mt-1 text-xs text-slate-300">{{ p.what }}</p>
+          <p class="mt-1 text-xs text-sky-300">{{ p.lesson }}</p>
+        </div>
+      </div>
+      <p class="mt-2 text-xs text-slate-400">{{ d?.postmortem_lesson }}</p>
+    </section>
+
+    <section id="budget" class="mb-10">
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">十一、风险预算：该投多少钱</h2>
+      <div class="rounded-lg border border-blue-900 bg-blue-950/40 p-3 text-sm text-blue-200">可投入本金 = 可承受亏损 ÷ 策略历史最大回撤。<span class="text-xs">例：能承受亏 2 万 ÷ 27.5% ≈ 7.3 万。公式来自一次真实的疼痛：-30% 浮亏在 2500 元上拿得住，放到 10 万上就是两种人生——所以预算按<b>金额</b>设，不按"几成仓位"（D-009）。</span></div>
+      <table class="mt-3 w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">策略</th><th class="p-2">历史最大回撤</th><th class="p-2">WF 样本外年化</th><th class="p-2">L=2万 最大可投入</th><th class="p-2">预期年收益带</th></tr></thead>
+      <tbody>
+        <tr v-for="r in d?.risk_budget || []" :key="r.strategy" class="border-t border-slate-700">
+          <td class="p-2 text-slate-200">{{ r.strategy }}</td>
+          <td class="p-2 text-slate-400">{{ r.mdd }}</td>
+          <td class="p-2 text-slate-400">{{ r.wf_ann }}</td>
+          <td class="p-2 font-semibold text-white">{{ r.invest }}</td>
+          <td class="p-2 text-slate-400">{{ r.band }}</td>
+        </tr>
+      </tbody></table>
+      <p class="mt-1 text-[10px] text-slate-500">{{ d?.risk_note }}</p>
+      <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">{{ d?.risk_callout }}</div>
+      <p class="mt-2 text-sm text-slate-400">顺序论：体检是研究链的<b>消费者</b>——必须等策略定义冻结、影子盘跑满四周拿到"现实 vs 回测"的偏差系数（D-068），期望带才校准成诚实区间。反过来先做体检，引用的就是一堆还在变动的数字，那是给幻觉做 UI。</p>
+    </section>
+
+    <section id="pitfalls" class="mb-6">
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">十二、踩坑清单（每条都真实付过学费）</h2>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div v-for="p in d?.pitfalls || []" :key="p.title" class="rounded-xl border border-orange-900/60 bg-orange-950/30 p-3">
+          <b class="text-sm text-orange-200">{{ p.title }}</b>
+          <p class="mt-1 text-xs text-slate-300">{{ p.desc }}</p>
+        </div>
+      </div>
       <p class="mt-4 text-sm text-slate-300">——学完这一页，你需要的"必需之物"就是：干净的数据、可检验的猜想、诚实的时光机、能跑的账户、和不骗自己的纪律。</p>
     </section>
   </div>

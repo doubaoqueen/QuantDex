@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { ref, computed, onMounted, onUnmounted, provide } from 'vue'
+import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
 import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
 import SchoolView from './components/SchoolView.vue'
@@ -31,7 +31,13 @@ const strategyGroups = (() => {
   }
   return [...seen.entries()].map(([name, accs]) => ({ name, accs }))
 })()
-const view = ref('console')   // console | school
+const view = ref('console')   // console | school（与 location.hash 同步：F5 保持在量化学院）
+// 量化学院此前是"死胡同"视图——唯一退出方式是 F5。现在：SchoolView 内 ← 返回按钮/Esc，
+// 且 hash 记忆视图，#school 可直接深链接（2026-11-13）
+watch(view, (v) => {
+  if (v === 'school') history.replaceState(null, '', '#school')
+  else if (location.hash) history.replaceState(null, '', location.pathname + location.search)
+})
 const account = ref('large')          // 当前选中账户，驱动全部面板与主题色
 const overviews = ref({})             // key -> overview
 const regime = ref(null)
@@ -120,6 +126,7 @@ async function loadAll() {
 
 let timer = null
 onMounted(() => {
+  if (location.hash === '#school') view.value = 'school'
   loadAll()
   timer = setInterval(loadAll, 15000)
 })
@@ -170,7 +177,7 @@ function cumText(o) {
 
   <div class="min-h-screen text-slate-800">
     <!-- 量化学院视图（独立于控制台数据面板） -->
-    <SchoolView v-if="view==='school'" class="fixed inset-0 z-40 overflow-auto bg-slate-900" />
+    <SchoolView v-if="view==='school'" class="fixed inset-0 z-40 overflow-auto bg-slate-900" @back="view='console'" />
     <div v-else>
     <!-- 顶栏 -->
     <header class="sticky top-0 z-20 border-b border-slate-200/70 bg-white/80 backdrop-blur">
