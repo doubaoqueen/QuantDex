@@ -1277,3 +1277,19 @@ R3-41（下一交易日不确定时不落单）。22 筛选已按新窗口重跑
 - 复核：下次故意让自动链空跑一次，重开控制台应立即重试；观察 19:00 常态链路不受影响。
 
 
+
+### D-082 demo 数据包入库豁免 + QUANTDEX_STORE_DIR 换仓开关（2026-11-13）
+
+- 背景：README 对陌生人不可用——无图、无 demo 数据，clone 后要抓数 GB 才能看一眼
+  （用户反馈三条之一："不会有人为了看一眼去抓几个 G"）。
+- 决策：
+  ① `demo/store/`（约 0.24 MB：5 只大白马 × 2 年 qfq 日线 + 裁剪交易日历）作为
+     **D-035「数据出 git」的唯一显式豁免**随仓库提交；
+  ② `config.STORE_DIR` 支持 `QUANTDEX_STORE_DIR` 环境变量整体换仓
+     （CODE_STANDARD §6 预留的 `QUANTDEX_*` 前缀约定首次落地）；
+  ③ `scripts/make_demo_pack.py` 覆盖式生成、`scripts/demo_quickstart.py` 消费
+     ——离线 1.3 秒出质检/概览/分年度/双均线回测报告 + 3 张 PNG（目标 30 秒）。
+- 纪律：demo 演示不碰真实仓库（env 隔离，必须在 import config 前设变量）；
+  `demo/store/plots/` 出图产物不入库（可随时重建）；demo_analysis 默认标的
+  510300（本地仓库无 ETF 数据）改为 600519。
+- 数据免责：包内为真实行情切片，仅供演示，不构成投资建议。

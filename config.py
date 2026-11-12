@@ -1,4 +1,5 @@
 """QuantDex 全局配置：路径与默认参数。"""
+import os
 from pathlib import Path
 
 # 项目根目录（本文件所在目录）
@@ -7,7 +8,8 @@ BASE_DIR = Path(__file__).resolve().parent
 # 数据目录
 DATA_DIR = BASE_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"           # 旧版裸 CSV
-STORE_DIR = DATA_DIR / "store"       # 新版 Parquet 数据仓库
+# 新版 Parquet 数据仓库；QUANTDEX_STORE_DIR 可整体换仓（demo pack 隔离演示用，D-082）
+STORE_DIR = Path(os.environ.get("QUANTDEX_STORE_DIR") or (DATA_DIR / "store"))
 
 # 数据仓库分区目录
 MARKET_DIR = STORE_DIR / "market"

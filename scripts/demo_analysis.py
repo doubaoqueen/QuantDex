@@ -1,6 +1,7 @@
 """
 演示：读取本地数据 -> 技术指标 -> 数据质检 -> 收益概览 -> 回测绩效。
-用法：python scripts/demo_analysis.py [代码，默认510300]
+用法：python scripts/demo_analysis.py [代码，默认600519]
+      无数据时先跑 python scripts/demo_quickstart.py（离线 demo 包，30 秒出图）
 """
 import sys
 
@@ -49,7 +50,7 @@ def fmt(key, v):
 
 
 def main() -> None:
-    symbol = sys.argv[1] if len(sys.argv) > 1 else "510300"
+    symbol = sys.argv[1] if len(sys.argv) > 1 else "600519"
     store = ParquetStore()
 
     df = get_kline(symbol, store=store)

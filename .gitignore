@@ -263,3 +263,6 @@ backups/
 
 # ZCode 会话本地状态（计划/工作流等，工具生成）
 .zcode/
+
+# demo pack 的出图产物（可随时用 demo_quickstart.py 重建，D-082）
+demo/store/plots/
