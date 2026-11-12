@@ -252,8 +252,14 @@ quantdex_vault/
 frontend/node_modules/
 !frontend/dist/
 
+# 本机启动脚本覆盖（Python 解释器路径，不入库；见 scripts/_bootstrap.bat）
+scripts/python_path.local.bat
+
 # 备份产物不入库（D-035）
 backups/
 
 .commitmsg.txt
 .commitmsg_*.txt
+
+# ZCode 会话本地状态（计划/工作流等，工具生成）
+.zcode/

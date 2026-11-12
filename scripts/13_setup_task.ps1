@@ -4,6 +4,7 @@
 param([switch]$Uninstall)
 
 $TaskName = "QuantDex Daily"
+$Root = Split-Path $PSScriptRoot -Parent
 $Bat = Join-Path $PSScriptRoot "run_daily.bat"
 
 if ($Uninstall) {
@@ -33,4 +34,4 @@ try {
 Write-Host ""
 Write-Host ('Test run: schtasks /Run /TN "' + $TaskName + '"')
 Write-Host ('Check:    schtasks /Query /TN "' + $TaskName + '" /V /FO LIST')
-Write-Host ("Log:      D:\MeineArbeit\QuantDex\data\store\logs\daily_run.log")
+Write-Host ("Log:      " + (Join-Path $Root "data\store\logs\daily_run.log"))

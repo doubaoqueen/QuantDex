@@ -38,6 +38,18 @@
 安装：右键 `13_setup_task.ps1` →「使用 PowerShell 运行」；或命令：
 `powershell -ExecutionPolicy Bypass -File scripts\13_setup_task.ps1`
 
+**可移植性**（2026-11-12）：`run_daily.bat` / `run_webapp.bat` 不含任何本机路径——共享引导
+`_bootstrap.bat` 自动定位仓库根，并按以下顺序解析 Python 解释器：
+
+1. 环境变量 `QUANTDEX_PYTHON`（python.exe 全路径，显式指定）
+2. `scripts\python_path.local.bat`（本机覆盖文件，已 gitignore，写 `set "PY=..."`）
+3. 仓库根 `.venv\Scripts\python.exe`（普通 venv）
+4. 常见 conda 位置（`%USERPROFILE%` 与 `C:\ProgramData` 下的 miniconda3/anaconda3/miniforge3）的 `QuantDex` 环境
+5. PATH 上 `conda` 所在目录反推的 `envs\QuantDex`
+6. 兜底：PATH 上的 `python`（README 推荐先 `conda activate QuantDex`）
+
+换机器克隆后通常无需任何配置即可直接用；探测不到时用第 1/2 种方式指定。
+
 ## 辅助工具
 
 | 脚本 | 用途 |
@@ -58,6 +70,7 @@ python scripts/demo_analysis.py 600519           # 单标的演示
 ## 说明
 
 - 04 脚本的「抓取阶段」是增量的：有本地数据的标的只抓最后日期之后的增量；**缺 `trade_calendar` 时无法判断"已最新"，会对全部标的逐个发一次补数请求**（体感像从头跑），先跑 `00_fetch_calendar.py` 修复；
+- 行情更新的「落库日期」（D-080）：交易日 09:15~15:00（含集合竞价）不落库；**开盘前（00:00~09:15）落库到上一个交易日**——19:00 漏跑时，次日开盘前补跑能把昨天补回来（账户快照也能补）；若拖到次日收盘后才补，快照只能写最新那天，漏掉的那天由控制台自动改走区间重抓（`02b`）补行情，但账户净值会缺那一天；
 - 04 的「计算阶段」（面板 + IC 检验）每次都从 2018 起全量重算，这是设计使然（新增一个交易日就会改变所有因子值）；
 - 结果输出：`data/store/factor_results/`（parquet + plots/ 下的 PNG）。
 
