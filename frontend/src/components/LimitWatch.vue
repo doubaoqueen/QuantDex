@@ -1,8 +1,10 @@
 <script setup>
 // 涨跌停观察（D-063 用户需求）：全池视角——今天市场上谁在板上。
 // 持仓行的涨跌停徽章只在自己持仓触板时可见；这里补市场视角，收盘口径。
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, inject } from 'vue'
 import { api, fmt } from '../api.js'
+
+const kline = inject('kline')
 
 const data = ref(null)
 const err = ref(false)
@@ -34,7 +36,8 @@ const rest = (list) => (list || []).length - 12
           </div>
           <div class="mt-2 max-h-44 space-y-1 overflow-y-auto pr-1">
             <div v-for="x in show(data.up)" :key="x.symbol"
-                 class="flex items-center justify-between rounded-md bg-rose-50 px-2 py-1 text-sm">
+                 class="flex cursor-pointer items-center justify-between rounded-md bg-rose-50 px-2 py-1 text-sm hover:bg-rose-100"
+                 title="点击查看该标的近一年走势" @click="kline.open(x.symbol)">
               <span class="truncate">
                 <span class="font-medium text-slate-700">{{ x.name }}</span>
                 <span class="tabular ml-1 text-xs text-slate-400">{{ x.symbol }}</span>
@@ -54,7 +57,8 @@ const rest = (list) => (list || []).length - 12
           </div>
           <div class="mt-2 max-h-44 space-y-1 overflow-y-auto pr-1">
             <div v-for="x in show(data.down)" :key="x.symbol"
-                 class="flex items-center justify-between rounded-md bg-emerald-50 px-2 py-1 text-sm">
+                 class="flex cursor-pointer items-center justify-between rounded-md bg-emerald-50 px-2 py-1 text-sm hover:bg-emerald-100"
+                 title="点击查看该标的近一年走势" @click="kline.open(x.symbol)">
               <span class="truncate">
                 <span class="font-medium text-slate-700">{{ x.name }}</span>
                 <span class="tabular ml-1 text-xs text-slate-400">{{ x.symbol }}</span>

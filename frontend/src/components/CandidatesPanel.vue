@@ -1,6 +1,8 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, inject } from 'vue'
 import { api, fmt } from '../api.js'
+
+const kline = inject('kline')
 
 const props = defineProps({ account: String })
 const rows = ref([])
@@ -80,7 +82,9 @@ const industries = computed(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in rows" :key="r.symbol" class="border-t border-slate-100 hover:bg-sky-50/50">
+          <tr v-for="r in rows" :key="r.symbol"
+              class="cursor-pointer border-t border-slate-100 hover:bg-sky-50/50"
+              title="点击查看该标的近一年走势" @click="kline.open(r.symbol)">
             <td class="px-3 py-1.5 text-slate-400">{{ r.rank }}</td>
             <td class="px-3 py-1.5">
               <span class="font-medium">{{ r.name || r.symbol }}</span>

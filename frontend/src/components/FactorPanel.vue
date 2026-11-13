@@ -1,6 +1,8 @@
 <script setup>
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, inject } from 'vue'
 import { api } from '../api.js'
+
+const kline = inject('kline')
 
 const props = defineProps({ account: String })
 
@@ -107,9 +109,10 @@ function rawText(key, v) {
         </thead>
         <tbody>
           <tr v-for="(r, idx) in sortedRows" :key="r.symbol"
-              class="border-t border-slate-100"
+              class="cursor-pointer border-t border-slate-100 hover:bg-sky-50/40"
               :class="[r.held ? 'bg-sky-50/40' : '',
-                       idx > 0 && sortedRows[idx - 1].held !== r.held ? 'border-t-2 border-t-slate-300' : '']">
+                       idx > 0 && sortedRows[idx - 1].held !== r.held ? 'border-t-2 border-t-slate-300' : '']"
+              title="点击查看该标的近一年走势" @click="kline.open(r.symbol)">
             <td class="px-2 py-1.5">
               <span class="font-medium">{{ r.name || r.symbol }}</span>
               <span class="ml-1 text-[10px] text-slate-400">{{ r.symbol }}</span>

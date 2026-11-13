@@ -5,6 +5,7 @@ import { api, fmt } from '../api.js'
 const props = defineProps({ orders: Array, trades: Array, account: String })
 const emit = defineEmits(['changed'])
 const say = inject('toast', () => {})
+const kline = inject('kline')
 
 const sym = ref('')
 const side = ref('buy')
@@ -129,8 +130,9 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
           </thead>
           <tbody>
             <tr v-for="r in diff.rows" :key="r.id" class="border-t border-slate-100">
-              <td class="px-2 py-1.5">
-                <span class="font-medium">{{ r.name || r.symbol }}</span>
+              <td class="cursor-pointer px-2 py-1.5" title="点击查看该标的近一年走势"
+                  @click="kline.open(r.symbol)">
+                <span class="font-medium hover:text-sky-600">{{ r.name || r.symbol }}</span>
                 <span class="ml-1 text-[11px] text-slate-400">{{ r.symbol }}</span>
               </td>
               <td class="text-center" :class="r.side==='buy' ? 'text-red-600' : 'text-emerald-600'">
@@ -157,8 +159,9 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
           <tbody>
             <tr v-for="o in orders" :key="o.id" class="border-t border-slate-100">
               <td class="px-2 py-1.5 text-[11px] text-slate-400">{{ o.id }}</td>
-              <td class="px-2 py-1.5">
-                <span class="font-medium">{{ o.name || o.symbol }}</span>
+              <td class="cursor-pointer px-2 py-1.5" title="点击查看该标的近一年走势"
+                  @click="kline.open(o.symbol)">
+                <span class="font-medium hover:text-sky-600">{{ o.name || o.symbol }}</span>
                 <span class="ml-1 text-[11px] text-slate-400">{{ o.symbol }}</span>
               </td>
               <td class="text-center" :class="o.side==='buy' ? 'text-red-600' : 'text-emerald-600'">{{ o.side==='buy' ? '买入' : '卖出' }}</td>
@@ -185,8 +188,8 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
         <tbody>
           <tr v-for="(t, i) in shownTrades" :key="i" class="border-t border-slate-100">
             <td class="px-2 py-1.5 text-slate-500">{{ t.fill_date }}</td>
-            <td>
-              <span class="font-medium">{{ t.name || t.symbol }}</span>
+            <td class="cursor-pointer" title="点击查看该标的近一年走势" @click="kline.open(t.symbol)">
+              <span class="font-medium hover:text-sky-600">{{ t.name || t.symbol }}</span>
               <span class="ml-1 text-[11px] text-slate-400">{{ t.symbol }}</span>
             </td>
             <td class="text-center" :class="t.side==='buy' ? 'text-red-600' : 'text-emerald-600'">{{ t.side==='buy' ? '买' : '卖' }}</td>
@@ -226,8 +229,8 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
           <tbody>
             <tr v-for="(t, i) in feeData.recent" :key="i" class="border-t border-slate-100">
               <td class="px-2 py-1 text-slate-500">{{ t.fill_date }}</td>
-              <td>
-                <span class="font-medium">{{ t.name || t.symbol }}</span>
+              <td class="cursor-pointer" title="点击查看该标的近一年走势" @click="kline.open(t.symbol)">
+                <span class="font-medium hover:text-sky-600">{{ t.name || t.symbol }}</span>
                 <span class="ml-1 text-[11px] text-slate-400">{{ t.symbol }}</span>
               </td>
               <td class="text-center" :class="t.side==='buy' ? 'text-red-600' : 'text-emerald-600'">{{ t.side==='buy' ? '买' : '卖' }}</td>

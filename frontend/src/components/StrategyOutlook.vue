@@ -2,8 +2,10 @@
 // 策略动向（D-072，用户构想）：把 20 日调仓之间的黑箱打开——
 // 每天展示策略的影子：调仓节奏 / 行业迁移 / 影子调仓重合度。
 // 纪律边界：与流水线完全同分；只展示不构成建议；无任何操作入口（防 D-057 式诱惑）。
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, inject } from 'vue'
 import { api, fmt } from '../api.js'
+
+const kline = inject('kline')
 
 const props = defineProps({ account: String })
 const data = ref(null)
@@ -122,7 +124,8 @@ const showRows = (list) => (list || []).slice(0, 20)
               <div class="text-[11px] font-medium text-emerald-700">将新增（{{ data.rows_new.length }}）</div>
               <div class="mt-1 max-h-32 overflow-y-auto text-xs">
                 <div v-for="r in showRows(data.rows_new)" :key="r.symbol"
-                     class="flex justify-between rounded bg-emerald-50 px-2 py-0.5">
+                     class="flex cursor-pointer justify-between rounded bg-emerald-50 px-2 py-0.5 hover:bg-emerald-100"
+                     title="点击查看该标的近一年走势" @click="kline.open(r.symbol)">
                   <span>{{ r.name }} <span class="text-slate-400">{{ r.symbol }}</span></span>
                   <span class="text-slate-400">{{ r.industry }}</span>
                 </div>
@@ -133,7 +136,8 @@ const showRows = (list) => (list || []).slice(0, 20)
               <div class="text-[11px] font-medium text-rose-700">将出局（{{ data.rows_exit.length }}）</div>
               <div class="mt-1 max-h-32 overflow-y-auto text-xs">
                 <div v-for="r in showRows(data.rows_exit)" :key="r.symbol"
-                     class="flex justify-between rounded bg-rose-50 px-2 py-0.5">
+                     class="flex cursor-pointer justify-between rounded bg-rose-50 px-2 py-0.5 hover:bg-rose-100"
+                     title="点击查看该标的近一年走势" @click="kline.open(r.symbol)">
                   <span>{{ r.name }} <span class="text-slate-400">{{ r.symbol }}</span></span>
                   <span class="text-slate-400">{{ r.industry }}</span>
                 </div>

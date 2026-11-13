@@ -1,72 +1,11 @@
 <script setup>
-import { ref, computed, nextTick, onUnmounted } from 'vue'
-import * as echarts from 'echarts'
-import { api, fmt } from '../api.js'
+import { ref, computed, inject } from 'vue'
+import { fmt } from '../api.js'
 
 const props = defineProps({ rows: Array, account: String, alerts: Array, orders: Array })
 
-// ---- 点持仓看走势（D-052）----
-const sel = ref(null)
-const detail = ref(null)
-const chartEl = ref(null)
-const loading = ref(false)
-const derr = ref('')
-let chart = null
-
-async function openRow(r) {
-  sel.value = r
-  detail.value = null
-  derr.value = ''
-  loading.value = true
-  try {
-    detail.value = await api.get(`/api/kline?symbol=${r.symbol}&account=${props.account}&days=250`)
-    if (detail.value && detail.value.err) derr.value = detail.value.err
-  } catch (e) {
-    derr.value = `加载失败：${e.message}`
-  } finally {
-    loading.value = false
-  }
-  await nextTick()
-  draw()
-}
-
-function close() {
-  sel.value = null
-  detail.value = null
-  chart?.dispose()
-  chart = null
-}
-
-function draw() {
-  const d = detail.value
-  if (!d || d.err || !d.dates || !chartEl.value) return
-  const since = d.held_since
-  const idx = since ? d.dates.indexOf(since) : -1
-  chart?.dispose()
-  chart = echarts.init(chartEl.value, null, { renderer: 'canvas', height: 300 })
-  chart.setOption({
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', backgroundColor: 'rgba(255,255,255,.96)',
-               borderColor: '#e2e8f0', textStyle: { color: '#334155', fontSize: 12 } },
-    grid: { left: 58, right: 16, top: 24, bottom: 24 },
-    xAxis: { type: 'category', data: d.dates,
-             axisLabel: { fontSize: 9.5, color: '#94a3b8', interval: Math.ceil(d.dates.length / 8) } },
-    yAxis: { type: 'value', scale: true, name: '价格', nameTextStyle: { fontSize: 10, color: '#94a3b8' },
-             axisLabel: { fontSize: 10, color: '#94a3b8' }, splitLine: { lineStyle: { color: '#eef2f7' } } },
-    series: [{
-      name: '收盘价', type: 'line', data: d.close, showSymbol: false,
-      lineStyle: { width: 1.6 }, itemStyle: { color: '#0ea5e9' },
-      areaStyle: { color: 'rgba(14,165,233,0.08)' },
-      markArea: idx >= 0 ? {
-        silent: true, itemStyle: { color: 'rgba(220,38,38,0.06)' },
-        label: { show: true, position: 'insideTop', color: '#be123c', fontSize: 10, formatter: '持有中' },
-        data: [[{ xAxis: d.dates[idx] }, { xAxis: d.dates[d.dates.length - 1] }]]
-      } : undefined
-    }]
-  }, true)
-}
-
-onUnmounted(() => { chart?.dispose(); chart = null })
+// 点标的看走势（D-052 起为持仓私有，2026-11-14 抽为全局 KlineModal，任何面板可用）
+const kline = inject('kline')
 
 // 尚未建仓但已有待成交买单（如新账户周末挂单、待下个开盘撮合）→ 展示"即将持仓"
 const pendingBuys = computed(() =>
@@ -152,9 +91,10 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
     <div v-if="limitRows.length" class="mb-2 flex flex-wrap items-center gap-1.5">
       <span class="text-xs font-medium text-slate-500">今日封板</span>
       <span v-for="r in limitRows" :key="r.symbol"
-            class="tabular rounded-full px-2 py-0.5 text-[11px]"
+            class="tabular cursor-pointer rounded-full px-2 py-0.5 text-[11px] transition hover:opacity-80"
             :class="r.limit === '涨停' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'"
-            :title="`${r.symbol} ${r.name || ''} ${r.limit}`">
+            :title="`${r.symbol} ${r.name || ''} ${r.limit}（点击看走势）`"
+            @click="kline.open(r.symbol)">
         {{ r.name || r.symbol }} {{ r.limit }}
       </span>
     </div>
@@ -162,9 +102,10 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
     <!-- 持仓预警：距持有期高点回撤 ≥10%（仅提醒；处置类规则已被回测否定 D-026） -->
     <div v-if="alerts && alerts.length" class="mb-2 flex flex-wrap items-center gap-1.5">
       <span class="text-xs font-medium text-rose-700">持仓预警</span>
-      <span v-for="a in alerts" :key="a.symbol" class="tabular rounded-full px-2 py-0.5 text-xs"
+      <span v-for="a in alerts" :key="a.symbol" class="tabular cursor-pointer rounded-full px-2 py-0.5 text-xs transition hover:opacity-80"
             :class="a.level==='重度' ? 'bg-rose-600 text-white' : 'bg-amber-100 text-amber-800'"
-            :title="`持有自 ${a.held_since} · 高点 ${fmt.n(a.peak)} → 现价 ${fmt.n(a.close)}`">
+            :title="`持有自 ${a.held_since} · 高点 ${fmt.n(a.peak)} → 现价 ${fmt.n(a.close)}（点击看走势）`"
+            @click="kline.open(a.symbol)">
         {{ a.symbol }} 距持有期高点 {{ (a.dd_peak*100).toFixed(1) }}%
       </span>
     </div>
@@ -182,7 +123,8 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
           </thead>
           <tbody>
             <tr v-for="o in [...pendingBuys].sort((a,b)=>b.qty*b.price-a.qty*a.price)" :key="o.id"
-                class="border-t border-slate-100">
+                class="cursor-pointer border-t border-slate-100 hover:bg-sky-50/50"
+                title="点击查看该标的近一年走势" @click="kline.open(o.symbol)">
               <td class="px-3 py-1.5">
                 <span class="font-medium">{{ o.name || o.symbol }}</span>
                 <span class="ml-1 text-[11px] text-slate-400">{{ o.symbol }}</span>
@@ -219,7 +161,7 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
         </thead>
         <tbody>
           <tr v-for="r in sorted" :key="r.symbol" class="cursor-pointer border-t border-slate-100 hover:bg-sky-50/50"
-              title="点击查看该标的近一年走势" @click="openRow(r)">
+              title="点击查看该标的近一年走势" @click="kline.open(r.symbol, r)">
             <td class="px-3 py-1.5">
               <div class="font-medium">{{ r.name || r.symbol }}</div>
               <div class="text-[11px] text-slate-400">
@@ -249,39 +191,5 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
         </tbody>
       </table>
     </div>
-
-    <!-- 点持仓 → 近一年走势（D-052）。Teleport 到 body：卡片有 backdrop-blur，
-         会创建新的包含块，fixed 定位在里面会跑偏 -->
-    <Teleport to="body">
-    <div v-if="sel" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
-         @click.self="close">
-      <div class="w-full max-w-3xl rounded-xl bg-white p-4 shadow-2xl">
-        <div class="mb-2 flex flex-wrap items-baseline gap-2">
-          <span class="text-base font-bold">{{ sel.name || sel.symbol }}</span>
-          <span class="text-xs text-slate-400">{{ sel.symbol }}<template v-if="sel.industry"> · {{ sel.industry }}</template></span>
-          <span class="text-xs text-slate-500">
-            持有 {{ fmt.n(sel.shares, 0) }} 股 · 现价 {{ fmt.n(sel.close) }} ·
-            昨日盈亏 <b :class="fmt.signCls(sel.pnl)">{{ fmt.n(sel.pnl, 0) }}</b> ·
-            权重 {{ (sel.weight * 100).toFixed(1) }}%
-          </span>
-          <span v-if="detail && detail.held_since" class="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">
-            持有自 {{ detail.held_since }}
-          </span>
-          <button class="ml-auto rounded-lg bg-slate-100 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-200"
-                  @click="close">关闭</button>
-        </div>
-        <div v-if="loading" class="py-16 text-center text-sm text-slate-400">
-          <span class="live-dot">●</span> 加载走势…
-        </div>
-        <div v-else-if="derr" class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{{ derr }}</div>
-        <template v-else>
-          <div ref="chartEl" class="h-[300px] w-full"></div>
-          <div class="mt-1 text-[11px] text-slate-400">
-            近 {{ detail.dates.length }} 个交易日收盘价（前复权）· 浅红区间 = 当前持有期
-          </div>
-        </template>
-      </div>
-    </div>
-    </Teleport>
   </div>
 </template>

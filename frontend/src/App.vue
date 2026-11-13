@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
 import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
 import SchoolView from './components/SchoolView.vue'
+import KlineModal from './components/KlineModal.vue'
 import NavChart from './components/NavChart.vue'
 import BacktestPanel from './components/BacktestPanel.vue'
 import PositionsTable from './components/PositionsTable.vue'
@@ -57,6 +58,15 @@ function say(msg) {
 }
 provide('toast', say)
 provide('account', account)
+
+// 全局「点标的 → K 线弹窗」（2026-11-14）：任何面板 inject('kline').open(symbol, ctx?) 即可，
+// ctx 为持仓行上下文（可选）。弹窗挂载在根组件、Teleport 到 body，SchoolView 之上也能弹出。
+const klineReq = ref(null)
+provide('kline', {
+  open: (symbol, ctx = null, name = '') => {
+    klineReq.value = { symbol, ctx, name, account: account.value }
+  },
+})
 
 // ---------------------------------------------------------------- 主题色
 // 规则：选中账户的持仓——上涨市值占比决定红色覆盖比例，平均涨幅决定鲜艳度；绿色同理。
@@ -319,5 +329,6 @@ function cumText(o) {
       {{ toast }}
     </div>
   </div>
+  <KlineModal :req="klineReq" @close="klineReq = null" />
   </div>
 </template>
