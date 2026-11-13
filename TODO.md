@@ -34,6 +34,7 @@
 - [ ] 构想二例行化：法证三表（买入质量/卖飞率/否决价值）挂周六调度；11-17 数据齐后评估控制台页签；"只推曾推荐标的"的再推荐逻辑**待归因满 4 周再议**（D-068）
 - [ ] 模型层 LightGBM（路线 4）：显著正交因子做特征、WF 每年重训，样本外打赢等权打分才上线——**排在闸门之后**（D-031④）；**用 rank objective（lambdarank，group=交易日）直接对标 BigQuant StockRanker 的"排序学习+GBDT"**（机制勘定见 docs/research/bigquant_capabilities.md §③）
 - [ ] **attention/Transformer 占位**（路线 4 第二阶段，LightGBM 基线跑通后启动）：encoder-only 序列模型消费 T×N 因子面板（55 因子=特征），标签沿用 D-034 开盘口径 5 日前瞻；防泄露三纪律（归一化只拟合训练窗 / 滚动训练对齐 06 / 测试期严格样本外）+ D-073 三关准入（必须打赢 LightGBM 基线才有增量）。公开参考与设计草案：docs/research/bigquant_survey.md §四（BigQuant Transformer 公开参数已勘：98 特征 / d_model 128 / 8 头 / 3 层 / Top20 等权 5 日调仓——本机先缩配 d_model 64 / 4 头 / 2 层）
+- [ ] **研究助手 agent**（2026-11-14 已验证可行，博客第五篇）：受限工具集（3-5 个封装工具 + resolve_symbol 实体解析，禁止裸露 akshare 全家桶）+ 本地 qwen3:8b（50 行循环，错误熔断放循环层）——自然语言查数据 / 新闻打分管线的取数层。**排在新闻/公告管线之后**（其岗位是管线取数层，管线没开工前 agent 无真工具可用）；探针脚本存档 docs/blog/attachments/agent_probe.py，7 场景 A/B 判定见博客第五篇（qwen3:8b 6.5/7 胜 qwen2.5 的 5/7，两个失败均为参数记忆幻觉）
 
 ## 🔧 工程债
 
