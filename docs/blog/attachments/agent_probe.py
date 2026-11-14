@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-# agent 落地探针（第五篇博客的实测脚本，2026-11-14）
-# 用法：QuantDex conda 环境下 python agent_probe.py（需本机 Ollama 跑着 qwen3:8b）
-# 三个场景组：S1/S2/S4 验证工具调用与实体解析，S3 验证两步链，S5/S6/S7 验证幻觉抗性。
-# -*- coding: utf-8 -*-
-"""agent 落地性探针 v2（临时测试，不入库）：工具层全部用今天实测可靠的源。"""
+"""agent 落地探针（第五篇博客的实测脚本，2026-11-14）。
+
+用法：QuantDex conda 环境下 python agent_probe.py（需本机 Ollama 跑着 qwen3:8b）。
+场景组：S1/S2/S4 验证工具调用与实体解析，S3 验证两步链，S5/S6/S7 验证幻觉抗性。
+工具层说明：akshare 的新闻/行情接口在本机当时不可用（py_mini_racer 与东财断连），
+故行情走本地 Parquet 仓库、指数权重走中证指数官网接口——工具必须用当天实测可靠的源。
+"""
 import json, time, urllib.request, sys
 sys.path.insert(0, r'D:\MeineArbeit\QuantDex')
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -65,8 +67,9 @@ def chat(messages):
     return r['message']
 
 def agent(query, max_iters=MAX_ITERS):
-    # 2026-11-14 实验：system 角色 + tools 在 Ollama 0.32.15 的 qwen2.5 模板上会静默丢工具
-    # （v2 全部场景零调用）。改为把纪律并入 user 消息首行。
+    # 纪律（SYSTEM）并入 user 消息首行——这是 7 场景实测通过的可靠配置
+    # （后验：system 角色 + tools 在 qwen3:8b 上单独实测也能正常触发，
+    #  当日"system 丢工具"的怀疑系探针自身漏传 tools 参数所致，见博客第五篇教训二）
     msgs = [{'role': 'user', 'content': SYSTEM + '\n\n---\n\n' + query}]
     trace, fail_sig = [], {}
     for it in range(max_iters):
