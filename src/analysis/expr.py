@@ -29,7 +29,7 @@ import pandas as pd
 
 _TOKEN = re.compile(
     r"\s*(\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*"
-    r"|\d+\.?\d*(?:[eE][+-]?\d+)?|[-+*/(),])")
+    r"|\d+\.?\d*(?:[eE][+-]?\d+)?|>=|<=|==|!=|[-+*/(),><])")
 
 
 # ---------------------------------------------------------------- 算子库
@@ -49,23 +49,59 @@ def _corr(x, y, n):
     return x.rolling(int(n)).corr(y)
 
 
+def _tsrank(x, d):
+    """时序排名：当前值在过去 d 天（含当日）中的分位（0~1）。宽面板向量化实现。"""
+    d = int(d)
+    total, cnt = None, None
+    for k in range(d):
+        s = x.shift(k)
+        le = (s <= x).astype(float).where(s.notna())
+        total = le if total is None else total + le
+        cnt = s.notna().astype(float) if cnt is None else cnt + s.notna().astype(float)
+    return (total / cnt).where(cnt >= d)
+
+
+def _decay_linear(x, d):
+    """线性衰减加权移动平均，权重 d, d-1, ..., 1（归一化）。"""
+    d = int(d)
+    total, wsum = None, 0
+    for k in range(d):
+        w = d - k
+        part = x.shift(k) * w
+        total = part if total is None else total + part
+        wsum += w
+    return total / wsum
+
+
+def _product(x, d):
+    d = int(d)
+    return x.rolling(d).apply(np.prod, raw=True)
+
+
 def _greater(a, b):
-    if isinstance(a, pd.Series) and isinstance(b, pd.Series):
-        return pd.Series(np.maximum(a.to_numpy(), b.to_numpy()), index=a.index)
-    return a.where(a > b, b) if isinstance(a, pd.Series) else (
-        b.where(b > a, a) if isinstance(b, pd.Series) else max(a, b))
+    out = np.maximum(a, b)
+    if isinstance(out, (pd.Series, pd.DataFrame)):
+        return out
+    idx = a.index if isinstance(a, pd.Series) else (
+        b.index if isinstance(b, pd.Series) else None)
+    return pd.Series(out, index=idx) if idx is not None else out
 
 
 def _less(a, b):
-    if isinstance(a, pd.Series) and isinstance(b, pd.Series):
-        return pd.Series(np.minimum(a.to_numpy(), b.to_numpy()), index=a.index)
-    return a.where(a < b, b) if isinstance(a, pd.Series) else (
-        b.where(b < a, a) if isinstance(b, pd.Series) else min(a, b))
+    out = np.minimum(a, b)
+    if isinstance(out, (pd.Series, pd.DataFrame)):
+        return out
+    idx = a.index if isinstance(a, pd.Series) else (
+        b.index if isinstance(b, pd.Series) else None)
+    return pd.Series(out, index=idx) if idx is not None else out
 
 
 _OPS = {
     "+": lambda a, b: a + b, "-": lambda a, b: a - b,
     "*": lambda a, b: a * b, "/": lambda a, b: a / b,
+    ">": lambda a, b: a > b, "<": lambda a, b: a < b,
+    ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b,
+    "==": lambda a, b: a == b, "!=": lambda a, b: a != b,
 }
 _FUNCS = {
     "Ref": _ref,
@@ -81,6 +117,25 @@ _FUNCS = {
     "Greater": _greater, "Less": _less,
     "Abs": lambda x: x.abs(),
     "Log": lambda x: np.log(x.where(x > 0)),
+    # ---------------- 横截面/时序排名与高级算子（2026-11-14，Alpha101 移植新增） ----------------
+    # Rank = 横截面排名（宽面板 axis=1）；时序算子逐列滚动。全部兼容 Series 与 DataFrame。
+    "Rank": lambda x: x.rank(axis=1, pct=True) if isinstance(x, pd.DataFrame) else x.rank(pct=True),
+    "TsRank": _tsrank,
+    "DecayLinear": _decay_linear,
+    "Sign": lambda x: np.sign(x),
+    "Cov": lambda x, y, n: x.rolling(int(n)).cov(y),
+    "Product": _product,
+    "TsArgMax": lambda x, n: x.rolling(int(n)).apply(
+        lambda a: int(np.argmax(a)) if np.isfinite(a).all() else np.nan, raw=True),
+    "TsArgMin": lambda x, n: x.rolling(int(n)).apply(
+        lambda a: int(np.argmin(a)) if np.isfinite(a).all() else np.nan, raw=True),
+    "SignedPower": lambda x, a: np.sign(x) * np.abs(x) ** float(a),
+    "Scale": lambda x, a=1.0: (x.div(x.abs().sum(axis=1).replace(0, np.nan), axis=0) * a) if isinstance(
+        x, pd.DataFrame) else x / x.abs().sum() * a,
+    "If": lambda c, t, f: pd.DataFrame(np.where(np.asarray(c) > 0, np.asarray(t), np.asarray(f)),
+                                       index=getattr(c, "index", None),
+                                       columns=getattr(c, "columns", None)) if isinstance(
+        c, (pd.Series, pd.DataFrame)) else (t if c > 0 else f),
 }
 
 
@@ -114,9 +169,16 @@ class _Parser:
         return t
 
     def parse(self):
-        node = self._expr()
+        node = self._cmp()
         if self._peek() is not None:
             raise ValueError(f"多余 token: {self.toks[self.i:]}")
+        return node
+
+    def _cmp(self):
+        node = self._expr()
+        while self._peek() in (">", "<", ">=", "<=", "==", "!="):
+            op = self._next()
+            node = _binop(op, node, self._expr())
         return node
 
     def _expr(self):
@@ -157,10 +219,10 @@ class _Parser:
             return lambda f, v=v: v
         if t in _FUNCS and self._peek() == "(":
             self._next()
-            args = [self._expr()]
+            args = [self._cmp()]
             while self._peek() == ",":
                 self._next()
-                args.append(self._expr())
+                args.append(self._cmp())
             if self._next() != ")":
                 raise ValueError(f"{t} 缺少右括号")
             return lambda f, fn=_FUNCS[t], a=args: fn(*[x(f) for x in a])
@@ -175,15 +237,31 @@ _PARSE_CACHE: dict = {}
 
 
 def evaluate(expr: str, fields: dict) -> pd.Series:
-    """求值表达式。fields: {"close": Series, "volume": Series, ...}（不带 $ 前缀）。
+    """求值表达式（单标的模式）。fields: {"close": Series, ...}（不带 $ 前缀）。
 
     返回与输入对齐的 Series（±inf 已替换为 NaN）。
     """
+    out = _eval_cached(expr)(fields)
+    if isinstance(out, pd.Series):
+        return out.replace([np.inf, -np.inf], np.nan)
+    return pd.Series(out)
+
+
+def evaluate_wide(expr: str, fields: dict) -> pd.DataFrame:
+    """求值表达式（宽面板模式，2026-11-14 Alpha101 移植新增）。
+
+    fields 的每个值为宽 DataFrame（index=date, columns=symbol），
+    支持横截面算子 Rank / Scale（axis=1）。返回宽 DataFrame（±inf → NaN）。
+    """
+    out = _eval_cached(expr)(fields)
+    if isinstance(out, pd.DataFrame):
+        return out.replace([np.inf, -np.inf], np.nan)
+    return out
+
+
+def _eval_cached(expr: str):
     node = _PARSE_CACHE.get(expr)
     if node is None:
         node = _Parser(_tokenize(expr)).parse()
         _PARSE_CACHE[expr] = node
-    out = node(fields)
-    if isinstance(out, pd.Series):
-        return out.replace([np.inf, -np.inf], np.nan)
-    return pd.Series(out)
+    return node
