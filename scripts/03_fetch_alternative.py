@@ -1,9 +1,17 @@
 """
 第 3 步：另类/深度数据批量抓取——估值、财务、资金流、宏观、龙虎榜。
 
-2026-11-14 重构（P1-a/P1-b，TODO 数据补全节）：个股估值与财务从 2 只演示改为
-按 PIT 历史成分并集（949 只）批量，支持断点续传——fin_abstract / valuation
-已入库的标的自动跳过，失败清单收尾打印，重跑自动补漏（D-062 失败帧纪律）。
+2026-11-14 重构（P1-a/P1-b）：个股估值与财务从 2 只演示改为按 PIT 历史成分并集
+（949 只）批量，断点续传 + 落盘核验 + 限流熔断。
+
+2026-11-15 首轮教训修订（验收打脸三条，全部内建，见 TODO P1-b 条目）：
+  ① 节流预算：标的服务间隔 0.35s → 1.2s（每标的一轮 ≈ 10 个 bs 查询，0.35s
+     等于 0.035s/查询——D-060 锤法复刻，教训重蹈）；连续失败熔断（15 只冷却
+     120s，40 只中止——限流时硬冲 = 拉黑复刻）。
+  ② 断点锚点改为 fin_bs 件数完整性（≥8 件：六件套+分红+复权因子）——摘要存在
+     ≠ 六件套完整，首轮 830 只部分完成态会被旧锚点误跳过。
+  ③ 落盘核验：完成计数来自实存文件数，不来自"fetch 没抛异常"（首轮进度行
+     "失败 0" 与日志 62040 行连接错误矛盾）。
 
 用法：
     python scripts/03_fetch_alternative.py                 # 全量（市场级 + 个股批量）
@@ -11,8 +19,8 @@
     python scripts/03_fetch_alternative.py --skip-market   # 只跑个股批量
     python scripts/03_fetch_alternative.py --skip-batch    # 只跑市场级（宏观/北向/两融/龙虎榜/指数估值）
 
-耗时预估：财务六件套（baostock，串行）949 只约 2~3h；估值（百度）约 20~30min。
-baostock 查询超时天会大量失败——断点续传设计，改天重跑自动补漏，不要硬冲。
+耗时预估：财务六件套（baostock，串行）949 只约 3h（1.2s 间隔下）；估值（百度）约 30min。
+baostock 限流天熔断会中止——冷却后重跑，断点续传自动补漏，不要硬冲（D-060）。
 """
 import argparse
 import time
@@ -33,7 +41,11 @@ from src.data.universe import pit_union_symbols
 from src.data.valuation import fetch_index_valuation, fetch_stock_valuation
 
 INDEX_VAL_NAMES = ["沪深300", "中证500", "创业板50"]
-REQUEST_INTERVAL = 0.35                 # config.REQUEST_INTERVAL 同值：百度接口礼貌间隔
+VAL_INTERVAL = 0.35                    # 百度接口礼貌间隔
+BS_SYMBOL_INTERVAL = 1.2               # baostock 标的服务间隔（每标的一轮 ≈ 10 查询）
+BS_COMPLETE_MIN_FILES = 8              # 六件套6 + 分红1 + 复权因子1 = 8 件为完整
+BS_COOLDOWN_AFTER = 15                 # 连续失败 N 只 → 冷却 120s
+BS_ABORT_AFTER = 40                    # 连续失败 N 只（冷却后仍持续）→ 中止批次
 
 
 def market_level(store: ParquetStore) -> None:
@@ -46,7 +58,7 @@ def market_level(store: ParquetStore) -> None:
     print(">> [市场级] 北向资金 + 两融 ...")
     print(f"  北向: {len(fetch_northbound('北向资金', store))} 行")
     print(f"  沪市两融: {len(fetch_margin_hist('sh', store))} 行")
-    print(f"  深市两融: {len(fetch_margin_hist('sz', store))} 行")
+    print(f"  沪市两融(深): {len(fetch_margin_hist('sz', store))} 行")
 
     print(">> [市场级] 近一个月龙虎榜 ...")
     end = pd.Timestamp.now()
@@ -62,31 +74,54 @@ def market_level(store: ParquetStore) -> None:
         print(f"  {k}: {v}")
 
 
-def _batch(symbols, fetch_one, exists_check, label, limit):
-    """通用批量骨架：断点续传 + 失败清单 + 进度打印（D-062 失败帧纪律）。"""
+def _finbs_count(store: ParquetStore, symbol: str) -> int:
+    """该标的在 financials/baostock 下的实存文件数（六件套+分红+复权因子的落盘核验）。"""
+    from config import FINANCIAL_DIR
+    from src.data.schema import normalize_code
+    d = FINANCIAL_DIR / "baostock"
+    code = normalize_code(symbol)
+    return len(list(d.glob(f"{code}__*.parquet")))
+
+
+def _batch(symbols, fetch_one, done_check, label, limit, interval):
+    """通用批量骨架：断点续传（完整锚点）+ 落盘核验计数 + 限流熔断（D-060 教训内建）。"""
     todo = symbols[:limit] if limit else symbols
     n = len(todo)
-    print(f">> [个股批量] {label}：{n} 只（其中已入库跳过若干）")
+    print(f">> [个股批量] {label}：{n} 只（其中已完整跳过若干）")
     done, skipped, failed, empty = 0, 0, [], []
+    consec_fail = 0
     for i, sym in enumerate(todo, 1):
-        if exists_check(sym):
+        if done_check(sym):
             skipped += 1
             continue
         try:
-            rows = fetch_one(sym)
-            # 返回值可能是 DataFrame（估值）或 dict（财务统计）——统一按长度判空
-            if rows is None or (hasattr(rows, "__len__") and len(rows) == 0):
-                empty.append(sym)
-            else:
+            fetch_one(sym)
+            landed = done_check(sym)               # ③ 落盘核验：不信任"没抛异常"
+            if landed:
                 done += 1
-        except Exception as e:  # noqa: BLE001  单只失败不拖垮批次，错误清单收尾打印
+                consec_fail = 0
+            else:
+                failed.append((sym, "fetch 返回但落盘不完整"))
+                consec_fail += 1
+        except Exception as e:  # noqa: BLE001  单只失败不拖垮批次
             failed.append((sym, str(e)[:120]))
+            consec_fail += 1
         if i % 25 == 0 or i == n:
-            print(f"  进度 {i}/{n} | 新入库 {done} | 跳过 {skipped} "
+            print(f"  进度 {i}/{n} | 落盘核验完成 {done} | 跳过 {skipped} "
                   f"| 空 {len(empty)} | 失败 {len(failed)}", flush=True)
-        time.sleep(REQUEST_INTERVAL)
-    print(f">> [个股批量] {label} 完成：新入库 {done} | 跳过（已存在）{skipped} "
-          f"| 空数据 {len(empty)} | 失败 {len(failed)}")
+        # ① 限流熔断（D-060）：连续失败达阈值 → 冷却；冷却后仍连续失败达硬上限 → 中止
+        if consec_fail >= BS_ABORT_AFTER:
+            print(f"  [熔断中止] 连续 {consec_fail} 只失败且冷却无效——baostock 已限流，"
+                  f"冷却后重跑自动补漏（断点续传）", flush=True)
+            break
+        if consec_fail >= BS_COOLDOWN_AFTER:
+            print(f"  [冷却] 连续 {consec_fail} 只失败，暂停 120s（D-060 拉黑教训：限流时硬冲 = 拉黑复刻）",
+                  flush=True)
+            time.sleep(120)
+            consec_fail = 0
+        time.sleep(interval)
+    print(f">> [个股批量] {label} 完成：落盘核验完成 {done} | 跳过 {skipped} "
+          f"| 空 {len(empty)} | 失败 {len(failed)}")
     if failed:
         print("  失败清单（重跑本脚本自动补漏）：")
         for sym, err in failed[:20]:
@@ -104,17 +139,16 @@ def batch_stocks(store: ParquetStore, symbols, limit: int) -> None:
         symbols,
         lambda s: fetch_stock_valuation(s, period="全部", store=store),
         lambda s: store.exists("valuation", s),
-        "估值（百度，P1-a）", limit)
+        "估值（百度，P1-a）", limit, VAL_INTERVAL)
 
     fail_b = _batch(
         symbols,
         lambda s: fetch_all_financials(s, years=3, store=store),
-        lambda s: store.exists("fin_abstract", s),
-        "财务全套（baostock，P1-b：摘要+六件套+快报预告+分红+复权因子）", limit)
+        lambda s: _finbs_count(store, s) >= BS_COMPLETE_MIN_FILES,
+        "财务全套（baostock，P1-b：摘要+六件套+快报预告+分红+复权因子）", limit, BS_SYMBOL_INTERVAL)
 
     if fail_a or fail_b:
-        print(f"\n>> 注意：本轮失败 {fail_a + fail_b} 只——多为数据源超时，"
-              f"重跑本脚本自动补漏（断点续传）。")
+        print(f"\n>> 注意：本轮失败 {fail_a + fail_b} 只——重跑本脚本自动补漏（断点续传）。")
 
 
 def main() -> None:
