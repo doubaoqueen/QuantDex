@@ -95,11 +95,15 @@ def test_freshness_agrees_with_snapshot_date():
 
 
 def test_missing_trade_days_finds_whole_day_and_partial_partition():
-    """整天没跑更新 → 无分区；只写了指数 → 行数远低于邻日；两者都必须被识别。"""
+    """整天没跑更新 → 无分区；只写了指数 → 行数远低于邻日；两者都必须被识别。
+
+    取收盘后（20:00）的时点：D-083 起"最近收盘日"本身不算洞（属于"该更新了"），
+    所以要在它之**前**的日子上验证识别能力。
+    """
     parts = {str(d.date()): 20 for d in CAL}
     del parts["2026-11-04"]            # 整天空缺：连分区都没有
     parts["2026-11-09"] = 2            # 只写了两条指数（11-09 的真实状态）
-    assert _missing_days(parts) == ["2026-11-04", "2026-11-09"]
+    assert _missing_days(parts, at="2026-11-10 20:00") == ["2026-11-04", "2026-11-09"]
 
 
 def test_missing_trade_days_empty_when_complete():
@@ -120,6 +124,20 @@ def test_incremental_start_fills_hole_not_next_day():
                                      None, "20150101") == "20261107"
     # 无本地数据 → 全史
     assert market._incremental_start(None, ts("2026-11-10"), None, "20150101") == "20150101"
+
+
+def test_missing_trade_days_ignores_latest_closed_day():
+    """15:00~16:00 的"今天还没抓"不是洞（D-083）。
+
+    历史源的"最近收盘日"要 16:00 才认当天，此刻把最近收盘日当缺失会让起抓日越过
+    上界 → 949 只逐个报"起始日期大于终止日期"（2026-11-16 15:04 实测，整批白跑）。
+    """
+    parts = {str(d.date()): 20 for d in CAL if str(d.date()) != "2026-11-11"}
+    assert _missing_days(parts, at="2026-11-11 15:12") == []
+    # 但"最近收盘日之前"的真洞仍必须报出来
+    parts2 = {str(d.date()): 20 for d in CAL
+              if str(d.date()) not in ("2026-11-10", "2026-11-11")}
+    assert _missing_days(parts2, at="2026-11-11 15:12") == ["2026-11-10"]
 
 
 def test_spot_payload_guard_rejects_preopen_reset():

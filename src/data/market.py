@@ -526,6 +526,7 @@ def update_kline_batch(
     end_arg = (pd.Timestamp(last_closed).strftime("%Y%m%d")
                if last_closed is not None else None)
     gap_start = None
+    n_skip = {"n": 0}
     try:
         from src.data.snapshot import missing_trade_days
         holes = missing_trade_days(store)
@@ -543,6 +544,11 @@ def update_kline_batch(
             last = get_local_last_date(code, period, adjust, store)
             start = _incremental_start(last, last_closed, gap_start, full_start)
             if start is None:
+                return code, "uptodate"
+            if end_arg is not None and start > end_arg:
+                # 起抓日越过上界（只可能来自两侧"最近收盘日"口径不一致）：
+                # 发出去必然 0 行、还会被记成失败，直接按已最新跳过（D-083）。
+                n_skip["n"] += 1
                 return code, "uptodate"
         except Exception:  # noqa: BLE001  读本地失败也按全新标的处理
             start = full_start
@@ -591,4 +597,7 @@ def update_kline_batch(
                     report[code] = res
                 if done % 20 == 0 or done == n:
                     print(f"  进度 {done}/{n}，失败 {len(report['__failed__'])}", flush=True)
+    if n_skip["n"]:
+        print(f">> [gap] {n_skip['n']} 只的起抓日越过上界（{end_arg}），按已最新跳过"
+              f"（多半是 15:00~16:00 之间历史源还没结算当天）", flush=True)
     return report

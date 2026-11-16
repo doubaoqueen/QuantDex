@@ -232,6 +232,12 @@ def missing_trade_days(store: ParquetStore | None = None, lookback: int = 30,
     没有分区；只写了指数（2026-11-09 当时只有 2 行）→ 行数远低于邻日 → 同样算缺失。
     只扫最近 lookback 个交易日：更早的洞靠回退起抓日已不经济，需要时用
     18_rebuild_daily_cache + 全史重抓处理。
+
+    **只看 `< closed`，不含"最近收盘日"本身**（D-083）：收盘日还没抓下来属于
+    "该更新了"（freshness 的 stale 管这一段，走快照/正常增量）；把它当洞会致命——
+    15:00~16:00 窗口里历史源（16:00 才认当天已收盘）还拿不到当天数据，起抓日会比
+    上界还大，整批 949 只逐个报"起始日期大于终止日期"（2026-11-16 15:04 实测）。
+    真正的"漏跑一整天"永远发生在最近收盘日**之前**，这个窗口靠 `closed` 天然覆盖。
     """
     store = store or ParquetStore()
     now = pd.Timestamp.now() if now is None else pd.Timestamp(now)
@@ -239,7 +245,7 @@ def missing_trade_days(store: ParquetStore | None = None, lookback: int = 30,
     _, closed = _session(now, cal)
     if closed is None:
         return []
-    window = cal[cal <= closed]
+    window = cal[cal < closed]
     window = window[-max(1, int(lookback)):]
     if not len(window):
         return []
