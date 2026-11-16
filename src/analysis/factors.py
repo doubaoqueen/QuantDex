@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from config import STORE_DIR
 from src.data.schema import kline_file_name, normalize_code
 from src.data.storage import ParquetStore
 
@@ -98,7 +99,7 @@ def st_symbol_set(store: ParquetStore) -> set:
     """
     try:
         sec = store.read("meta", "bs_securities", columns=["symbol", "name"])
-        return {str(s) for s, n in zip(sec["symbol"], sec["name"])
+        return {str(s) for s, n in zip(sec["symbol"], sec["name"], strict=False)
                 if "ST" in str(n).upper()}
     except Exception:  # noqa: BLE001  证券表缺失时不误杀（宁可放过不可错杀）
         return set()
@@ -210,3 +211,210 @@ def build_factor_panel(
 
     panel = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
     return panel
+
+
+
+# ---------------------------------------------------------------- 全池因子快照（D-084）
+
+SNAPSHOT_PATH = STORE_DIR / "cache" / "factor_snapshot.parquet"   # 日更预计算缓存（测试可替换）
+
+
+def factor_last_row_wide(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """纯计算核心：每标的一个日线帧（须含 date/symbol/close/amount/turnover/pct_chg 列），
+    一次算出全部标的的最新因子行（宽面板向量化）。
+
+    为什么存在（D-084，2026-11-17）：candidates 原实现逐标的循环（每只读盘 1.9ms +
+    pandas 因子 3.6ms，949 只 ≈5~10s），瓶颈在调用开销不在算力——同样的因子宽面板
+    一次算纯数学只要 0.19s（实测）。向量化后全池 ≈2~3s，配合日更预计算缓存
+    （get_factor_snapshot）后 Web 交互延迟与股票池规模解耦（全 A/港美扩展不再恶化）。
+
+    与逐只口径（compute_raw_factors）的等价性规则：
+    ① 各标的取**自己最后有效行**上的因子值（等价于旧口径"用自己最后一行"）；
+    ② **新鲜度约束**——因子最后有效值的行位次必须与 close 一致：停牌占位/脏行型
+    （close 冻结但 turnover 全 NaN，如 000016 停牌两月）因子置 NaN、被调用方剔除
+    （与旧口径三因子 isfinite 过滤一致）；纯缺行型停牌（文件里没有停牌期行）不受
+    影响（旧口径同样保留）。有 ≥70 行的标的才入快照（与旧 len(k)>=70 一致）。
+    等价性核验见 tests/test_factor_snapshot.py（含真实库全量对照）。
+
+    返回 DataFrame（index.name="symbol"）：close/pct_chg(小数)/8 因子列；
+    attrs["as_of"]=宽矩阵最后交易日，attrs["last_dates"]=各标的自己的最后交易日
+    （供分红 TTM 窗口用，停牌标的窗口终点=它自己的最后行，与旧逐只口径一致）。
+    """
+    kept: list[pd.DataFrame] = []
+    for df in frames:
+        d = df[["date", "symbol", "close", "amount", "turnover", "pct_chg"]].copy()
+        d["date"] = pd.to_datetime(d["date"], errors="coerce")
+        for c in ("close", "amount", "turnover", "pct_chg"):
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["date"])
+        kept.append(d)
+    if not kept:
+        return pd.DataFrame()
+    panel = pd.concat(kept, ignore_index=True)
+    if panel.empty:
+        return pd.DataFrame()
+
+    # 宽矩阵（date × symbol）：factorize 建索引后一次性填充，比逐列 pivot 快一个量级
+    dates = pd.DatetimeIndex(np.sort(panel["date"].unique()))
+    sym_idx, sym_codes = pd.factorize(panel["symbol"])   # codes=行→列位次, uniques=列标签
+    row_idx = dates.searchsorted(panel["date"].to_numpy())
+
+    def _mat(col: str) -> pd.DataFrame:
+        m = np.full((len(dates), len(sym_codes)), np.nan)
+        m[row_idx, sym_idx] = panel[col].to_numpy()
+        return pd.DataFrame(m, index=dates, columns=sym_codes)
+
+    close = _mat("close")
+    amt = _mat("amount")
+    turn = _mat("turnover")
+    pct = _mat("pct_chg")
+
+    def _last_vals(dfm: pd.DataFrame):
+        """各列（标的）从末尾数的最后有效值 + 其行位次（整列 NaN → 位次 -1、值 NaN）。"""
+        v = dfm.to_numpy(dtype=float)
+        valid = ~np.isnan(v)
+        anyv = valid.any(axis=0)
+        pos = np.where(anyv, v.shape[0] - 1 - np.argmax(valid[::-1], axis=0), -1)
+        vals = np.where(anyv, v[np.clip(pos, 0, v.shape[0] - 1), np.arange(v.shape[1])], np.nan)
+        return pd.Series(vals, index=dfm.columns), pos
+
+    # 新鲜度约束（2026-11-17 验收抓到的停牌标的缺陷）：因子最后有效值的**行位次**
+    # 必须与 close 一致——即值落在标的自己的最后有效行上。ffill 只允许跨"缺行"
+    # （停牌缺行型，旧口径同样保留），不允许跳过"行内坏行"（停牌占位/脏行型，
+    # 000016 停牌两月 close 冻结但 turnover 全 NaN——旧口径剔除，ffill 会错误地
+    # 用停牌前的旧因子值把它救活进候选池）。
+    close_vals, close_pos = _last_vals(close)
+
+    # 因子公式与 compute_raw_factors 逐字对应（滚动沿时间轴滑动，逐列独立）
+    ret = close.pct_change()
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+
+    snap = pd.DataFrame({"close": close_vals})
+    for name, fm in (
+        ("pct_chg", pct),
+        ("mom_20", close.pct_change(20)),
+        ("rev_5", close.pct_change(5)),
+        ("mom_60", close.pct_change(60)),
+        ("vol_20", ret.rolling(20).std()),
+        ("turnover_20", turn.rolling(20).mean()),
+        ("rsi_14", (100 - 100 / (1 + rs)).where(avg_loss != 0, 100)),
+        ("ma60_bias", close / close.rolling(60).mean() - 1),
+        ("amihud_20", (ret.abs() / amt.replace(0, np.nan)).rolling(20).mean()),
+    ):
+        vals, pos = _last_vals(fm)
+        fresh = np.where(pos == close_pos, vals, np.nan)
+        snap[name] = fresh / 100.0 if name == "pct_chg" else fresh   # 仓库百分数 → 小数
+    snap.attrs["as_of"] = dates[-1]
+    snap.attrs["last_dates"] = close.apply(pd.Series.last_valid_index)   # symbol → 自己的最后交易日
+    # ≥70 行才入快照（旧 candidates 口径；年幼上市标的因子语义不足）
+    n_rows = close.notna().sum()
+    snap = snap.loc[n_rows[n_rows >= 70].index]
+    snap.index.name = "symbol"
+    return snap
+
+
+def factor_snapshot_wide(symbols, store: ParquetStore | None = None,
+                         include_dy: bool = True) -> pd.DataFrame:
+    """全池因子快照（读仓库 → 宽面板向量化）：factor_last_row_wide 的仓库入口。
+
+    include_dy=True 时追加 dy_ttm（各标的近 365 日每股分红之和 / 现价，TTM 口径）；
+    无分红标的该列为 NaN（红利账户按 >0 过滤，与旧 candidates 一致）。
+    """
+    store = store or ParquetStore()
+    frames = []
+    for s in symbols:
+        try:
+            df = store.read("daily", kline_file_name(str(s), "qfq"),
+                            columns=["date", "close", "amount", "turnover", "pct_chg"])
+        except Exception:  # noqa: BLE001  缺文件/坏文件跳过（与旧循环 continue 同口径）
+            continue
+        if df is None or df.empty:
+            continue
+        df["symbol"] = str(s)
+        frames.append(df)
+    snap = factor_last_row_wide(frames)
+    snap["dy_ttm"] = np.nan
+    if snap.empty or not include_dy:
+        return snap
+    from src.data.financials import load_dividend_panel
+    try:
+        dpanel = load_dividend_panel(store, symbols=[str(s) for s in symbols])
+    except Exception:  # noqa: BLE001  分红缺失不拖垮快照（红利账户按 NaN 过滤即可）
+        dpanel = pd.DataFrame()
+    if dpanel.empty:
+        return snap
+    last_dates = snap.attrs.get("last_dates")
+    d = dpanel.dropna(subset=["date", "dividend"]).copy()
+    d["symbol"] = d["symbol"].astype(str)
+    for sym, g in d.groupby("symbol"):
+        end = last_dates.get(sym) if last_dates is not None else None
+        if end is None or pd.isna(end):
+            continue
+        # TTM = 该标的最后交易日往前 365 个日历日内的分红和（旧逐只口径等价）
+        win = g[(g["date"] > end - pd.Timedelta(days=365)) & (g["date"] <= end)]
+        ttm = float(win["dividend"].sum())
+        if ttm > 0:
+            snap.loc[sym, "dy_ttm"] = ttm / snap.at[sym, "close"]
+    return snap
+
+
+def _save_snapshot_cache(snap: pd.DataFrame, as_of) -> None:
+    """快照落盘缓存（附 as_of 常量列——parquet 不保留 attrs，落盘只认列）。"""
+    try:
+        if as_of is None or snap.empty:
+            return
+        SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        out = snap.reset_index()
+        out["as_of"] = pd.Timestamp(as_of)
+        out.attrs = {}   # pandas 3 会把 attrs JSON 序列化进 parquet 元数据，Timestamp/Series 直接炸
+        out.to_parquet(SNAPSHOT_PATH, index=False)
+    except Exception:  # noqa: BLE001  缓存失败不影响主路径（下次现算）
+        pass
+
+
+def _load_snapshot_cache(latest) -> pd.DataFrame | None:
+    """读缓存：as_of == 最新交易日才有效（PIT 并集与行情同一日更链更新，日内不漂移；
+    盘中单独补成分等罕见情形下一晚自愈，或调用方 force=True）。"""
+    if latest is None:
+        return None
+    try:
+        cached = pd.read_parquet(SNAPSHOT_PATH)
+        if pd.to_datetime(cached["as_of"].iloc[0]) != pd.Timestamp(latest):
+            return None
+        cached = cached.drop(columns=["as_of"])
+        cached["symbol"] = cached["symbol"].astype(str)
+        snap = cached.set_index("symbol")
+        snap.attrs["as_of"] = pd.Timestamp(latest)
+        return snap
+    except Exception:  # noqa: BLE001  缺文件/坏文件 → 当无缓存
+        return None
+
+
+def get_factor_snapshot(symbols, store: ParquetStore | None = None,
+                        force: bool = False, latest=None) -> pd.DataFrame:
+    """带缓存的快照入口（Web 与日更预计算共用）。
+
+    latest=None 时从 000300 指数日线解析最新交易日（与 candidates 展示日期同源）；
+    测试可直接传 latest 注入。缓存命中 <0.1s；未命中向量化现算 ≈3s 并落盘。
+    """
+    store = store or ParquetStore()
+    if latest is None:
+        try:
+            k0 = store.read("daily", kline_file_name("000300", "none"), columns=["date"])
+            latest = pd.to_datetime(k0["date"]).max()
+        except Exception:  # noqa: BLE001
+            latest = None
+    if not force:
+        cached = _load_snapshot_cache(latest)
+        if cached is not None:
+            return cached
+    snap = factor_snapshot_wide(symbols, store=store)
+    if latest is not None:
+        snap.attrs["as_of"] = pd.Timestamp(latest)
+    _save_snapshot_cache(snap, latest)
+    return snap

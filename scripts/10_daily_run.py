@@ -47,9 +47,9 @@ def main() -> None:
         sys.exit(3)
 
     push = "--no-push" not in sys.argv
+    store = ParquetStore()
+    symbols = universe.pit_union_symbols("000300", store)
     if "--skip-update" not in sys.argv:
-        store = ParquetStore()
-        symbols = universe.pit_union_symbols("000300", store)
         source = os.environ.get("QUANTDEX_SOURCE", "bs")
         allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
         allow_bs = os.environ.get("QUANTDEX_BS_FALLBACK", "1") == "1"
@@ -96,6 +96,15 @@ def main() -> None:
         ensure_qfq_integrity(symbols, store=store)
     else:
         print(">> 跳过行情更新（--skip-update，使用本地已有数据）")
+
+    # D-084：候选池快照预计算——Web 端候选池/策略动向/因子面板打开即读缓存
+    # （原逐只循环 949 只 ≈5~10s；预计算后交互 <0.1s，且与股票池规模解耦）。
+    try:
+        from src.analysis.factors import get_factor_snapshot
+        snap = get_factor_snapshot(symbols, store=store)
+        print(f">> 候选池快照就绪：{len(snap)} 只（as_of {snap.attrs.get('as_of')}）")
+    except Exception as e:  # noqa: BLE001  预计算失败不阻断日更（Web 端会现算兜底）
+        print(f"[snapshot] 预计算失败（不影响流水线，Web 端现算兜底）: {e}")
 
     print("")
 

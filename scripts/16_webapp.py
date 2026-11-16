@@ -390,11 +390,21 @@ def school_data():
     """量化学院动态数据（D-044：内容数据在 src/analysis/school_content，统计实时算）。"""
     from src.analysis import expr_factors as EF
     from src.analysis.factors import FACTOR_NAMES
-    from src.analysis.school_content import (OPS_TABLE, PITFALLS, PORTFOLIO_STEPS,
-                                             POSTMORTEM, POSTMORTEM_LESSON, RISK_BUDGET,
-                                             RISK_CALLOUT, RISK_NOTE, STATUS_STYLE,
-                                             STRATEGY_MAP, WF_FOLDS, WF_LESSON,
-                                             WF_SUMMARY)
+    from src.analysis.school_content import (
+        OPS_TABLE,
+        PITFALLS,
+        PORTFOLIO_STEPS,
+        POSTMORTEM,
+        POSTMORTEM_LESSON,
+        RISK_BUDGET,
+        RISK_CALLOUT,
+        RISK_NOTE,
+        STATUS_STYLE,
+        STRATEGY_MAP,
+        WF_FOLDS,
+        WF_LESSON,
+        WF_SUMMARY,
+    )
     st = {"n_factors": len(FACTOR_NAMES) + len(EF.EXPR_FACTORS) + 1,
           "n_expr": len(EF.EXPR_FACTORS)}
     try:
@@ -513,7 +523,8 @@ def candidates(acc):
     """候选池（海选）：该账户策略在最新交易日对全部 PIT 成分打分的前 15 名。
 
     分数与流水线同口径（截面 rank 合成）；标注持仓中/待成交/备选#N，并带名称/行业/涨跌停。
-    为速度只取每标的最近 420 行计算（滚动窗口足够），结果按账户缓存 15 分钟。
+    D-084 提速：因子改用宽面板快照（日更预计算缓存命中 <0.1s，未命中向量化现算 ≈3s）
+    ——原逐只循环 949 只 ≈5~10s，且交互延迟从此与股票池规模解耦。结果按账户缓存 15 分钟。
     """
     import time as _t
     now = _t.time()
@@ -522,58 +533,31 @@ def candidates(acc):
         return hit[1]
     import numpy as np
 
-    from src.analysis.factors import compute_raw_factors
-    from src.data import financials, universe
-    from src.data.market import get_kline
+    from src.analysis.factors import get_factor_snapshot
+    from src.data import universe
 
     store = _store
     strat = _account_strategy(acc)
     is_div = strat["key"] == "dividend"
     symbols = universe.pit_union_symbols("000300", store)
-    div_by = {}
-    if is_div:
-        try:
-            dpanel = financials.load_dividend_panel(store, symbols)
-            dpanel["date"] = pd.to_datetime(dpanel["date"])
-            div_by = {str(k): g for k, g in dpanel.groupby("symbol")}
-        except Exception:  # noqa: BLE001
-            is_div = False
+    snap = get_factor_snapshot(symbols, store=store)   # D-084：宽面板快照（缓存优先）
+
+    if snap.empty:
+        out = {"strategy": f"{strat['label']}（{'低换手+低波+股息率' if is_div else '低换手+低波+反转'}）",
+               "strategy_key": strat["key"], "mechanism": strat["mechanism"],
+               "date": None, "cash": None, "rows": []}
+        _CAND_CACHE[acc] = (now, out, pd.DataFrame())
+        return out
+    df = snap.reset_index()
     # D-071：候选池剔除 ST/*ST（与实盘选股同口径——低换手因子会系统性给 ST 高分）
     st_syms = {s for s, n in _meta_maps()[0].items() if "ST" in n.upper()}
-    recs = []
-    for sym in symbols:
-        if str(sym) in st_syms:
-            continue
-        try:
-            k = get_kline(str(sym), adjust="qfq", store=store)
-        except Exception:  # noqa: BLE001
-            continue
-        if k is None or len(k) < 70:
-            continue
-        raw = compute_raw_factors(k.tail(420).reset_index(drop=True))
-        last = raw.iloc[-1]
-        if not all(np.isfinite(last[c]) for c in ("turnover_20", "vol_20", "rev_5")):
-            continue
-        rec = {"symbol": str(sym), "close": float(last["close"]),
-               "turnover_20": float(last["turnover_20"]),
-               "vol_20": float(last["vol_20"]), "rev_5": float(last["rev_5"])}
-        try:   # 当日涨跌幅：仓库里是百分数，统一换成小数口径（与撮合/涨跌停判断一致）
-            rec["pct_chg"] = float(k["pct_chg"].iloc[-1]) / 100.0
-        except (KeyError, TypeError, ValueError):
-            rec["pct_chg"] = float("nan")
-        if is_div:
-            g = div_by.get(str(sym))
-            if g is None:
-                continue
-            sdiv = g.groupby("date")["dividend"].sum().sort_index()
-            daily = sdiv.reindex(pd.DatetimeIndex(raw["date"])).fillna(0.0)
-            ttm = float(daily.rolling("365D").sum().iloc[-1])
-            if not ttm > 0:
-                continue
-            rec["dy_ttm"] = ttm / rec["close"]
-        recs.append(rec)
-
-    df = pd.DataFrame(recs)
+    df = df[~df["symbol"].astype(str).isin(st_syms)]
+    # 因子完备性（与旧逐只口径一致：三因子任一非有限即剔除；pct_chg 缺失不剔除）
+    df = df[np.isfinite(df["turnover_20"]) & np.isfinite(df["vol_20"]) & np.isfinite(df["rev_5"])]
+    if is_div and not (df["dy_ttm"] > 0).any():
+        is_div = False   # 分红数据缺失 → 降级为非红利口径（与旧 except 降级一致）
+    if is_div:
+        df = df[df["dy_ttm"].notna() & (df["dy_ttm"] > 0)]
     for c in ("turnover_20", "vol_20", "rev_5"):
         df["r_" + c] = df[c].rank(pct=True)
     if is_div:
