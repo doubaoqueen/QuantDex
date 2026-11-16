@@ -129,7 +129,7 @@ _FUNCS = {
         lambda a: int(np.argmax(a)) if np.isfinite(a).all() else np.nan, raw=True),
     "TsArgMin": lambda x, n: x.rolling(int(n)).apply(
         lambda a: int(np.argmin(a)) if np.isfinite(a).all() else np.nan, raw=True),
-    "SignedPower": lambda x, a: np.sign(x) * np.abs(x) ** float(a),
+    "SignedPower": lambda x, a: np.sign(x) * np.abs(x) ** a,
     "Scale": lambda x, a=1.0: (x.div(x.abs().sum(axis=1).replace(0, np.nan), axis=0) * a) if isinstance(
         x, pd.DataFrame) else x / x.abs().sum() * a,
     "If": lambda c, t, f: pd.DataFrame(np.where(np.asarray(c) > 0, np.asarray(t), np.asarray(f)),
