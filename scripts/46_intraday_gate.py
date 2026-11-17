@@ -190,7 +190,7 @@ def run_daily_basket(panel: pd.DataFrame, combo: list[tuple[str, int]], mode: st
         rr = r if direction > 0 else 1.0 - r
         sc = rr if sc is None else sc + rr
     p["score"] = sc / len(combo)
-    top = p[p["score"] >= 1 - TOP_N / p.groupby("date")["score"].transform("size")]
+    top = p.sort_values(["date", "score"], ascending=[True, False]).groupby("date").head(TOP_N)   # 精确 TopN（阈值式在边界多选一名）
     if mode == "close_auction":
         trade = top.dropna(subset=["fwd_gap"]).copy()
         trade["ret"] = trade["fwd_gap"] - COST_RT          # T 收盘竞价买 → T+1 开盘卖

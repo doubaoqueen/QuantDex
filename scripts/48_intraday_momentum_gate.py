@@ -177,7 +177,7 @@ def run_basket(panel: pd.DataFrame, ck: str, exit_col: str, bench: pd.Series,
     entry = f"entry_{ck}"
     p = panel.dropna(subset=[entry, exit_col]).copy()
     p["r"] = p.groupby("date")[f"gain_{ck}"].rank(pct=True)
-    top = p[p["r"] >= 1 - TOP_N / p.groupby("date")["r"].transform("size")]
+    top = p.sort_values(["date", "r"], ascending=[True, False]).groupby("date").head(TOP_N)   # 精确 TopN（阈值式在边界多选一名）
     trade = top.copy()
     trade["ret"] = trade[exit_col] / trade[entry] - 1.0 - COST_RT
     realized = trade.assign(date=trade["date"] + pd.offsets.BDay(1))
