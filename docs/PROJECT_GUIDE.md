@@ -38,7 +38,7 @@ python scripts/02_update_market.py            # 行情（观察池）
 python scripts/04_factor_research.py          # PIT 全量行情 + 因子研究（抓+算，最耗时）
 
 # 日常（已自动化，无需手动）
-# 任务计划 19:00 → run_daily.bat → 02b 更新行情 → 10 两个账户 → 邮件
+# 任务计划 19:00 → run_daily.bat → 02b 日线/指数 → 10 四账户 + 邮件 → 02b 分钟线（D-090：分时在邮件之后）
 ```
 
 ---

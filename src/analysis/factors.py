@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -364,7 +366,15 @@ def factor_snapshot_wide(symbols, store: ParquetStore | None = None,
 
 
 def _save_snapshot_cache(snap: pd.DataFrame, as_of) -> None:
-    """快照落盘缓存（附 as_of 常量列——parquet 不保留 attrs，落盘只认列）。"""
+    """快照落盘缓存（附 as_of 常量列——parquet 不保留 attrs，落盘只认列）。
+
+    D-085：改为临时文件 + os.replace 原子替换。此前直写目标文件，而 Web 面板与
+    `10_daily_run` 的预计算是两个进程——流水线写缓存的瞬间，面板正好读到一个
+    "能解析但行数不全"的半截文件，于是候选池缺股票、策略动向 500（2026-11-17 19:59
+    实测：用户点「跑流水线」后策略动向报 HTTP 500）。
+    Windows 上目标文件被读者占用时 os.replace 会失败，退回直写（此时那一次读已经
+    结束，概率极低；真正的护栏在 webapp 侧的空面板/缺标的兜底）。
+    """
     try:
         if as_of is None or snap.empty:
             return
@@ -372,7 +382,17 @@ def _save_snapshot_cache(snap: pd.DataFrame, as_of) -> None:
         out = snap.reset_index()
         out["as_of"] = pd.Timestamp(as_of)
         out.attrs = {}   # pandas 3 会把 attrs JSON 序列化进 parquet 元数据，Timestamp/Series 直接炸
-        out.to_parquet(SNAPSHOT_PATH, index=False)
+        tmp = SNAPSHOT_PATH.with_name(SNAPSHOT_PATH.name + ".tmp")
+        try:
+            out.to_parquet(tmp, index=False)
+            os.replace(tmp, SNAPSHOT_PATH)
+        except OSError:                     # Windows：目标被读者打开 → 退回直写
+            out.to_parquet(SNAPSHOT_PATH, index=False)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
     except Exception:  # noqa: BLE001  缓存失败不影响主路径（下次现算）
         pass
 

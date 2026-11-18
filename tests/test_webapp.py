@@ -184,3 +184,46 @@ def test_school_payload_shape():
     assert len(st["postmortem"]) == 2
     for r in st["ic_rows"]:                     # 本地有 expr_ic_summary 时必须带 FDR 字段
         assert {"ic5", "icir20", "q20", "fdr"} <= set(r)
+
+
+def test_strategy_outlook_survives_empty_and_short_pool():
+    """D-085 回归：候选池为空 / 缺持仓标的时，策略动向不能整页 HTTP 500。
+
+    真实触发：`10_daily_run` 预计算会重写 cache/factor_snapshot.parquet，面板同时读；
+    旧实现遇到空表 `df_full.nlargest(50,"score")` 直接 KeyError、遇到"持仓不在面板里"
+    (ST 剔除/停牌缺因子) 则在 `df_full.loc[sym]` KeyError —— 都是 HTTP 500。
+    """
+    import sqlite3
+
+    import pandas as pd
+
+    orig = (webapp.candidates, dict(webapp._CAND_CACHE), webapp._db, webapp._meta_maps)
+    try:
+        webapp.candidates = lambda acc: {"rows": [], "date": None}
+        webapp._meta_maps = lambda: ({}, {})
+        webapp._CAND_CACHE.clear()
+
+        # 1) 空面板 → 可读提示，不抛异常
+        webapp._CAND_CACHE["t"] = (0, {"rows": []}, pd.DataFrame())
+        out = webapp.strategy_outlook("t")
+        assert out.get("err"), out
+
+        # 2) 半截面板：持仓 600000 不在面板里 → 仍要出结果（该行 score 为空）
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE positions (date TEXT, symbol TEXT)")
+        con.execute("INSERT INTO positions VALUES ('2026-11-17', '600000')")
+        con.execute("CREATE TABLE trade_log (status TEXT, fill_date TEXT)")
+        webapp._db = lambda acc: con
+        df = pd.DataFrame({"score": [0.9, 0.8], "close": [1.0, 2.0]},
+                          index=["000001", "000002"])
+        df.index.name = "symbol"
+        webapp._CAND_CACHE["t"] = (0, {"date": "2026-11-17"}, df)
+        out = webapp.strategy_outlook("t")
+        assert not out.get("err"), out
+        exit_syms = [r["symbol"] for r in out["rows_exit"]]
+        assert exit_syms == ["600000"], out["rows_exit"]
+        assert out["rows_exit"][0]["score"] is None
+    finally:
+        (webapp.candidates, _, webapp._db, webapp._meta_maps) = orig
+        webapp._CAND_CACHE.clear()
+        webapp._CAND_CACHE.update(orig[1])

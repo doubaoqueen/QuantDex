@@ -117,7 +117,7 @@ def _summary(polls: list, trig_all: pd.DataFrame, day: str, log, t0) -> None:
             log.write(f"   {r['time']:%H:%M} [{r['rule']}] {r['code']} {r['name']} "
                       f"{r['pct_chg']:+.2f}% 量比 {r['量比']}\n")
     log.write("收盘后别忘了：金太阳客户端 → 盘后数据下载（vipdoc 离线历史就有了）\n")
-    log.write("晚上 19:00 定时任务自动日更（无需操作）。明天 11-20：归因硬节点。\n")
+    log.write("晚上 19:00 定时任务自动日更（无需操作）。下一个硬节点：11-20 四周偏差归因。\n")
 
 
 def _t_end(t0) -> float:
@@ -187,7 +187,10 @@ def main() -> None:
             continue
         try:
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                df = fetch_spot()
+                # 盯盘是**轮询**：单次失败直接跳过、下一轮再来，比 3×45s 长重试便宜得多
+                # （2026-11-18 实测：东财间歇断连，akshare 分页 56 次请求本身就要 ~70s；
+                #  长重试会让一次失败占掉 135s，白丢两三根快照）
+                df = fetch_spot(max_attempts=1, delay_s=0)
             watch = _watchable(df)
             poll_no += 1
             consec_fail = 0

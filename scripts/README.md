@@ -32,7 +32,7 @@
 
 | 文件 | 用途 |
 |---|---|
-| `run_daily.bat` | 任务计划实际调用的包装脚本（切目录 + 日志重定向到 `data/store/logs/daily_run.log`） |
+| `run_daily.bat` | 任务计划实际调用的包装脚本（切目录 + 日志重定向到 `data/store/logs/daily_run.log`）；**三段式（D-090）**：`02b --skip-minute`（日线/指数）→ `10 --skip-update`（四账户 + **邮件在此发出**）→ `02b --minute-only`（5 分钟线，10~40 分钟，放在邮件之后） |
 | `13_setup_task.ps1` | 一键安装/卸载 Windows 任务计划（每天 19:00，错过补跑） |
 
 安装：右键 `13_setup_task.ps1` →「使用 PowerShell 运行」；或命令：
