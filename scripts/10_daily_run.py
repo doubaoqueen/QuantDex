@@ -37,6 +37,41 @@ def _run_audit(script: str, *args: str) -> bool:
     return rc != 0
 
 
+def _update_minutes(symbols, store) -> None:
+    """5 分钟线每日增量（D-060）；失败只告警、不阻断日报。
+
+    D-090：从「更新行情」里挪到**邮件之后**——这一段是最慢的（949 只约 10~20 分钟，
+    2026-11-16 实测 19:00 任务被它拖到 19:33 才发信），而日报/邮件根本不依赖它。
+    独立 .minute.lock 与 29 号回填互斥（拿不到=回填在跑，今晚跳过）；只增量不回填。
+    """
+    # 分时数据：baostock 5 分钟线每日增量（D-060）。收盘后运行，失败不阻断
+    # 日线与流水线（QUANTDEX_MINUTE=0 可关闭）。与 29 号回填互斥用独立
+    # .minute.lock（拿不到=回填在跑，跳过）；只增量不回填（回填约 3 分钟/只）。
+    import os
+
+    if os.environ.get("QUANTDEX_MINUTE", "1") != "0":
+        from src.live.proclock import try_lock as _try_minute_lock
+        mlf = _try_minute_lock(STORE_DIR / "sim" / ".minute.lock")
+        if mlf is None:
+            print(">> [minute] 5 分钟线回填脚本正在运行，今晚增量跳过")
+        else:
+            try:
+                from src.data.market import update_minute_batch
+                print(">> 更新 5 分钟线（baostock）...")
+                mr = update_minute_batch(
+                    symbols, freq="5", full_start=DEFAULT_START_DATE,
+                    store=store, backfill_missing=False)
+                mf = mr.pop("__failed__", [])
+                n_up = sum(1 for v in mr.values() if v == "uptodate")
+                n_none = sum(1 for v in mr.values() if v == "no-local")
+                print(f">> 分钟线完成：处理 {len(mr)} 只（已最新 {n_up}、"
+                      f"未回填 {n_none}），失败 {len(mf)} 只")
+                for code, err in mf[:5]:
+                    print(f"   FAIL {code}: {err}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[minute] 5 分钟线更新失败（不影响后续流程）: {e}")
+
+
 def main() -> None:
     import os
 
@@ -67,30 +102,6 @@ def main() -> None:
         print(">> 更新基准指数（沪深300 / 中证500）...")
         ir = update_indexes(store)
         print(f">> 指数完成：{len(ir)} 个")
-        # 分时数据：baostock 5 分钟线每日增量（D-060）。收盘后运行，失败不阻断
-        # 日线与流水线（QUANTDEX_MINUTE=0 可关闭）。与 29 号回填互斥用独立
-        # .minute.lock（拿不到=回填在跑，跳过）；只增量不回填（回填约 3 分钟/只）。
-        if os.environ.get("QUANTDEX_MINUTE", "1") != "0":
-            from src.live.proclock import try_lock as _try_minute_lock
-            mlf = _try_minute_lock(STORE_DIR / "sim" / ".minute.lock")
-            if mlf is None:
-                print(">> [minute] 5 分钟线回填脚本正在运行，今晚增量跳过")
-            else:
-                try:
-                    from src.data.market import update_minute_batch
-                    print(">> 更新 5 分钟线（baostock）...")
-                    mr = update_minute_batch(
-                        symbols, freq="5", full_start=DEFAULT_START_DATE,
-                        store=store, backfill_missing=False)
-                    mf = mr.pop("__failed__", [])
-                    n_up = sum(1 for v in mr.values() if v == "uptodate")
-                    n_none = sum(1 for v in mr.values() if v == "no-local")
-                    print(f">> 分钟线完成：处理 {len(mr)} 只（已最新 {n_up}、"
-                          f"未回填 {n_none}），失败 {len(mf)} 只")
-                    for code, err in mf[:5]:
-                        print(f"   FAIL {code}: {err}")
-                except Exception as e:  # noqa: BLE001
-                    print(f"[minute] 5 分钟线更新失败（不影响后续流程）: {e}")
         # D-041a 护栏下沉（D-062）：手动/无 02b 的更新路径同样做全量自洽校验+修复
         from src.data.market import ensure_qfq_integrity
         ensure_qfq_integrity(symbols, store=store)
@@ -192,6 +203,10 @@ def main() -> None:
                     combine_fail.write_text(
                         f"combine send failed {day}\n", encoding="utf-8")
                     sys.exit(2)  # 让计划任务/调度器能看出"推送失败"（下次运行重试）
+    # D-090：5 分钟线增量放在邮件之后
+    if "--skip-update" not in sys.argv and "--skip-minute" not in sys.argv:
+        _update_minutes(symbols, store)
+
     if check_bad:
         sys.exit(4)  # D-059：自检异常——数据可能有 D-053 同类指纹，优先处理
     if audit_bad:

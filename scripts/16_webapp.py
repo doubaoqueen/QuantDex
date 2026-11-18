@@ -161,6 +161,22 @@ def _note(msg: str) -> None:
         pass
 
 
+def _log_500(path: str, exc: Exception) -> None:
+    """把 HTTP 500 的请求路径与完整 traceback 写进运行日志（D-085）。
+
+    此前 handler 把异常吞成 {"err": str(e)} 返回，前端 `api.js` 只显示
+    "HTTP 500"，服务端一个字都没留——2026-11-17 策略动向 500 事后完全无法定位。
+    """
+    import traceback
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(f"\n[{time.strftime('%m-%d %H:%M:%S')}] [http500] {path}\n")
+            f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _log_start(**rec) -> None:
     """每次打开服务记一行（只追加、可追溯；一行约 100~200 字节，一年几十 KB）。"""
     rec = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **rec}
@@ -499,6 +515,7 @@ def fees(acc):
 
 
 _CAND_CACHE = {}          # acc -> (时间戳, 候选结果, 全池 DataFrame)；切账户不用重算全池
+_CAND_LOCKS = {}          # acc -> Lock：同账户并发请求只算一次（D-090）
 
 
 def _account_strategy(acc):
@@ -520,6 +537,24 @@ def _account_strategy(acc):
 
 
 def candidates(acc):
+    """候选池入口（D-090）：同账户并发请求**只算一次**，其余等结果。
+
+    候选池/因子/策略动向三个面板共用这一份全池打分。此前它们各自并发命中空缓存 →
+    三个线程各算一遍全池（冷缓存 ~19s × 3，浏览器 6 连接被吃满），页面体感就是
+    "只有涨跌停面板是快的"。这里加同账户互斥 + 双检，第二、三个请求直接拿缓存。
+    """
+    import time as _t
+    hit = _CAND_CACHE.get(acc)
+    if hit and _t.time() - hit[0] < 900:
+        return hit[1]
+    with _CAND_LOCKS.setdefault(acc, threading.Lock()):
+        hit = _CAND_CACHE.get(acc)          # 等锁期间别的线程可能已经算完
+        if hit and _t.time() - hit[0] < 900:
+            return hit[1]
+        return _candidates_compute(acc)
+
+
+def _candidates_compute(acc):
     """候选池（海选）：该账户策略在最新交易日对全部 PIT 成分打分的前 15 名。
 
     分数与流水线同口径（截面 rank 合成）；标注持仓中/待成交/备选#N，并带名称/行业/涨跌停。
@@ -528,9 +563,6 @@ def candidates(acc):
     """
     import time as _t
     now = _t.time()
-    hit = _CAND_CACHE.get(acc)
-    if hit and now - hit[0] < 900:
-        return hit[1]
     import numpy as np
 
     from src.analysis.factors import get_factor_snapshot
@@ -630,6 +662,10 @@ def strategy_outlook(acc):
     if not hit or len(hit) < 3:
         return {"err": "策略动向暂不可用（候选池未就绪）"}
     df_full = hit[2]
+    # D-085：缓存为空/半截（行情正在更新、或缓存刚被另一进程重写）时不能让整页 500——
+    # 原来的 `df_full.nlargest(50, "score")` 在空表上直接 KeyError。
+    if df_full is None or df_full.empty or "score" not in df_full.columns:
+        return {"err": "策略动向暂不可用（候选池为空，行情/快照可能正在更新，稍后刷新）"}
     held, last_fill = set(), None
     conn = _db(acc)
     if conn is not None:
@@ -651,10 +687,19 @@ def strategy_outlook(acc):
     names, inds = _meta_maps()
 
     def _row(sym):
-        r = df_full.loc[sym]
+        # D-085：面板里可能没有这个标的（ST 剔除 / 停牌缺因子 / 缓存半截）——
+        # 原实现直接 df_full.loc[sym] → KeyError → 整个卡片 HTTP 500。
+        score = None
+        try:
+            if sym in df_full.index:
+                r = df_full.loc[sym]
+                if isinstance(r, pd.DataFrame):      # 重复 symbol 的兜底
+                    r = r.iloc[-1]
+                score = round(float(r["score"]), 4)
+        except Exception:  # noqa: BLE001
+            score = None
         return {"symbol": sym, "name": names.get(sym, sym),
-                "industry": inds.get(sym, "-"),
-                "score": round(float(r["score"]), 4)}
+                "industry": inds.get(sym, "-"), "score": score}
 
     # 行业分布（等权组合：只数占比）
     from collections import Counter
@@ -698,6 +743,9 @@ def factor_view(acc):
     if not hit or len(hit) < 3:
         return {"err": "因子面板暂不可用（候选池未就绪）"}
     df_full = hit[2]
+    # D-085：同策略动向——空/半截缓存直接给可读提示，不要整页 500
+    if df_full is None or df_full.empty or "score" not in df_full.columns:
+        return {"err": "因子面板暂不可用（候选池为空，行情/快照可能正在更新，稍后刷新）"}
     strat = _account_strategy(acc)
     is_div = strat["key"] == "dividend"
 
@@ -1238,10 +1286,16 @@ def _job_cmd(name: str) -> list:
     """任务名 -> 命令行。D-045：把"只更新行情"和"跑完整每日流程（含发信）"分开。"""
     py = sys.executable
     daily = [py, str(ROOT / "scripts" / "10_daily_run.py")]
+    update = [py, str(ROOT / "scripts" / "02b_update_pit.py")]
     return {
         # 只更新行情（手动「更新行情」用；不发信、不跑流水线）
-        "update": [py, str(ROOT / "scripts" / "02b_update_pit.py")],
+        # D-090：跳过 5 分钟线——那一段要 10~40 分钟并**一直占着 .pipeline.lock**，
+        # 会把 19:00 的任务计划挡在门外（2026-11-18 18:36 的手动更新就这样挡掉了当天日报）。
+        "update": update + ["--skip-minute"],
+        # 只补 5 分钟线（可选任务；同样与 19:00 任务链互斥）
+        "minute": update + ["--minute-only"],
         # 完整每日流程：更新行情 + 四账户流水线 + 合并日报邮件（自动链用）
+        # 分钟线已挪到 10_daily_run 的邮件之后（D-090），不再拖慢发信
         "daily": daily,
         # 数据已是最新，只补流水线 + 合并日报邮件（自动链用）
         "report": daily + ["--skip-update"],
@@ -1634,6 +1688,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"rows": ops(q.get("account", ["large"])[0])})
             return self._send(404, {"err": "not found"})
         except Exception as e:  # noqa: BLE001
+            _log_500(self.path, e)          # D-085：500 必须留痕
             return self._send(500, {"err": str(e)})
 
     def do_POST(self):
@@ -1695,6 +1750,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, start_spot_update())
             return self._send(404, {"err": "not found"})
         except Exception as e:  # noqa: BLE001
+            _log_500(self.path, e)          # D-085：500 必须留痕
             return self._send(500, {"err": str(e)})
 
     def log_message(self, *args):  # 静默

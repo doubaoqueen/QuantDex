@@ -25,6 +25,41 @@ from src.data.market import fetch_kline, update_kline_batch
 from src.data.storage import ParquetStore
 
 
+def _update_minutes(symbols, store) -> None:
+    """5 分钟线每日增量（D-060）；失败只告警、不阻断日报。
+
+    D-090：从 02b 主流程里抽出，供 --skip-minute / --minute-only 复用——
+    19:00 任务链改成「日线 → 流水线+邮件 → 分钟线」，日报不再被它拖 20 分钟。
+    """
+    import os
+
+    # 分时数据：baostock 5 分钟线每日增量（D-060）。收盘后运行；失败只告警
+    # 不阻断（日线/流水线不依赖它）。QUANTDEX_MINUTE=0 可关闭。
+    # 与 29 号回填脚本互斥用独立的 .minute.lock（拿不到=回填在跑，当晚跳过——
+    # 回填本身会带到最新）；backfill_missing=False：调度窗口只做增量，
+    # 全史回填约 3 分钟/只，不能发生在调度里。
+    if os.environ.get("QUANTDEX_MINUTE", "1") != "0":
+        from src.live.proclock import try_lock as _try_minute_lock
+        mlf = _try_minute_lock(STORE_DIR / "sim" / ".minute.lock")
+        if mlf is None:
+            print(">> [minute] 5 分钟线回填脚本正在运行，今晚增量跳过", flush=True)
+        else:
+            try:
+                from src.data.market import update_minute_batch
+                print(">> 更新 5 分钟线（baostock）...", flush=True)
+                mr = update_minute_batch(symbols, freq="5", full_start=DEFAULT_START_DATE,
+                                         store=store, backfill_missing=False)
+                mf = mr.pop("__failed__", [])
+                n_up = sum(1 for v in mr.values() if v == "uptodate")
+                n_none = sum(1 for v in mr.values() if v == "no-local")
+                print(f">> 分钟线完成：处理 {len(mr)} 只（已最新 {n_up}、"
+                      f"未回填 {n_none}），失败 {len(mf)} 只", flush=True)
+                for code, err in mf[:5]:
+                    print(f"   FAIL {code}: {err}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[minute] 5 分钟线更新失败（不影响后续流程）: {e}", flush=True)
+
+
 def main() -> None:
     # R3-02 同源互斥（D-045）：与 10_daily_run 共用同一把锁——手抖连点、网页与调度器
     # 同时触发、关窗口后留下的孤儿进程，都会在入口被挡住，不会两个进程同写一批 parquet。
@@ -45,9 +80,17 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             print(f"[calendar] 刷新失败: {e}", flush=True)
     symbols = universe.pit_union_symbols("000300", store)
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    bare = [a for a in sys.argv[1:] if not a.startswith("--")]
+    minute_only = "--minute-only" in flags
+    skip_minute = "--skip-minute" in flags or minute_only
+    limit = int(bare[0]) if bare else 0
     if limit:
         symbols = symbols[:limit]
+
+    if minute_only:  # 只补 5 分钟线（任务链最后一步）
+        _update_minutes(symbols, store)
+        return
     source = os.environ.get("QUANTDEX_SOURCE", "bs")
     allow_sina = os.environ.get("QUANTDEX_SINA_FALLBACK", "0") == "1"
     allow_bs = os.environ.get("QUANTDEX_BS_FALLBACK", "1") == "1"
@@ -78,31 +121,10 @@ def main() -> None:
     ir = update_indexes(store)
     print(f">> 指数完成：{len(ir)} 个", flush=True)
 
-    # 分时数据：baostock 5 分钟线每日增量（D-060）。收盘后运行；失败只告警
-    # 不阻断（日线/流水线不依赖它）。QUANTDEX_MINUTE=0 可关闭。
-    # 与 29 号回填脚本互斥用独立的 .minute.lock（拿不到=回填在跑，当晚跳过——
-    # 回填本身会带到最新）；backfill_missing=False：调度窗口只做增量，
-    # 全史回填约 3 分钟/只，不能发生在调度里。
-    if os.environ.get("QUANTDEX_MINUTE", "1") != "0":
-        from src.live.proclock import try_lock as _try_minute_lock
-        mlf = _try_minute_lock(STORE_DIR / "sim" / ".minute.lock")
-        if mlf is None:
-            print(">> [minute] 5 分钟线回填脚本正在运行，今晚增量跳过", flush=True)
-        else:
-            try:
-                from src.data.market import update_minute_batch
-                print(">> 更新 5 分钟线（baostock）...", flush=True)
-                mr = update_minute_batch(symbols, freq="5", full_start=DEFAULT_START_DATE,
-                                         store=store, backfill_missing=False)
-                mf = mr.pop("__failed__", [])
-                n_up = sum(1 for v in mr.values() if v == "uptodate")
-                n_none = sum(1 for v in mr.values() if v == "no-local")
-                print(f">> 分钟线完成：处理 {len(mr)} 只（已最新 {n_up}、"
-                      f"未回填 {n_none}），失败 {len(mf)} 只", flush=True)
-                for code, err in mf[:5]:
-                    print(f"   FAIL {code}: {err}", flush=True)
-            except Exception as e:  # noqa: BLE001
-                print(f"[minute] 5 分钟线更新失败（不影响后续流程）: {e}", flush=True)
+    # D-090：分钟线可延后（--skip-minute 由任务链在邮件之后单独跑）
+    if not skip_minute:
+        _update_minutes(symbols, store)
+
 
 
 if __name__ == "__main__":
