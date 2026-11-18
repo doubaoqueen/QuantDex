@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import LOT, MIN_FEE, SLIP_RATE, STAMP_RATE, STORE_DIR, TRANSFER_RATE, board_limit
+from config import FEE_RATE, LOT, MIN_FEE, SLIP_RATE, STAMP_RATE, STORE_DIR, TRANSFER_RATE, board_limit
 from src.analysis.factors import build_factor_panel
 from src.data import financials, universe
 from src.data.market import get_kline
@@ -35,8 +35,9 @@ from src.strategies.multi_factor import (
     turnover_lowvol_reversal_topn,
 )
 
-# 成本与撮合常量统一来自 config（D-044）
-FEE = 0.00025
+# 成本与撮合常量统一来自 config（D-044）——FEE 曾硬编码 0.00025（体检 P1 修正：
+# 注释声称统一而实际漂移，config.FEE_RATE 改动不会传导），现回归单一事实来源
+FEE = FEE_RATE
 SLIP = SLIP_RATE
 STAMP = STAMP_RATE
 TRANSFER = TRANSFER_RATE

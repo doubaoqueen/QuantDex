@@ -67,7 +67,7 @@ python tests/run_tests.py      # 零依赖回归测试（引擎成本/T+1 口径
 |---|---|
 | [docs/DEV_README.md](docs/DEV_README.md) | **开发者参考**：目录结构、数据 Schema、API 速查、因子研究方法论与实测结论、已知边界 |
 | [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md) | **所有者手册**（门外汉视角）：概念小词典、每日操作 SOP、故障排查 |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 决策日志 D-001 ~ D-082：每个口径为什么这么定 |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | 决策日志 D-001 ~ D-094：每个口径为什么这么定（D-085/086/087/090 有重号修正史，见 DECISIONS.md 头部批注） |
 | [scripts/README.md](scripts/README.md) | 按编号的一键脚本运行顺序表 |
 | [docs/DATA_ROADMAP.md](docs/DATA_ROADMAP.md) | 数据现状盘点与补数计划 |
 
