@@ -7,28 +7,63 @@ from config import TRADING_DAYS_PER_YEAR
 
 def extract_trades(df: pd.DataFrame, price_col: str = "open") -> pd.DataFrame:
     """
-    从仓位变化提取完整交易（0->1 开仓，1->0 平仓），T+1 开盘成交。
-    返回每笔 entry_date,exit_date,entry_price,exit_price,return,holding_days。
+    从仓位变化提取完整交易，T+1 开盘成交。返回每笔
+    entry_date,exit_date,entry_price,exit_price,return,holding_days,avg_position。
+
+    D-097：支持**分数仓位**（旧版硬假设 position ∈ {0,1}，0.02/0.5 之类的权重
+    交易记录直接丢失）。语义：
+    - entry：仓位从 ~0 变为正；
+    - exit：仓位从正变回 ~0；
+    - 持有期内加仓 → 入场价按金额加权更新；部分减仓 → 该段记录为一笔交易
+      （入场价用当时的加权入场价），剩余仓位作为新的一段继续跟踪。
+    二元仓位（0/1）下行为与旧版完全一致。
     """
     pos = df["position"].values
     price = df[price_col].values
     dates = pd.to_datetime(df["date"]).values
+    eps = 1e-9
     trades = []
+    in_pos = False
     entry_i = None
-    for i in range(1, len(df)):
-        if pos[i] == 1 and pos[i - 1] == 0:
-            entry_i = i
-        elif pos[i] == 0 and pos[i - 1] == 1 and entry_i is not None:
-            ep, xp = price[entry_i], price[i]
-            trades.append({
-                "entry_date": pd.Timestamp(dates[entry_i]),
-                "exit_date": pd.Timestamp(dates[i]),
-                "entry_price": ep,
-                "exit_price": xp,
-                "return": xp / ep - 1 if ep else np.nan,
-                "holding_days": i - entry_i,
-            })
-            entry_i = None
+    entry_cost = 0.0     # Σ price×Δpos（加权入场成本）
+    entry_qty = 0.0      # Σ |Δpos|（累计建仓量）
+    qty = 0.0            # 当前仓位
+    for i in range(len(df)):
+        w_i, p_i = pos[i], price[i]
+        dw = w_i - qty                                   # 当日仓位变动（首日=初始建仓）
+        if not in_pos and w_i > eps:
+            in_pos, entry_i = True, i
+            entry_cost, entry_qty, qty = w_i * p_i, w_i, w_i
+            continue
+        if in_pos and abs(dw) > eps:
+            if dw > 0:                                   # 加仓
+                entry_cost += p_i * dw
+                entry_qty += dw
+                qty = w_i
+            else:                                        # 减仓
+                sell_qty = min(-dw, qty)
+                ep = entry_cost / entry_qty if entry_qty > 0 else p_i
+                trades.append({
+                    "entry_date": pd.Timestamp(dates[entry_i]),
+                    "exit_date": pd.Timestamp(dates[i]),
+                    "entry_price": ep,
+                    "exit_price": p_i,
+                    "return": p_i / ep - 1 if ep else np.nan,
+                    "holding_days": i - entry_i,
+                    "avg_position": entry_qty,
+                    "closed_qty": sell_qty,
+                })
+                entry_cost -= ep * sell_qty
+                entry_qty -= sell_qty
+                qty = w_i
+                if qty <= eps:                           # 清仓完毕
+                    in_pos = False
+                    entry_i = None
+                    entry_cost, entry_qty = 0.0, 0.0
+                else:                                    # 部分减仓 → 余量新起一段
+                    entry_i = i
+                    entry_qty = qty
+                    entry_cost = ep * qty
     return pd.DataFrame(trades)
 
 
@@ -44,8 +79,11 @@ def performance(df: pd.DataFrame, trades: pd.DataFrame | None = None,
     vol = ret.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
     sharpe = (ann_return - rf) / vol if vol > 0 else np.nan
 
-    # Sortino：仅用下行波动
-    downside = ret[ret < 0]
+    # Sortino：下行偏差用**全样本**口径（min(ret−rf,0)² 对全部 N 天取均值）——
+    # D-097：旧实现只对下跌日取均值，分母被系统性**压低**（×√(下跌日/总日)<1），
+    # Sortino 因此虚高（上涨日占比越高越夸张），属自创口径。修正后与标准 Sortino
+    # 一致——数值会比旧版**高**，属口径修正，不是策略改善，勿解读为 alpha。
+    downside = np.minimum(ret - rf, 0.0)
     downside_vol = np.sqrt((downside ** 2).mean()) * np.sqrt(TRADING_DAYS_PER_YEAR)
     sortino = (ann_return - rf) / downside_vol if downside_vol > 0 else np.nan
 

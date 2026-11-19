@@ -163,7 +163,17 @@ def build_factor_panel(
             s = g.groupby("date")["dividend"].sum().sort_index()
             daily = s.reindex(pd.DatetimeIndex(raw["date"])).fillna(0.0)
             ttm = daily.rolling("365D").sum()
-            raw["dy_ttm"] = ttm.to_numpy() / raw["close"].to_numpy()
+            # D-097：dy 分母用**真实价**——qfq 锚定最新日，未来分红压低历史 qfq 价，
+            # 直接除 qfq 会让"未来分红最多"的股票股息率虚高（右尾前视，D-096 体检刀）。
+            raw_date = pd.DatetimeIndex(raw["date"])
+            af = _adj_factor_series(store, code)
+            if af is not None:
+                f = (af.reindex(af.index.union(raw_date)).sort_index()
+                     .ffill().reindex(raw_date).fillna(1.0))
+                real_close = raw["close"] / f
+            else:
+                real_close = raw["close"]
+            raw["dy_ttm"] = ttm.to_numpy() / real_close.to_numpy()
         elif extra and "dy_ttm" in extra:
             raw["dy_ttm"] = np.nan
         if expr_factors:
@@ -214,6 +224,31 @@ def build_factor_panel(
     panel = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
     return panel
 
+
+
+# ---------------------------------------------------------------- 真实价复权（D-097）
+
+_ADJ_FACTORS: dict = {}
+
+
+def _adj_factor_series(store: ParquetStore, code: str) -> pd.Series | None:
+    """baostock 前复权因子序列（index=除权日, values=foreAdjustFactor，最新日=1.0）。
+
+    真实价 = qfq 价 / foreAdjustFactor(T)——qfq 锚定最新日，未来分红会压低历史
+    qfq 价；直接用 qfq 做分母会让"未来分红最多"的股票股息率虚高（右尾前视，
+    D-096 体检刀：2018 年因子均值 0.79 → 股息率平均放大 1.28×）。无文件 → None
+    （调用方退回旧口径）。文件很小，现读不缓存（944 个 × ~1ms）。
+    """
+    try:
+        df = store.read("fin_bs", f"{code}__adjfactor",
+                        columns=["dividOperateDate", "foreAdjustFactor"])
+    except Exception:  # noqa: BLE001  无分红/无因子文件的标的 → None
+        return None
+    if df is None or len(df) == 0:
+        return None
+    s = pd.Series(pd.to_numeric(df["foreAdjustFactor"], errors="coerce").to_numpy(),
+                  index=pd.to_datetime(df["dividOperateDate"], errors="coerce"))
+    return s.dropna().sort_index()
 
 
 # ---------------------------------------------------------------- 全池因子快照（D-084）
@@ -361,7 +396,15 @@ def factor_snapshot_wide(symbols, store: ParquetStore | None = None,
         win = g[(g["date"] > end - pd.Timedelta(days=365)) & (g["date"] <= end)]
         ttm = float(win["dividend"].sum())
         if ttm > 0:
-            snap.loc[sym, "dy_ttm"] = ttm / snap.at[sym, "close"]
+            # D-097：分母同样用真实价（因子 = 除权日 ≤ 该标的最末交易日的最后因子值）
+            f = 1.0
+            af = _adj_factor_series(store, sym)
+            if af is not None:
+                s_af = af[af.index <= end]
+                if len(s_af):
+                    f = float(s_af.iloc[-1])
+            real_close = snap.at[sym, "close"] / f if f > 0 else snap.at[sym, "close"]
+            snap.loc[sym, "dy_ttm"] = ttm / real_close
     return snap
 
 
