@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
@@ -90,6 +90,97 @@ def _trigger_checks(watch: pd.DataFrame, state: dict, now_ts) -> pd.DataFrame:
     return pd.DataFrame(hits)
 
 
+def _entry_moments(watch: pd.DataFrame, m_state: dict, now_ts) -> pd.DataFrame:
+    """章法定义的介入时刻（预注册，每标的每日一次；出场参考最多三次）。
+
+    M1 追涨介入：日内涨幅首次越过 3%，且尚未进入近板区（D-088 硬币口径）
+    M2 近板介入：涨幅首次越过 7.8%/17.8%，但价格未封死（可买近似，D-093 口径）
+    M3 出场参考：介入后从日内峰值回撤 ≥2pp（"达到预期就卖"的反面=止损时机）
+    纪律：这些是**章法时刻的记录**，不是系统推荐（D-088 已证无统计优势）——
+    记录 + 次日自动回填 T+1 结果，让未来的数据裁决章法。
+    """
+    pct = pd.to_numeric(watch["涨跌幅"], errors="coerce")
+    hits = []
+    for idx in watch.index:
+        code = str(watch.at[idx, "代码"])
+        st = m_state.setdefault(code, {"m1": False, "m2": False, "peak": -99.0, "m3_n": 0})
+        p_ = pct.loc[idx]
+        if pd.isna(p_):
+            continue
+        price = watch.at[idx, "最新价"]
+        prev_close = pd.to_numeric(watch.at[idx, "昨收"], errors="coerce")
+        gem = code.startswith(("30", "68"))
+        lim_r = 0.195 if gem else 0.095
+        sealed = (pd.notna(prev_close) and pd.notna(price)
+                  and price >= round(prev_close * (1 + lim_r), 2) - 0.005)
+        near_board = 17.8 if gem else 7.8
+        st["peak"] = max(st["peak"], float(p_))
+        if sealed:
+            continue                                   # 封板买不进，介入时刻不成立
+        if (not st["m1"] and not st["m2"] and float(p_) >= 3.0
+                and float(p_) < near_board):
+            # 曾进近板区（m2）后回落不算追涨介入——那是回撤，属 M3 管辖
+            st["m1"] = True
+            hits.append({"time": now_ts, "kind": "M1追涨介入", "code": code,
+                         "name": watch.at[idx, "名称"], "price": price,
+                         "pct_chg": float(p_), "量比": watch.at[idx, "量比"],
+                         "日内峰值%": st["peak"], "备注": "涨幅首越3%且距板≥2pp"})
+        if not st["m2"] and float(p_) >= near_board:
+            st["m2"] = True
+            hits.append({"time": now_ts, "kind": "M2近板介入", "code": code,
+                         "name": watch.at[idx, "名称"], "price": price,
+                         "pct_chg": float(p_), "量比": watch.at[idx, "量比"],
+                         "日内峰值%": st["peak"], "备注": "首次进入距板2pp区（未封死）"})
+        if ((st["m1"] or st["m2"]) and st["m3_n"] < 3
+                and st["peak"] - float(p_) >= 2.0):
+            st["m3_n"] += 1
+            hits.append({"time": now_ts, "kind": "M3出场参考", "code": code,
+                         "name": watch.at[idx, "名称"], "price": price,
+                         "pct_chg": float(p_), "量比": watch.at[idx, "量比"],
+                         "日内峰值%": st["peak"],
+                         "备注": f"较日内峰值回撤 {st['peak'] - float(p_):.1f}pp"})
+    return pd.DataFrame(hits)
+
+
+def _backfill_moments(mom_path: Path, store, log) -> None:
+    """启动时回填昨日介入时刻的 T+1 结果（日更链 19:00 已入库，此刻可得）。"""
+    if not mom_path.exists():
+        return
+    try:
+        m = pd.read_csv(mom_path, dtype={"code": str})
+        if "t1_open_ret" in m.columns and m["t1_open_ret"].notna().any():
+            return                                     # 已回填过
+        from src.data.market import get_kline
+        opens, closes = [], []
+        for _, r in m.iterrows():
+            o, c = np.nan, np.nan
+            try:
+                k = get_kline(str(r["code"]), adjust="qfq", store=store)
+                k = k.reset_index(drop=True)
+                d = pd.to_datetime(r["time"]).normalize()
+                pos = k.index[k["date"] == d]
+                if len(pos) and pos[0] + 1 < len(k):
+                    nxt = k.iloc[pos[0] + 1]
+                    o = nxt["open"] / r["price"] - 1.0
+                    c = nxt["close"] / r["price"] - 1.0
+            except Exception:  # noqa: BLE001
+                pass
+            opens.append(o)
+            closes.append(c)
+        m["t1_open_ret"] = opens
+        m["t1_close_ret"] = closes
+        m.to_csv(mom_path, index=False, encoding="utf-8-sig")
+        ok = m["t1_open_ret"].notna().sum()
+        mean_o = m["t1_open_ret"].mean()
+        mean_c = m["t1_close_ret"].mean()
+        log.write(f">> [回填] 昨日介入时刻 {len(m)} 条，补 T+1 结果 {ok} 条"
+                  f"（均值 {mean_o:+.2%} 开盘 / {mean_c:+.2%} 收盘）\n")
+        log.flush()
+    except Exception as e:  # noqa: BLE001
+        log.write(f">> [回填] 失败（不影响监控）：{e}\n")
+        log.flush()
+
+
 def _run_tdx_probe(log) -> None:
     """启动时顺跑 TDX 探针（结果进日志；通不通都不影响监控本体）。"""
     log.write(">> [TDX探针] 金太阳(通达信内核)协议连通性测试……\n")
@@ -137,6 +228,8 @@ def main() -> None:
     log.write(f"\n==== 盯盘监控启动 {datetime.now():%Y-%m-%d %H:%M:%S} ====\n")
     log.write("触发规则（预注册）：R1 动量 5%/8% | R2 近板 7.8%/17.8% | R3 量比≥3 且涨幅≥3%"
               " | 限频 45/90/45 分钟 | 只读快照，不写账本不自动下单\n")
+    log.write("介入时刻（预注册）：M1 追涨介入（首越3%且距板≥2pp）| M2 近板介入（未封死）"
+              " | M3 出场参考（峰值回撤≥2pp）| 每标的每日一次，次日自动回填 T+1 结果\n")
 
     # 交易日校验
     try:
@@ -153,6 +246,11 @@ def main() -> None:
         log.write("[warn] trade_calendar 缺失，跳过交易日校验\n")
 
     _run_tdx_probe(log)
+
+    # 昨日介入时刻的 T+1 结果回填（日更链 19:00 已入库）
+    from src.data.storage import ParquetStore as _PS
+    y_mom = LOG_DIR / f"entry_moments_{(datetime.now() - timedelta(days=1)).strftime('%Y%m%d')}.csv"
+    _backfill_moments(y_mom, _PS(), log)
 
     # 会话窗口：早于 09:20 → 等待；晚于 15:05 → 收工
     now = datetime.now()
@@ -171,9 +269,12 @@ def main() -> None:
         return
 
     print(f"监控运行中：{SESSION_START}~{SESSION_END}，日志 {log_path}")
+    mom_path = LOG_DIR / f"entry_moments_{today}.csv"
+    m_state: dict = {}
     state: dict = {}
     polls: list = []
     trig_frames: list = []
+    mom_frames: list = []
     consec_fail = 0
     poll_no = 0
 
@@ -207,6 +308,15 @@ def main() -> None:
                           ("…" if len(hits) > 6 else "") + "\n")
                 pd.concat(trig_frames, ignore_index=True).to_csv(
                     trig_path, index=False, encoding="utf-8-sig")
+            moments = _entry_moments(watch, m_state, loop_t)
+            if len(moments):
+                mom_frames.append(moments)
+                pd.concat(mom_frames, ignore_index=True).to_csv(
+                    mom_path, index=False, encoding="utf-8-sig")
+                log.write(f"[{tm}] 介入时刻 {len(moments)} 条：" +
+                          "；".join(f"{h['kind']} {h['code']} {h['pct_chg']:+.1f}%"
+                                    for _, h in moments.head(5).iterrows()) +
+                          ("…" if len(moments) > 5 else "") + "\n")
             if poll_no % 10 == 0 or len(polls) == 1:
                 pd.concat(polls, ignore_index=True).to_parquet(poll_path, index=False)
             log.write(f"[{tm}] 轮询 #{poll_no} 完成（{len(watch)} 只，"
@@ -229,6 +339,9 @@ def main() -> None:
     if trig_frames:
         pd.concat(trig_frames, ignore_index=True).to_csv(
             trig_path, index=False, encoding="utf-8-sig")
+    if mom_frames:
+        pd.concat(mom_frames, ignore_index=True).to_csv(
+            mom_path, index=False, encoding="utf-8-sig")
     if polls:
         pd.concat(polls, ignore_index=True).to_parquet(poll_path, index=False)
     trig_all = (pd.concat(trig_frames, ignore_index=True)
