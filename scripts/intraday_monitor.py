@@ -216,6 +216,11 @@ def _t_end(t0) -> float:
 
 
 def main() -> None:
+    from src.live.proclock import try_lock
+    lock = try_lock(LOG_DIR / ".monitor.lock")
+    if lock is None:
+        print("另一个监控器实例正在运行（.monitor.lock），本次退出。")
+        return
     t0 = time.perf_counter()
     today = datetime.now().strftime("%Y%m%d")
     day = str(datetime.now().date())
