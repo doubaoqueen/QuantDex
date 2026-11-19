@@ -657,6 +657,7 @@ def strategy_outlook(acc):
     只展示、不构成调仓建议、无任何操作入口——实际执行严格按 20 日纪律
     （防御性/择时性提前调仓已被 D-022/026/033/061/069 五轮回测否定）。
     """
+    store = _store
     out = candidates(acc)                      # 顺带把全池打分算好并缓存
     hit = _CAND_CACHE.get(acc)
     if not hit or len(hit) < 3:
@@ -714,7 +715,13 @@ def strategy_outlook(acc):
         latest = cal[cal <= pd.Timestamp.now().normalize()].max()
         if last_fill:
             held_days = int(((cal > pd.Timestamp(last_fill)) & (cal <= latest)).sum())
-        sched = cal[::20]                       # 与 composite_topn 的 dates[::20] 同构
+        # D-095（体检后用户发现"面板时间对不上"）：composite_topn 的 dates 轴锚在
+        # **数据实际起点**（store 首日 2018-01-02），而这里曾用 1990 起的全日历——
+        # 两个 [::20] 网格差 9 天（12-09 vs 11-30），显示与执行不同锚。修正为同源。
+        first_data = pd.to_datetime(store.read("daily", "600519__qfq",
+                                               columns=["date"])["date"]).min()
+        axis = cal[cal >= first_data]
+        sched = axis[::20]                      # 与 composite_topn 的 dates[::20] 真同构
         upcoming = sched[sched > latest]
         next_sched = str(upcoming[0].date()) if len(upcoming) else None
     except Exception:  # noqa: BLE001

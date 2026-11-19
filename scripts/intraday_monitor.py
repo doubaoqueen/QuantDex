@@ -58,6 +58,40 @@ def _watchable(df: pd.DataFrame) -> pd.DataFrame:
     return df[~df["名称"].astype(str).str.upper().str.contains("ST")].copy()
 
 
+def _fetch_spot_fallback() -> pd.DataFrame:
+    """东财快照不可用时的兜底源：新浪全市场快照（一次 ~17s，2026-11-19 实测可用）。
+
+    D-095：2026-11-19 东财整天断连，监控 39 次轮询全失败、一条数据没落下——
+    盯盘的价值全在数据密度上，宁可换源也不能空转。
+    新浪只有 代码/名称/最新价/涨跌幅/昨收/今开/最高/最低/成交量/成交额，
+    **没有量比/换手率/涨速/5分钟涨跌**：缺的字段补 NaN，R3（量比≥3）在降级期间自然
+    不会触发，R1/R2 与介入时刻照常。列名保持与东财快照一致，下游一行不用改。
+    """
+    from src.data.sources import ak
+    df = ak.stock_zh_a_spot()
+    if df is None or len(df) == 0:
+        raise RuntimeError("新浪快照为空")
+    # 新浪的代码带市场前缀（sh600519 / sz000001 / bj920000）→ 去前缀补 6 位，与东财口径一致
+    code = (df["代码"].astype(str).str.strip()
+            .str.replace(r"^(sh|sz|bj)", "", regex=True).str.zfill(6))
+    out = pd.DataFrame({
+        "代码": code,
+        "名称": df["名称"].astype(str),
+        "最新价": pd.to_numeric(df["最新价"], errors="coerce"),
+        "涨跌幅": pd.to_numeric(df["涨跌幅"], errors="coerce"),
+        "昨收": pd.to_numeric(df["昨收"], errors="coerce"),
+        "今开": pd.to_numeric(df["今开"], errors="coerce"),
+        "最高": pd.to_numeric(df["最高"], errors="coerce"),
+        "最低": pd.to_numeric(df["最低"], errors="coerce"),
+        "成交量": pd.to_numeric(df["成交量"], errors="coerce"),
+        "成交额": (pd.to_numeric(df["成交额"], errors="coerce")
+                 if "成交额" in df.columns else np.nan),
+    })
+    for c in ("量比", "换手率", "涨速", "5分钟涨跌"):
+        out[c] = np.nan
+    return out
+
+
 def _trigger_checks(watch: pd.DataFrame, state: dict, now_ts) -> pd.DataFrame:
     """三条预注册规则 + 限频（向量化：itertuples 会把中文列名 mangle 成 _N）。"""
     pct = pd.to_numeric(watch["涨跌幅"], errors="coerce")
@@ -292,14 +326,23 @@ def main() -> None:
             time.sleep(60)
             continue
         try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                # 盯盘是**轮询**：单次失败直接跳过、下一轮再来，比 3×45s 长重试便宜得多
-                # （2026-11-18 实测：东财间歇断连，akshare 分页 56 次请求本身就要 ~70s；
-                #  长重试会让一次失败占掉 135s，白丢两三根快照）
-                df = fetch_spot(max_attempts=1, delay_s=0)
+            source = "东财"
+            try:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    # 盯盘是**轮询**：单次失败直接跳过、下一轮再来，比 3×45s 长重试便宜得多
+                    # （2026-11-18 实测：东财间歇断连，akshare 分页 56 次请求本身就要 ~70s；
+                    #  长重试会让一次失败占掉 135s，白丢两三根快照）
+                    df = fetch_spot(max_attempts=1, delay_s=0)
+            except Exception:  # noqa: BLE001  D-095：东财不可用 → 新浪兜底，别空转
+                source = "新浪"
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    df = _fetch_spot_fallback()
             watch = _watchable(df)
+            if watch.empty:
+                raise RuntimeError(f"{source}快照过滤后为空（{len(df)} 行）")
             poll_no += 1
             consec_fail = 0
+            note_src = "" if source == "东财" else "，无量比·R3 暂停"
             snap = watch[["代码", "名称", "最新价", "涨跌幅", "量比", "换手率",
                           "涨速", "昨收", "5分钟涨跌"]].copy()
             snap["poll_time"] = loop_t
@@ -324,7 +367,7 @@ def main() -> None:
                           ("…" if len(moments) > 5 else "") + "\n")
             if poll_no % 10 == 0 or len(polls) == 1:
                 pd.concat(polls, ignore_index=True).to_parquet(poll_path, index=False)
-            log.write(f"[{tm}] 轮询 #{poll_no} 完成（{len(watch)} 只，"
+            log.write(f"[{tm}] 轮询 #{poll_no} 完成（{len(watch)} 只 · {source}{note_src}，"
                       f"累计触发 {sum(len(f) for f in trig_frames)}）\n")
             log.flush()
             print(f"[{tm}] #{poll_no} 监听 {len(watch)} 只，触发累计 "
@@ -337,6 +380,9 @@ def main() -> None:
             if consec_fail >= MAX_CONSEC_FAIL:
                 log.write("[大退避] 连续失败过多，休眠 300s（数据资产要紧，不退出）\n")
                 time.sleep(300)
+                # D-095：退避后清零——否则此后**每一次**失败都会再睡 5 分钟，
+                # 源一恢复也只能 5 分钟探一次（2026-11-19 实测 25 次大退避只有 39 次轮询）
+                consec_fail = 0
         # 轮询节奏
         elapsed = (datetime.now() - loop_t).total_seconds()
         time.sleep(max(POLL_SLEEP_S - elapsed, 5))
