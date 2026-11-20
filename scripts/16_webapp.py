@@ -563,6 +563,48 @@ def _account_strategy(acc):
     return {"key": key, "label": label, "mechanism": mech}
 
 
+def research_list():
+    """研究室：实验存档 + 研究结果 JSON 自动发现（D-102：零 per-script 成本，
+    新研究脚本只要把结果落 research_results/*.json 就自动出现在页面）。"""
+    items = []
+    for f in sorted((STORE_DIR / "experiments").glob("*.json"),
+                    key=lambda x: -x.stat().st_mtime):
+        try:
+            j = json.loads(f.read_text(encoding="utf-8"))
+            items.append({"id": j.get("id", f.stem), "src": "实验存档",
+                          "name": str(j.get("name", "")), "file": f.stem,
+                          "date": str(j.get("created_at", ""))[:19],
+                          "verdict": str(j.get("verdict", "") or ""),
+                          "note": str(j.get("notes", ""))[:150]})
+        except Exception:  # noqa: BLE001
+            continue
+    for f in sorted((STORE_DIR / "research_results").glob("*.json"),
+                    key=lambda x: -x.stat().st_mtime):
+        verdict = ""
+        try:
+            j = json.loads(f.read_text(encoding="utf-8"))
+            verdict = str(j.get("verdict", "") or "")
+        except Exception:  # noqa: BLE001
+            pass
+        items.append({"id": f.stem, "src": "研究结果", "name": f.stem, "file": f.stem,
+                      "date": time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime)),
+                      "verdict": verdict, "note": ""})
+    return {"items": items}
+
+
+def research_detail(name: str):
+    """单个研究产物全文（原始 JSON，前端树渲染）。name 做路径穿越防护。"""
+    safe = Path(name).name
+    for base in (STORE_DIR / "experiments", STORE_DIR / "research_results"):
+        f = base / f"{safe}.json"
+        if f.exists():
+            try:
+                return json.loads(f.read_text(encoding="utf-8"))
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e)}
+    return {"error": f"未找到 {safe}"}
+
+
 def candidates(acc):
     """候选池入口（D-090）：同账户并发请求**只算一次**，其余等结果。
 
@@ -1689,6 +1731,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, candidates(q.get("account", ["large"])[0]))
             if u.path == "/api/school":
                 return self._send(200, school_data())
+            if u.path == "/api/research":
+                return self._send(200, research_list())
+            if u.path == "/api/research_detail":
+                return self._send(200, research_detail(q.get("name", [""])[0]))
             if u.path == "/api/strategies":
                 return self._send(200, {"accounts": [
                     {"key": k, "label": v["label"], "strategy": v["group"]}

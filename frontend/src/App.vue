@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
 import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
 import SchoolView from './components/SchoolView.vue'
+import ResearchView from './components/ResearchView.vue'
 import KlineModal from './components/KlineModal.vue'
 import NavChart from './components/NavChart.vue'
 import BacktestPanel from './components/BacktestPanel.vue'
@@ -32,11 +33,12 @@ const strategyGroups = (() => {
   }
   return [...seen.entries()].map(([name, accs]) => ({ name, accs }))
 })()
-const view = ref('console')   // console | school（与 location.hash 同步：F5 保持在量化学院）
+const view = ref('console')   // console | school | research（与 location.hash 同步）
 // 量化学院此前是"死胡同"视图——唯一退出方式是 F5。现在：SchoolView 内 ← 返回按钮/Esc，
 // 且 hash 记忆视图，#school 可直接深链接（2026-11-13）
 watch(view, (v) => {
   if (v === 'school') history.replaceState(null, '', '#school')
+  else if (v === 'research') history.replaceState(null, '', '#research')
   else if (location.hash) history.replaceState(null, '', location.pathname + location.search)
 })
 const account = ref('large')          // 当前选中账户，驱动全部面板与主题色
@@ -137,6 +139,7 @@ async function loadAll() {
 let timer = null
 onMounted(() => {
   if (location.hash === '#school') view.value = 'school'
+  if (location.hash === '#research') view.value = 'research'
   loadAll()
   timer = setInterval(loadAll, 15000)
 })
@@ -188,6 +191,7 @@ function cumText(o) {
   <div class="min-h-screen text-slate-800">
     <!-- 量化学院视图（独立于控制台数据面板） -->
     <SchoolView v-if="view==='school'" class="fixed inset-0 z-40 overflow-auto bg-slate-900" @back="view='console'" />
+    <ResearchView v-if="view==='research'" class="fixed inset-0 z-40 overflow-auto bg-slate-900" @back="view='console'" />
     <div v-else>
     <!-- 顶栏 -->
     <header class="sticky top-0 z-20 border-b border-slate-200/70 bg-white/80 backdrop-blur">
@@ -198,6 +202,9 @@ function cumText(o) {
           <span class="text-slate-600">/</span>
           <button :class="view==='school' ? 'text-white' : 'text-slate-400'"
                   class="rounded px-1 transition" @click="view='school'">量化学院</button>
+          <span class="text-slate-600">/</span>
+          <button :class="view==='research' ? 'text-white' : 'text-slate-400'"
+                  class="rounded px-1 transition" @click="view='research'">研究室</button>
         </h1>
         <div class="group relative">
           <button class="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm hover:border-sky-400"
