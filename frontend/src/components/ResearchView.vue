@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import * as echarts from 'echarts'
 import { api } from '../api.js'
 
@@ -34,6 +34,7 @@ async function openItem(it) {
   try { sel.value = await api.get(`/api/research_detail?name=${encodeURIComponent(it.file)}`) }
   catch { sel.value = { error: '加载失败' } }
   chartDone = false
+  await nextTick()          // 等 v-if="sel" 的 DOM 先挂载，chartEl 才存在（D-102 修复：空图 bug）
   drawChart()
 }
 
