@@ -103,11 +103,12 @@ def main() -> None:
     print(f"  n={len(key)} 净期望 {key['net'].mean() if len(key) else np.nan:+.2%} "
           f"中位 {key['net'].median() if len(key) else np.nan:+.2%}")
 
-    verdict = "OPEN" if (len(key) >= 100 and key["net"].mean() > 0) else "CLOSED"
-    print(f"\n== 最终裁决：{verdict} ==")
-    if verdict == "OPEN":
-        print("→ 开板回封格子存在正期望 → 进攻型保留一个小资金卫星仓候选（容量≈248 起/年）")
-        print("→ 强制下步：时间外推（2020-23 定规则 → 24-26 验证）+ 容量实测")
+    # D-102 裁决修正：脚本不判 OPEN——关键格子是评审全样本挑选 + 本测试未做时间外推
+    # （2020-23 定规则 → 24-26 验证）+ 容量/T+1 跌停出场尾部未建模。待验假设不是结论。
+    verdict = "PROVISIONAL" if (len(key) >= 100 and key["net"].mean() > 0) else "CLOSED"
+    print(f"\n== 裁决：{verdict}（开板回封格子存在正期望，但为全样本挑选+未外推——待验假设）==")
+    if verdict == "PROVISIONAL":
+        print("→ 强制下步：时间外推（2020-23 定规则 → 24-26 验证）+ 容量实测 + T+1 跌停出场尾部建模")
     else:
         print("→ 可买格子无正期望 → 进攻型永久关闭（D-093/100/102 三连）")
 
