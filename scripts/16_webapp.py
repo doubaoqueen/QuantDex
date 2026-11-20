@@ -563,6 +563,43 @@ def _account_strategy(acc):
     return {"key": key, "label": label, "mechanism": mech}
 
 
+PREFLIGHT_STRATEGIES = [
+    # D-076 v1 canonical（D-071 新口径；dividend/topk WF 为 10-26 旧档待重跑）
+    {"key": "corrected", "name": "现行版（低换手+低波+反转）", "mdd": 0.3141,
+     "wf_ann": 0.1059, "wf_note": "2019+ 新档"},
+    {"key": "dividend", "name": "红利版（+股息率）", "mdd": 0.2755,
+     "wf_ann": 0.1107, "wf_note": "10-26 旧档，待 ST 口径重跑"},
+    {"key": "topkdrop", "name": "topk（换手机制优化）", "mdd": 0.2769,
+     "wf_ann": 0.1277, "wf_note": "10-26 旧档，待 ST 口径重跑"},
+]
+
+
+def preflight_check(l_amount: float):
+    """开户前体检（D-068 构想一 / D-076 v1 公式 / D-098 归因校准输入）。
+
+    约束满足式（D-009 产品化）：可投入 = 可承受亏损 L ÷ |历史 MDD|；
+    1.5× 压力档 = L ÷ (1.5×|MDD|)——为"没见过所有危机"支付的保险费。
+    期望带 = WF 样本外年化 ±3pp × 投入额。alpha 未裁决（D-010 挂起），
+    四周影子盘实测带仅供参考，非收益承诺。
+    """
+    l_amount = max(float(l_amount or 0), 0.0)
+    rows = []
+    for st in PREFLIGHT_STRATEGIES:
+        invest = l_amount / st["mdd"]
+        invest_15 = l_amount / (st["mdd"] * 1.5)
+        rows.append({**st, "invest": round(invest), "invest_15": round(invest_15),
+                     "band_lo": round(invest * (st["wf_ann"] - 0.03)),
+                     "band_hi": round(invest * (st["wf_ann"] + 0.03))})
+    calibration = {
+        "window": "2026-10-19 ~ 2026-11-20",
+        "live_band_vs_bench": [-0.0255, 0.0553],
+        "exec_deviation": "实际−回测代理 ≤0.6pp/四周（与样本噪声同量级，D-098）",
+        "st_exposure": 0,
+        "d010": "挂起，观察期延至 12-29（8 周功效 ×√2）",
+    }
+    return {"L": l_amount, "rows": rows, "calibration": calibration}
+
+
 def research_list():
     """研究室：实验存档 + 研究结果 JSON 自动发现（D-102：零 per-script 成本，
     新研究脚本只要把结果落 research_results/*.json 就自动出现在页面）。"""
@@ -1729,6 +1766,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, strategy_outlook(q.get("account", ["large"])[0]))
             if u.path == "/api/candidates":
                 return self._send(200, candidates(q.get("account", ["large"])[0]))
+            if u.path == "/api/preflight":
+                return self._send(200, preflight_check(float(q.get("L", ["20000"])[0])))
             if u.path == "/api/school":
                 return self._send(200, school_data())
             if u.path == "/api/research":

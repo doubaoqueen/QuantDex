@@ -4,6 +4,7 @@ import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
 import SchoolView from './components/SchoolView.vue'
 import ResearchView from './components/ResearchView.vue'
+import PreflightCheck from './components/PreflightCheck.vue'
 import KlineModal from './components/KlineModal.vue'
 import NavChart from './components/NavChart.vue'
 import BacktestPanel from './components/BacktestPanel.vue'
@@ -293,6 +294,9 @@ function cumText(o) {
 
       <!-- 策略动向（影子调仓，D-072）：打开 20 日调仓之间的黑箱——只展示，不构成建议 -->
       <StrategyOutlook :account="account" />
+
+      <!-- 开户前体检（D-068 构想一 / D-076 v2）：预算+承受力 → 约束满足式档位推荐（D-098 校准） -->
+      <PreflightCheck />
 
       <!-- 净值曲线 -->
       <NavChart :account="account" :label="accLabel" />
