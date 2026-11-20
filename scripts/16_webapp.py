@@ -407,6 +407,9 @@ def school_data():
     from src.analysis import expr_factors as EF
     from src.analysis.factors import FACTOR_NAMES
     from src.analysis.school_content import (
+        ATTRIBUTION_LESSON,
+        ATTRIBUTION_METHOD,
+        ATTRIBUTION_NOTE,
         OPS_TABLE,
         PITFALLS,
         PORTFOLIO_STEPS,
@@ -463,6 +466,30 @@ def school_data():
     st["risk_callout"] = RISK_CALLOUT
     st["postmortem"] = POSTMORTEM
     st["postmortem_lesson"] = POSTMORTEM_LESSON
+    # 归因（D-098/099 四周归因实测数据）
+    st["attr_method"] = [{"name": n, "desc": d, "lesson": ls} for n, d, ls in ATTRIBUTION_METHOD]
+    st["attr_lesson"] = ATTRIBUTION_LESSON
+    st["attr_note"] = ATTRIBUTION_NOTE
+    try:
+        base = STORE_DIR / "research_results"
+        w = json.load(open(base / "attribution_4w.json", encoding="utf-8"))
+        ab = json.load(open(base / "attribution_alpha_beta.json", encoding="utf-8"))
+        rows = []
+        for acc in ("large", "small", "div", "topk"):
+            v = w.get(acc, {})
+            a = ab.get(acc, {})
+            rows.append({"acc": acc,
+                         "ret": f"{v.get('live_ret', 0):+.2%}",
+                         "bench": f"{v.get('bench_ret', 0):+.2%}",
+                         "excess": f"{v.get('excess', 0):+.2%}",
+                         "beta": f"{a.get('beta', '—')}",
+                         "alpha_ann": (f"{a['alpha_ann']:+.1%}" if a.get("alpha_ann") is not None else "—"),
+                         "t": f"{a.get('t_alpha', '—')}"})
+        st["attr_rows"] = rows
+        st["attr_window"] = f"{w.get('large', {}).get('first', '')} ~ {w.get('large', {}).get('last', '')}"
+    except Exception as e:  # noqa: BLE001
+        st["attr_rows"] = []
+        st["attr_window"] = f"归因数据缺失：{e}"
     st["strategies"] = [{**sm, "style": STATUS_STYLE[sm["status"]][0]}
                         for sm in STRATEGY_MAP]
     accounts = []

@@ -268,5 +268,33 @@ p["score"] = score / len(factors)                  # 等权合成——权重是
       </div>
       <p class="mt-4 text-sm text-slate-300">——学完这一页，你需要的"必需之物"就是：干净的数据、可检验的猜想、诚实的时光机、能跑的账户、和不骗自己的纪律。</p>
     </section>
+
+    <section id="attr" class="mb-10">
+      <h2 class="mb-2 border-l-4 border-sky-500 pl-2 text-lg font-bold text-white">十四、归因：把"赚了"拆成可命名的部分</h2>
+      <p class="mb-2 text-sm text-slate-300">一条净值曲线无法区分<b>本事</b>与<b>运气</b>——归因就是把它拆成三层：① 跑没跑赢基准 ② 扣除市场暴露后还剩多少（α/β 回归）③ 剩余里执行成本占多少。每一层都有对应的坑。</p>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div v-for="a in d?.attr_method || []" :key="a.name" class="rounded-xl border border-slate-700 bg-slate-800/60 p-3">
+          <b class="text-sm text-white">{{ a.name }}</b>
+          <p class="mt-1 text-xs text-slate-300">{{ a.desc }}</p>
+          <p class="mt-1 text-xs text-slate-500">{{ a.lesson }}</p>
+        </div>
+      </div>
+      <h3 class="mb-1 mt-4 text-sm text-slate-300">四周实测（{{ d?.attr_window }}）</h3>
+      <table class="w-full text-xs"><thead><tr class="bg-slate-800 text-left text-slate-400"><th class="p-2">账户</th><th class="p-2">区间收益</th><th class="p-2">000300 同窗</th><th class="p-2">超额</th><th class="p-2">β</th><th class="p-2">α（年化）</th><th class="p-2">t(α)</th></tr></thead>
+      <tbody>
+        <tr v-for="r in d?.attr_rows || []" :key="r.acc" class="border-t border-slate-700">
+          <td class="p-2 font-semibold text-slate-200">{{ r.acc }}</td>
+          <td class="p-2" :class="r.ret.startsWith('-') ? 'text-emerald-400' : 'text-rose-300'">{{ r.ret }}</td>
+          <td class="p-2 text-slate-400">{{ r.bench }}</td>
+          <td class="p-2 font-semibold" :class="r.excess.startsWith('-') ? 'text-emerald-400' : 'text-rose-300'">{{ r.excess }}</td>
+          <td class="p-2 font-mono text-slate-300">{{ r.beta }}</td>
+          <td class="p-2 font-mono text-slate-300">{{ r.alpha_ann }}</td>
+          <td class="p-2 font-mono" :class="Math.abs(parseFloat(r.t)) >= 2 ? 'text-amber-300' : 'text-slate-500'">{{ r.t }}</td>
+        </tr>
+      </tbody></table>
+      <div class="mt-2 rounded-lg border border-blue-900 bg-blue-950/40 p-3 text-xs text-blue-200">{{ d?.attr_note }}</div>
+      <div class="mt-2 rounded-lg border border-orange-900 bg-orange-950/40 p-3 text-xs text-orange-200">裁决教训：{{ d?.attr_lesson }}</div>
+      <p class="mt-2 text-xs text-slate-500">颜色约定：红涨绿跌。t(α) |t|≥2 才算可裁决——四周的功效上限只有 1.5，所以这批数字都是期望带，不是证明。</p>
+    </section>
   </div>
 </template>
