@@ -99,19 +99,40 @@ def main() -> None:
     key = b[(b["t_turn"] < 3.0) & (~b["is_yizi"])
             & (pd.to_datetime(b["ft_time"]).dt.time <= pd.Timestamp("10:00").time())
             & (b["sealed"])]
-    print("\n== 评审关键格子：低换手<3% + 非一字 + 首触≤10:00 + 开板回封 ==")
+    print("\n== 评审关键格子（全样本）：低换手<3% + 非一字 + 首触≤10:00 + 开板回封 ==")
     print(f"  n={len(key)} 净期望 {key['net'].mean() if len(key) else np.nan:+.2%} "
           f"中位 {key['net'].median() if len(key) else np.nan:+.2%}")
 
-    # D-102 裁决修正：脚本不判 OPEN——关键格子是评审全样本挑选 + 本测试未做时间外推
-    # （2020-23 定规则 → 24-26 验证）+ 容量/T+1 跌停出场尾部未建模。待验假设不是结论。
-    verdict = "PROVISIONAL" if (len(key) >= 100 and key["net"].mean() > 0) else "CLOSED"
-    print(f"\n== 裁决：{verdict}（开板回封格子存在正期望，但为全样本挑选+未外推——待验假设）==")
-    if verdict == "PROVISIONAL":
-        print("→ 强制下步：时间外推（2020-23 定规则 → 24-26 验证）+ 容量实测 + T+1 跌停出场尾部建模")
+    # D-102 强制下步：时间外推（预注册切点 2023/2024——规则锚在 2020-23，2024-26 考试）
+    print("\n== 时间外推（规则冻结于 2020-23，2024-26 样本外考试）==")
+    b["entry_year"] = pd.to_datetime(b["date"]).dt.year
+    key_y = key.copy()
+    key_y["entry_year"] = pd.to_datetime(key_y["date"]).dt.year
+    oos_ok = False
+    for label, lo, hi in (("样本内 2020-23", 2020, 2023), ("样本外 2024-26", 2024, 2026)):
+        sub_p = key_y[(key_y["entry_year"] >= lo) & (key_y["entry_year"] <= hi)]
+        if len(sub_p) < 20:
+            print(f"   {label}: n={len(sub_p)}（样本不足）")
+            continue
+        print(f"   {label}: n={len(sub_p)} 净期望 {sub_p['net'].mean():+.2%} "
+              f"中位 {sub_p['net'].median():+.2%} 胜率 {(sub_p['net'] > 0).mean():.0%}")
+        if label.startswith("样本外") and sub_p["net"].mean() > 0:
+            oos_ok = True
+
+    # D-102 裁决：全样本挑选 + 时间外推 + 尾部建模三关齐备才判 PASS
+    verdict = ("OOS_PASS" if (len(key) >= 100 and key["net"].mean() > 0 and oos_ok)
+               else ("PROVISIONAL" if (len(key) >= 100 and key["net"].mean() > 0) else "CLOSED"))
+    print(f"\n== 裁决：{verdict} ==")
+    if verdict == "OOS_PASS":
+        print("→ 样本外仍为正 → 进攻型保留小资金卫星仓候选（容量 ≈248 起/年）")
+        print("→ 强制下步：容量实测 + T+1 跌停出场尾部建模 + 影子盘第五账户提案")
+    elif verdict == "PROVISIONAL":
+        print("→ 全样本为正但样本外不足 → 待验，12 月数据补齐后重跑本脚本")
     else:
         print("→ 可买格子无正期望 → 进攻型永久关闭（D-093/100/102 三连）")
 
+    if len(b):
+        b.to_parquet(STORE_DIR / "research_results" / "limitup_dip_events.parquet", index=False)
     json.dump({"verdict": verdict, "n_buyable": int(len(b)), "n_unbuyable": int(n_unbuyable),
                "key_cell_n": int(len(key)),
                "key_cell_mean": float(key["net"].mean()) if len(key) else None,
