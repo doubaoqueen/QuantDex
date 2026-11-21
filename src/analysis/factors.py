@@ -170,10 +170,13 @@ def build_factor_panel(
             if af is not None:
                 f = (af.reindex(af.index.union(raw_date)).sort_index()
                      .ffill().reindex(raw_date).fillna(1.0))
-                real_close = raw["close"] / f
+                # D-097 修复（2026-11-20）：raw["close"] 是 RangeIndex、f 是 DatetimeIndex，
+                # 直接相除会按索引对齐成并集（2155+2155=4310 行）→ 后面的除法广播报错，
+                # 红利账户流水线当天被静默跳过。一律转 ndarray 再算，位置对齐。
+                real_close = raw["close"].to_numpy() / f.to_numpy()
             else:
-                real_close = raw["close"]
-            raw["dy_ttm"] = ttm.to_numpy() / real_close.to_numpy()
+                real_close = raw["close"].to_numpy()
+            raw["dy_ttm"] = ttm.to_numpy() / real_close
         elif extra and "dy_ttm" in extra:
             raw["dy_ttm"] = np.nan
         if expr_factors:
