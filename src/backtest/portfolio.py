@@ -34,8 +34,9 @@ from config import board_limit
 TRADING_DAYS = 250
 
 
-def _board_limit(symbol: str) -> float:
-    return board_limit(symbol)
+def _board_limit(symbol: str, date=None) -> float:
+    # 深检 2026-11-22：传成交日按当年制度判涨跌停（创业板 2020-08-24 前 ±10%）
+    return board_limit(symbol, date=date)
 
 
 def run_portfolio_backtest(
@@ -121,7 +122,13 @@ def run_portfolio_backtest(
             for k, sym in enumerate(cols):
                 dv = float(dps.get(sym, 0.0) or 0.0)
                 if dv > 0 and w_hold[k] > 0:
-                    p = float(px.loc[t, sym])
+                    # 分母用**除权前一日**收盘（深检 2026-11-22）：除权日价格已含
+                    # 除权缺口，用当日收盘会高估股息率。前一日无价时退回当日价。
+                    # 注：qfq 全样本口径下本参数通常不启用（收益已含分红），
+                    # 但作为公开 API 必须口径正确。
+                    p = float(prev_raw.loc[t].get(sym, np.nan))
+                    if not np.isfinite(p) or p <= 0:
+                        p = float(px.loc[t, sym])
                     if p > 0:
                         div_frac += w_hold[k] * (dv / p)
             if div_frac:
@@ -157,7 +164,7 @@ def run_portfolio_backtest(
                     if pd.isna(p0) or p0 <= 0:
                         continue
                     chg = float(raw_t.get(sym)) / float(p0) - 1.0
-                    lim = _board_limit(sym)
+                    lim = _board_limit(sym, date=t)
                     tol = 0.001 if exec_at_open else limit_tol  # 开盘口径与 pipeline 相同
                     if w_target[k] > w_hold[k] and chg >= lim - tol:
                         w_target[k] = w_hold[k]           # 开盘/收盘触涨停：买不进

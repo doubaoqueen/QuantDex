@@ -6,7 +6,9 @@
 - positions(date, symbol, shares, close, weight, PK(date,symbol))
 - trade_log(id PK, signal_date, fill_date, symbol, side, qty, price, amount,
             fee, stamp_duty, status, note)
-  status: filled / rejected_limit_up / rejected_suspended / partial
+  status: pending / filled / cancelled / rejected_limit_up /
+          rejected_suspended / rejected_insufficient_cash / rejected_delisted
+          （部分成交记 filled + 实际 qty；"partial" 状态从未写入，深检 2026-11-22 修正文档）
 
 用法：
     from src.live.ledger import Ledger

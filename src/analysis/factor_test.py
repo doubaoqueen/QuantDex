@@ -106,19 +106,28 @@ def _newey_west_tstat(x: pd.Series, max_lags: int) -> float:
 
     重叠持有期(h>1)会让相邻交易日的 IC 高度自相关，普通 t 值系统性虚高；
     max_lags 通常取 h-1。返回 NaN 表示样本不足或方差非正。
+
+    深检修复（2026-11-22）：旧实现 `(resid[lag:] * resid[:-lag]).sum()` 是两个
+    **带索引 Series** 相乘——pandas 按索引标签对齐，实际算出的是重叠窗口的
+    Σresid²（一个与真实自相关无关的常数项），而不是滞后交叉积
+    Σresidᵢ·residᵢ₋lag。方差因此被系统性抬高、|t| 被压小且压缩比随 h/n 漂移，
+    全仓 17 个调用点（含 56 号挖矿闸门 |NW-t|≥2）的 nw_t 都不是有效的
+    NW 统计量。改用 numpy 位置切片后数值会变（对正自相关的重叠 IC 旧值偏
+    保守），**已入档的 NW-t 结论需重跑复核**，勿直接对照旧数字。
     """
     x = x.dropna()
     n = len(x)
     if n < 3 or max_lags < 1:
         return np.nan
-    resid = x - x.mean()
-    var = (resid ** 2).sum() / n
+    r = x.to_numpy(dtype=float)
+    resid = r - r.mean()
+    var = float((resid ** 2).sum()) / n
     for lag in range(1, min(max_lags, n - 1) + 1):
         w = 1 - lag / (max_lags + 1)      # Bartlett 权重
-        var += 2 * w * (resid[lag:] * resid[:-lag]).sum() / n
+        var += 2 * w * float((resid[lag:] * resid[:-lag]).sum()) / n
     if var <= 0:
         return np.nan
-    return x.mean() / np.sqrt(var / n)
+    return float(r.mean() / np.sqrt(var / n))
 
 
 # ================================================================ IC 汇总 / 衰减
@@ -226,7 +235,9 @@ def quantile_backtest(panel: pd.DataFrame, factor: str,
     grouped = m.groupby(["date", "grp"])["ret"]
     daily = grouped.mean().unstack("grp").sort_index()
     daily_med = grouped.median().unstack("grp").sort_index()
-    qcols = sorted(daily.columns)
+    # 分组列按**数值**序排（深检 2026-11-22：n_groups≥10 时字符串序会把 Q10 排到 Q2 前，
+    # hi/lo 组取错）
+    qcols = sorted(daily.columns, key=lambda c: int(str(c)[1:]))
     daily = daily.reindex(columns=qcols).fillna(0.0)
     daily_med = daily_med.reindex(columns=qcols).fillna(0.0)
     hi_col, lo_col = qcols[-1], qcols[0]

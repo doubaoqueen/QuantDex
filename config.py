@@ -58,18 +58,60 @@ SLIP_RATE = 0.0005        # 滑点（单边，按成交额估算）
 STAMP_RATE = 0.0005       # 印花税（仅卖出）
 TRANSFER_RATE = 0.00001   # 过户费（双边，0.001%）
 LOT = 100                 # A 股整手
-GEM_PREFIX = ("300", "301", "688")  # 创业板/科创板（±20%）
+GEM_PREFIX = ("300", "301")         # 创业板
+STAR_PREFIX = "688"                 # 科创板
+
+# 制度时间线（涨跌停幅度随年代不同，回测/撮合必须按**日期**判定）：
+#   创业板 2020-08-24 注册制改革：±10% → ±20%（ST 同升）；此前 ST ±5%
+#   科创板 2019-07-22 开市即 ±20%（含 ST；上市前 5 日无涨跌停，未建模）
+#   北交所 2021-11-15 开市 ±30%（4/8/92 号段；开市前属新三板，本系统不覆盖）
+GEM_REG_START = "2020-08-24"
 
 
-def board_limit(symbol: str, name: str | None = None) -> float:
+def _as_iso_date(date) -> str | None:
+    """date 归一化为 'YYYY-MM-DD' 字符串（ISO 字符串比较即时间序）；无法解析返回 None。"""
+    if date is None:
+        return None
+    try:
+        s = date.strftime("%Y-%m-%d")             # pd.Timestamp / datetime
+    except AttributeError:
+        s = str(date).strip()
+        if len(s) == 8 and s.isdigit():           # YYYYMMDD
+            s = f"{s[:4]}-{s[4:6]}-{s[6:]}"
+        else:
+            s = s[:10]
+    return s if len(s) == 10 else None
+
+
+def board_limit(symbol: str, name: str | None = None, date=None) -> float:
     """涨跌停幅度（撮合 / 回测 / 控制台展示共用，唯一来源）。
 
-    ST 股（证券简称以 ST/*ST 开头）±5%；创业板/科创板 ±20%；其余主板 ±10%。
-    传 name 才判 ST——撮合侧目前只传代码（保持既有行为），控制台展示会传名称，
-    所以 ST 标的的涨跌停标记比撮合更严格，属已知差异。
+    date=None（实盘快照 / 当日展示）→ 现行规则；
+    date=成交日（回测/撮合传真实交易日）→ 按当年制度判定——修复深检
+    2026-11-22 发现的时代错位：2018~2020-08 的创业板旧实现恒按 ±20% 判定
+    （真实 ±10%），那段样本里"涨停买不进/跌停卖不出"的保真约束静默失效。
+
+    规则：
+      - 北交所（4/8/92 开头）±30%；
+      - 科创板 688 ±20%（含 ST）；
+      - 创业板 300/301：2020-08-24 起 ±20%（含 ST），此前 ±10%（ST ±5%）；
+      - 主板 ±10%，ST ±5%。
+    ST 依据证券简称（需调用方传 name；不传按非 ST 处理——回测侧拿不到名称时，
+    历史 ST 股会按非 ST 幅度判定，属已知边界。注：F-21 修复后撮合侧 pipeline
+    已传名，方向与旧注释相反；回测侧 portfolio 仍不传名）。
     """
+    c = str(symbol)
+    is_st = False
     if name:
         nm = str(name).upper().replace(" ", "")
-        if nm.startswith(("*ST", "ST")):
-            return 0.05
-    return 0.20 if str(symbol).startswith(GEM_PREFIX) else 0.10
+        is_st = nm.startswith(("*ST", "ST"))
+    d = _as_iso_date(date)
+    if c.startswith(("4", "8", "92")):            # 北交所（含新三板老号段）
+        return 0.30
+    if c.startswith(GEM_PREFIX):                  # 创业板
+        if d is None or d >= GEM_REG_START:
+            return 0.20                           # 注册制后：含 ST 均 ±20%
+        return 0.05 if is_st else 0.10
+    if c.startswith(STAR_PREFIX):                 # 科创板：含 ST 均 ±20%
+        return 0.20
+    return 0.05 if is_st else 0.10                # 主板

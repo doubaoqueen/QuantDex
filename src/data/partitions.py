@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -48,7 +49,15 @@ def write_days(df: pd.DataFrame, adjust: str = "qfq") -> int:
             merged = g
         merged = (merged.drop_duplicates(subset=["symbol", "adjust"], keep="last")
                         .sort_values("symbol").reset_index(drop=True))
-        merged.to_parquet(path, index=False, compression="snappy")
+        # 深检修复（2026-11-22）：先写临时文件再原子替换（与 storage._write_parquet_atomic
+        # 同款，D-059）——进程中断不再留半截分区文件；Windows 上目标正被读取时
+        # os.replace 会失败，退回直写（与 _save_snapshot_cache 的降级一致）
+        try:
+            tmp = path.with_suffix(".parquet.tmp")
+            merged.to_parquet(tmp, index=False, compression="snappy")
+            os.replace(tmp, path)
+        except OSError:
+            merged.to_parquet(path, index=False, compression="snappy")
         n_days += 1
     return n_days
 

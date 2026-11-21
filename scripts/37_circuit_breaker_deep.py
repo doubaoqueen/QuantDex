@@ -77,7 +77,7 @@ def simulate(W: pd.DataFrame, prices: pd.DataFrame, opens: pd.DataFrame,
                 if pd.isna(p0) or p0 <= 0:
                     continue
                 chg = float(rt) / float(p0) - 1.0
-                lim = board_limit(sym)
+                lim = board_limit(sym, date=t)   # 深检 2026-11-22：按当年制度判
                 if w_t[k] > w[k] and chg >= lim - 0.001:
                     w_t[k] = w[k]
                 elif w_t[k] < w[k] and chg <= -lim + 0.001:

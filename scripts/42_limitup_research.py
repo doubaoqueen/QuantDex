@@ -49,7 +49,10 @@ def load_pool_bars(store: ParquetStore) -> pd.DataFrame:
         df = df.sort_values("date")
         prev = df["close"].shift(1)
         pct = df["close"] / prev - 1.0
-        lim = board_limit(sym, names.get(sym))
+        # 深检 2026-11-22：lim 逐行按当日制度判（创业板 2020-08-24 前后 ±10%/±20%）；
+        # lambda 经默认参数绑定循环变量（B023——map 内立即求值，绑定仅为消除歧义）
+        lim = pd.to_datetime(df["date"]).map(
+            lambda d, s=sym, nm=names.get(sym): board_limit(s, nm, date=d)).to_numpy()
         frames.append(pd.DataFrame({
             "symbol": sym, "date": pd.to_datetime(df["date"]),
             "open": df["open"].to_numpy(), "high": df["high"].to_numpy(),

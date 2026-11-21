@@ -193,7 +193,11 @@ def freshness(store: ParquetStore | None = None, sample: int = 30,
     if closed is None:
         return {"last_closed": None, "sample": 0, "up_to_date": 0, "stale": True,
                 "error": "交易日历缺失"}
-    names = [n for n in store.list_names("daily") if n.endswith("__qfq")][:sample]
+    names = [n for n in store.list_names("daily") if n.endswith("__qfq")]
+    # 深检修复（2026-11-22）：原 [:sample] 取字母序前 30 个（永远偏 000/600 前缀，
+    # 不代表全池），改为等距抽样覆盖整个股票池。
+    step = max(1, len(names) // max(1, sample))
+    names = names[::step][:sample]
     have = 0
     for n in names:
         try:

@@ -54,7 +54,11 @@ def test_self_check_flags_stale_pending():
     db2 = Path("data/store/sim/_test_pipeline_robust2.sqlite")
     try:
         led = Ledger(DB)
-        led.add_pending(pd.DataFrame([_order("600999", (D - pd.Timedelta(days=40)).date())]))
+        # 深检修复（2026-11-22）：滞留/在途两个用例的日期改为**相对当前时间**——
+        # 原来锚在硬编码 D=2026-10-20，跨过 30 天滞留窗后（2026-11-20 起）第二个
+        # 用例永远失败（时间炸弹）
+        led.add_pending(pd.DataFrame([_order(
+            "600999", (pd.Timestamp.now().normalize() - pd.Timedelta(days=40)).date())]))
         lines, ok = _self_check(led, cash=1000.0,
                                 positions=pd.DataFrame())
         txt = "\n".join(lines)
@@ -65,7 +69,8 @@ def test_self_check_flags_stale_pending():
         for suffix in ("", "-wal", "-shm"):
             Path(str(db2) + suffix).unlink(missing_ok=True)
         led2 = Ledger(db2)
-        led2.add_pending(pd.DataFrame([_order("600519", (D + pd.Timedelta(days=1)).date())]))
+        led2.add_pending(pd.DataFrame([_order(
+            "600519", (pd.Timestamp.now().normalize() + pd.Timedelta(days=1)).date())]))
         lines2, ok2 = _self_check(led2, cash=1000.0, positions=pd.DataFrame())
         txt2 = "\n".join(lines2)
         assert ok2 is True and "✓ 无滞留待成交（在途 1 笔）" in txt2, txt2

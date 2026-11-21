@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 import _bootstrap  # noqa: F401
 import pandas as pd
 
-from config import STORE_DIR, board_limit
+from config import FEE_RATE, MIN_FEE, SLIP_RATE, STAMP_RATE, STORE_DIR, TRANSFER_RATE, board_limit
 from src.data.market import get_kline
 from src.data.snapshot import freshness as data_freshness
 from src.data.snapshot import update_spot_snapshot
@@ -47,10 +47,15 @@ _MIME = {
 
 
 def _serve_static(rel: str):
-    """安全地返回 frontend/dist 下的静态文件；不存在返回 None（回退旧页面）。"""
+    """安全地返回 frontend/dist 下的静态文件；不存在返回 None（回退旧页面）。
+
+    深检修复（2026-11-22）：旧的 `startswith(str(base))` 是前缀匹配，兄弟目录
+    （如 frontend/dist2/...，可经 ../dist2 相对路径到达）会通过检查；改用
+    Path.is_relative_to 做真正的路径包含判定。
+    """
     base = FRONTEND_DIST.resolve()
     p = (base / rel.lstrip("/")).resolve()
-    if not str(p).startswith(str(base)) or not p.is_file():
+    if not p.is_relative_to(base) or not p.is_file():
         return None
     ctype = _MIME.get(p.suffix.lower(), "application/octet-stream")
     return p.read_bytes(), ctype
@@ -92,6 +97,7 @@ def _auth_store() -> dict:
 
 
 AUTH = _auth_store()
+_LOGIN_FAILS = {"n": 0}     # 连续登录失败计数（成功清零；≥5 次起递增延时，见 do_POST）
 
 
 def _verify_login(user: str, pw: str) -> bool:
@@ -1254,7 +1260,9 @@ def add_order(acc, symbol, side, qty, price=None):
         return {"ok": False, "msg": "账户不存在"}
     try:
         amount = px * qty
-        fee = max(amount * 0.00025, 5.0) + amount * 0.00001
+        # 深检修复（2026-11-22）：费率改从 config 取（D-044 单一事实来源）——
+        # 此前四个费率字面量散在本函数，config 改动不传导（pipeline 曾出过同类漂移）
+        fee = max(amount * FEE_RATE, MIN_FEE) + amount * TRANSFER_RATE
         # 资金/持仓校验（D-034，外部评审指出）：买查现金（扣已挂买单占用），卖查持仓（扣已挂卖单）
         snap = pd.read_sql_query(
             "SELECT cash FROM account_snapshot ORDER BY date DESC LIMIT 1", conn)
@@ -1263,7 +1271,7 @@ def add_order(acc, symbol, side, qty, price=None):
             "SELECT symbol, side, amount, qty FROM trade_log WHERE status='pending'", conn)
         if side == "buy":
             committed = float(pend[pend["side"] == "buy"]["amount"].sum()) if len(pend) else 0.0
-            need = amount + fee + amount * 0.0005
+            need = amount + fee + amount * SLIP_RATE
             if need > cash - committed + 1e-6:
                 return {"ok": False,
                         "msg": f"现金不足：需 {need:,.0f} 元，可用 {cash - committed:,.0f} 元（含已挂单占用）"}
@@ -1281,7 +1289,7 @@ def add_order(acc, symbol, side, qty, price=None):
             "INSERT INTO trade_log(signal_date,fill_date,symbol,side,qty,price,amount,"
             "fee,stamp_duty,status,note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (str(last.date()), fill, symbol, side, qty, px, amount,
-             fee, amount * 0.0005 if side == "sell" else 0.0, "pending", "人工下单"))
+             fee, amount * STAMP_RATE if side == "sell" else 0.0, "pending", "人工下单"))
         conn.commit()
         return {"ok": True, "msg": f"已挂单：{symbol} {side} {qty} 股，成交日 {fill}",
                 "_audit": f"add_order {acc} {symbol} {side} {qty}"}
@@ -1563,20 +1571,34 @@ def _spot_work(auto=False):
             else:
                 _note("[spot] 交易日盘中（09:15~15:00）不落库；收盘后再打开会自动更新")
             return
+        # 深检修复（2026-11-22）：直写仓库的段落与 19:00 流水线互斥。此前锁体系
+        # 只覆盖 02b/08/10/29 的进程入口，本线程绕过锁直接 upsert 全池 + 注册表 +
+        # 按日分区——与计划任务并发写同一批文件（注册表丢条目 D-059 实测发生过）。
+        # 子进程任务（daily/report/update）自己会拿同一把锁，所以拿锁范围只包住
+        # 指数+快照两段直写，启动子进程前必须先释放。
+        from src.live.proclock import try_lock as _try_lock
+        lock_f = _try_lock(STORE_DIR / "sim" / ".pipeline.lock")
+        if lock_f is None:
+            _note("[spot] 流水线/更新实例在跑（19:00 任务或手动触发）——"
+                  "快照更新让路跳过，待其结束后再打开自动补")
+            return
         try:
-            update_indexes(_store)
-        except Exception as e:  # noqa: BLE001
-            _note(f"[index] 基准指数更新失败（不影响个股快照）：{e}")
-        fed = None
-        try:
-            r = update_spot_snapshot(_store)
-            if r.get("ok"):
-                fed = r.get("date")
-            elif r.get("kind") == "intraday":
-                _note("[spot] 盘中，收盘前不落库；收盘后再打开会自动更新")
-                return
-        except Exception as e:  # noqa: BLE001
-            _note(f"[spot] 东财快照源不可用（{e}），自动改用 baostock 逐只补齐")
+            try:
+                update_indexes(_store)
+            except Exception as e:  # noqa: BLE001
+                _note(f"[index] 基准指数更新失败（不影响个股快照）：{e}")
+            fed = None
+            try:
+                r = update_spot_snapshot(_store)
+                if r.get("ok"):
+                    fed = r.get("date")
+                elif r.get("kind") == "intraday":
+                    _note("[spot] 盘中，收盘前不落库；收盘后再打开会自动更新")
+                    return
+            except Exception as e:  # noqa: BLE001
+                _note(f"[spot] 东财快照源不可用（{e}），自动改用 baostock 逐只补齐")
+        finally:
+            lock_f.close()
         # 快照会补上"最近那一个"收盘日，所以必须在写完之后再检测一次
         holes = _holes_now()
         if holes:
@@ -1830,10 +1852,17 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
         if u.path == "/api/login":
             if _verify_login(str(body.get("user", "")), str(body.get("pass", ""))):
+                _LOGIN_FAILS["n"] = 0
                 self._audit("login", "ok")
                 ck = (f"qd_session={_make_token()}; HttpOnly; SameSite=Strict; "
                       f"Max-Age={SESSION_TTL}; Path=/")
                 return self._send(200, {"ok": True}, cookie=ck)
+            _LOGIN_FAILS["n"] += 1
+            if _LOGIN_FAILS["n"] >= 5:
+                # 深检补强（2026-11-22）：本机服务此前对登录失败零节流，本机任意
+                # 进程可无限速爆破 10 位密码。递增延时（ThreadingHTTPServer 每个
+                # 请求独立线程，sleep 只拖慢攻击者自己的请求）。
+                time.sleep(min(1.0 * (_LOGIN_FAILS["n"] - 4), 10.0))
             self._audit("login", "FAIL")
             return self._send(401, {"ok": False, "msg": "账号或密码错误"})
         if u.path == "/api/logout":

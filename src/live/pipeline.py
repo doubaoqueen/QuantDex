@@ -65,9 +65,10 @@ def _symbol_name(symbol: str) -> str | None:
     return _NAME_CACHE.get(str(symbol))
 
 
-def _board_limit(symbol: str) -> float:
-    # 涨跌停幅度：带名称判 ST ±5%（D-071 修复 F-21——此前撮合只传代码，ST 按 ±10% 误判）
-    return board_limit(symbol, _symbol_name(symbol))
+def _board_limit(symbol: str, date=None) -> float:
+    # 涨跌停幅度：带名称判 ST ±5%（D-071 修复 F-21），带成交日按当年制度判
+    # 创业板/科创板口径（深检 2026-11-22；date=None 时为现行规则）
+    return board_limit(symbol, _symbol_name(symbol), date=date)
 
 
 # ---------------------------------------------------------------- 数据准备
@@ -269,6 +270,11 @@ def _fill_pending(led: Ledger, price_lookup: dict,
     pend = led.pending_orders()
     if pend.empty:
         return []
+    # 卖单先于买单撮合（深检 2026-11-22）：A 股卖出资金当日可用。此前按
+    # (signal_date, id) 原序处理，人工插队的买单若 id 更小会先扣现金，
+    # 把本可由随后卖单覆盖的买单误判成现金不足（部分成交/拒单）。
+    # 稳定排序：同方向内部保持原顺序。
+    pend = pend.sort_values("side", ascending=False, kind="stable")
     snap = led.snapshot()
     cash_run = float(snap["cash"].iloc[-1]) if not snap.empty else None
     results = []
@@ -302,7 +308,7 @@ def _fill_pending(led: Ledger, price_lookup: dict,
             continue
         prev, op = dp["prev_close"], dp["open"]
         pct = (op / prev - 1.0) if prev else 0.0
-        lim = _board_limit(o.symbol)
+        lim = _board_limit(o.symbol, date=fd)
         if o.side == "buy" and pct >= lim - 1e-3:
             led.mark_rejected(o.id, "rejected_limit_up", f"开盘涨停 {pct:.1%}")
             results.append({"id": o.id, "symbol": o.symbol,

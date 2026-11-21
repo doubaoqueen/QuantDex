@@ -168,6 +168,9 @@ def main() -> None:
                       "oos_mdd": round(m_oos["mdd"] * 100, 2)})
 
     # ---- 汇总 ----
+    # 已知系统性小偏置（深检 2026-11-22 记录在案）：引擎首个交易日无收益
+    # （无前收盘可算），每折 OOS 少计 1 天，8 折链共约 8 个交易日。方向保守、
+    # 量级远小于裁决门槛，不改口径（改口径需 06/59/引擎同步）。
     oos = pd.concat(oos_rets).sort_index()
     ob = pd.concat(oos_bench).sort_index()
     nav_oos = (1.0 + oos).cumprod()
@@ -223,6 +226,14 @@ def main() -> None:
         print(f"  walk-forward 样本外: IR={ir:.2f}, 年化={ann:.2%}")
         print("  → 两者差距 = 参数过拟合的真实代价")
 
+    out = STORE_DIR / "walkforward_results"
+    out.mkdir(parents=True, exist_ok=True)
+    suffix = {"dividend": "_div", "topkdrop": "_tk"}.get(strategy, "")
+    fold_df.to_parquet(out / f"folds_{index_code}{suffix}.parquet", index=False)
+    nav_oos.rename("nav").to_frame().to_parquet(out / f"nav_oos_{index_code}{suffix}.parquet")
+
+    # 深检修复（2026-11-22）：record 移到产物落盘之后——此前 artifacts 引用的
+    # parquet 在记录写入时还不存在，首次运行的实验记录指向悬空路径
     try:
         from src.analysis.experiments import record
         record("walkforward",
@@ -231,15 +242,9 @@ def main() -> None:
                metrics={"oos_total": total, "oos_ann": ann, "oos_ir": ir,
                         "oos_mdd": mdd, "n_folds": len(folds)},
                notes="06 walk-forward 样本外（每年仅用此前数据选参）",
-               artifacts=[f"walkforward_results/folds_{index_code}{suffix if (suffix := '_div' if strategy == 'dividend' else '') else ''}.parquet"])
+               artifacts=[f"walkforward_results/folds_{index_code}{suffix}.parquet"])
     except Exception as e:  # noqa: BLE001
         print(f"[experiments] 记录失败: {e}")
-
-    out = STORE_DIR / "walkforward_results"
-    out.mkdir(parents=True, exist_ok=True)
-    suffix = {"dividend": "_div", "topkdrop": "_tk"}.get(strategy, "")
-    fold_df.to_parquet(out / f"folds_{index_code}{suffix}.parquet", index=False)
-    nav_oos.rename("nav").to_frame().to_parquet(out / f"nav_oos_{index_code}{suffix}.parquet")
     print()
     print(f">> 结果已保存到 {out}")
 

@@ -29,7 +29,7 @@ import _bootstrap  # noqa: F401
 import numpy as np
 import pandas as pd
 
-from config import STORE_DIR
+from config import STORE_DIR, TRADING_DAYS_PER_YEAR
 from src.analysis.experiments import record
 from src.analysis.factors import build_factor_panel
 from src.backtest.portfolio import run_portfolio_backtest
@@ -67,8 +67,12 @@ def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
     r = res["nav"].pct_change().dropna()
     bench = bench_ret.reindex(r.index).dropna()
     ex = (r - bench).dropna()
-    ann = (res["nav"].iloc[-1] / res["nav"].iloc[0]) ** (244 / max(len(r), 1)) - 1
-    ir = ex.mean() / ex.std() * np.sqrt(244) if ex.std() > 0 else np.nan
+    # 深检修复（2026-11-22）：年化基数从 244 改为全仓统一的 TRADING_DAYS_PER_YEAR
+    # （250）——脚本声称"与 06 号完全同款"，但 06 用 250、此处曾用 244，两边
+    # IR/年化不可直接横比。修复后历史存档 increment_test.json 的数字需重跑刷新。
+    ann = (res["nav"].iloc[-1] / res["nav"].iloc[0]) ** (TRADING_DAYS_PER_YEAR / max(len(r), 1)) - 1
+    ir = (ex.mean() / ex.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
+          if ex.std() > 0 else np.nan)
     mdd = (res["nav"] / res["nav"].cummax() - 1).min()
     return {"ann": ann, "ir": ir, "mdd": mdd}
 
@@ -161,7 +165,8 @@ def main() -> None:
         ann = (1 + total) ** (1 / yrs) - 1
         r = chained.pct_change().dropna()
         ex = (r - bench_ret.reindex(r.index)).dropna()
-        ir = ex.mean() / ex.std() * np.sqrt(244) if ex.std() > 0 else np.nan
+        ir = (ex.mean() / ex.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
+              if ex.std() > 0 else np.nan)
         mdd = (chained / chained.cummax() - 1).min()
         results[key] = {"folds": folds, "oos_total": total, "oos_ann": ann,
                         "oos_ir": ir, "oos_mdd": mdd,

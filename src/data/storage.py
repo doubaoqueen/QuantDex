@@ -81,7 +81,13 @@ class ParquetStore:
         self._register(kind, name, len(df), source, date_col, df, adjust)
 
     def read(self, kind: str, name: str, columns: list[str] | None = None) -> pd.DataFrame:
-        """读取数据集，不存在则抛 FileNotFoundError。带进程内缓存（按 mtime 失效）。"""
+        """读取数据集，不存在则抛 FileNotFoundError。带进程内缓存（按 mtime 失效）。
+
+        返回**副本**（深检修复 2026-11-22）：旧实现直接返回缓存主本，调用方就地
+        修改（如 factor_snapshot_wide 给读出的帧补 symbol 列）会污染缓存，同进程
+        后续以相同 (路径, 列) 读取会拿到被改过的对象。代价是每次读一次浅拷贝，
+        对仓内单文件体量可忽略。
+        """
         path = self._path(kind, name)
         if not path.exists():
             raise FileNotFoundError(f"数据集不存在: {kind}/{name} ({path})")
@@ -89,10 +95,10 @@ class ParquetStore:
         cache_key = (str(path), ckey)
         hit = self._cache.get(cache_key)
         if hit is not None and hit[0] == path.stat().st_mtime:
-            return hit[1]
+            return hit[1].copy()
         df = pd.read_parquet(path, columns=columns)
         self._cache[cache_key] = (path.stat().st_mtime, df)
-        return df
+        return df.copy()
 
     def read_or_empty(self, kind: str, name: str) -> pd.DataFrame:
         """读取数据集，不存在返回空 DataFrame。"""
