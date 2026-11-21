@@ -1,0 +1,27 @@
+[project]
+name = "quantdex"
+version = "0.4.0"
+description = "A股个人量化研究系统：多源数据仓库 → 因子研究 → 闸门检验 → 影子盘 → （QMT 实盘对接规划中）"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "akshare>=1.14",
+    "baostock>=0.8",
+    "requests>=2.31",
+    "tqdm>=4.66",
+    "pytdx>=1.72",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+# 无构建系统（脚本直跑 + conda 环境），pip install -e . 不可用——
+# 依赖以 conda 环境为准（environment.md 若缺失以 requirements.txt 为准）。
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

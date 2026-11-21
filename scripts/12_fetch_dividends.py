@@ -23,7 +23,7 @@ from src.data import universe
 from src.data.financials import fetch_dividend
 from src.data.storage import ParquetStore
 
-YEARS = 8
+YEARS = 9                     # 2019→2018：D-096 红利失效段的数据前置（2026-11-21）
 FRESH_DAYS = 60          # 最近抓过就算新鲜
 NEVER_PAY_RECHECK = 180  # 零分红记录的再核查周期（天）
 MAX_DIV_AGE_DAYS = 400   # 最新除权日超过此天数 → 大概率缺新年份
@@ -52,14 +52,16 @@ def _needs_refresh(sym: str) -> tuple[bool, str]:
 def main() -> None:
     store = ParquetStore()
     symbols = universe.pit_union_symbols("000300", store)
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 0
+    force = "--force" in sys.argv                    # 2018 年段补全必须强制重抓（保鲜会跳过新鲜文件）
     if limit:
         symbols = symbols[:limit]
-    print(f">> 分红抓取：{len(symbols)} 只（缺文件抓取 + 过期刷新，D-062）", flush=True)
+    print(f">> 分红抓取：{len(symbols)} 只（缺文件抓取 + 过期刷新，D-062）"
+          f"{' | --force 强制重抓' if force else ''}", flush=True)
     ok = skip = fail = 0
     for i, sym in enumerate(symbols, 1):
         try:
-            need, why = _needs_refresh(sym)
+            need, why = (True, "force") if force else _needs_refresh(sym)
             if not need:
                 skip += 1
                 continue
