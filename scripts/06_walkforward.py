@@ -99,6 +99,11 @@ def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, opens: pd.DataFrame, co
 def main() -> None:
     index_code = sys.argv[1] if len(sys.argv) > 1 else "000300"
     strategy = sys.argv[2] if len(sys.argv) > 2 else "corrected"
+    # D-106 事故守卫：未知策略名过去会静默落入 corrected 分支并覆盖其存档
+    # （11-22 红利重跑误填 "50" → corrected 产物，日志与产物口径错位）——改为硬报错。
+    if strategy not in ("corrected", "corrected_2f", "dividend", "topkdrop"):
+        raise SystemExit(f"未知策略名 {strategy!r}（合法：corrected/corrected_2f/dividend/topkdrop）"
+                         "——拒绝静默 fallback，防止产物覆盖错口径存档")
     store = ParquetStore()
     pit = universe.load_pit_constituents(index_code, store)
     symbols = universe.pit_union_symbols(index_code, store)
