@@ -45,13 +45,19 @@ def main() -> None:
           f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
 
     strategy = sys.argv[4] if len(sys.argv) > 4 else "corrected"
+    # D-106 事故守卫：未知策略名过去会静默落入 corrected 分支（产物无后缀易错认口径）
+    if strategy not in ("legacy", "corrected", "dividend", "topkdrop"):
+        raise SystemExit(f"未知策略名 {strategy!r}（合法：legacy/corrected/dividend/topkdrop）"
+                         "——拒绝静默 fallback")
     div_panel = None
     if strategy == "dividend":
         try:
             div_panel = financials.load_dividend_panel(store, symbols)
         except Exception as e:  # noqa: BLE001
-            print(f"   [warn] 分红面板加载失败: {e}")
-            strategy = "corrected"
+            # D-106 教训：分红面板失败过去会静默降级 corrected——把"红利意图"跑成
+            # corrected 数字。改为硬失败，保真口径不许静默换档。
+            raise SystemExit(f"分红面板加载失败（{e}）——拒绝静默降级 corrected；"
+                             "请先修分红数据再重跑（12 号 --force）")
     if div_panel is not None:
         panel = build_factor_panel(store, symbols, start=START_DATE,
                                    pit_constituents=pit, dividend_panel=div_panel,

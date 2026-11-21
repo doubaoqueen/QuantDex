@@ -564,16 +564,17 @@ def _account_strategy(acc):
 
 
 PREFLIGHT_STRATEGIES = [
-    # D-076 v1 canonical（D-071 新口径）。dividend 11-22 新档 = dy 分母修复（D-097）
-    # + 2018 分红扩年（12 号 YEARS 8→9）后的双档重跑；MDD 来自 11-21 全样本
-    # canonical 重跑（nav_000300_top50_reb20_div），WF 来自 11-22 walkforward（_div 指纹核对）。
-    # corrected 的 WF 11-22 顺带重跑得 12.44%，与 D-071 档 10.59% 差异待定位，面板暂留 10.59%。
-    {"key": "corrected", "name": "现行版（低换手+低波+反转）", "mdd": 0.3141,
-     "wf_ann": 0.1059, "wf_note": "2019+ 档（11-22 重跑 12.44% 差异待定位）"},
+    # D-108 全量新档（2026-11-22，同源同代）：MDD = 05 号全样本 canonical 重跑
+    #（corrected -32.01%/dividend -28.99%/topk -28.61%，nav 指纹核对），
+    # WF = 06 号样本外重跑（corrected 12.44%*/dividend 11.52%/topk 10.53%，_div/_tk 指纹核对）。
+    # *corrected 的 WF 12.44% 与 D-071 档 10.59% 差 +1.85pp 待定位（PIT 扩容/新鲜度修复
+    # 为候选），按"不利口径并列"暂采旧值 10.59%——分子分母都取保守端。
+    {"key": "corrected", "name": "现行版（低换手+低波+反转）", "mdd": 0.3201,
+     "wf_ann": 0.1059, "wf_note": "MDD 11-22 新档；WF 10.59% 待定位（新跑 12.44%）"},
     {"key": "dividend", "name": "红利版（+股息率）", "mdd": 0.2899,
      "wf_ann": 0.1152, "wf_note": "11-22 新档（dy 分母修复+2018 分红）"},
-    {"key": "topkdrop", "name": "topk（换手机制优化）", "mdd": 0.2769,
-     "wf_ann": 0.1277, "wf_note": "10-26 旧档，待 ST 口径重跑"},
+    {"key": "topkdrop", "name": "topk（换手机制优化）", "mdd": 0.2861,
+     "wf_ann": 0.1053, "wf_note": "11-22 新档（参数稳定性弱：4/8）"},
 ]
 
 

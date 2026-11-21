@@ -80,6 +80,6 @@ run()
       标准档与保守档的差价，是为"没见过所有危机"支付的保险费。alpha 未裁决（D-010），
       期望带是<b>档案口径的参考带</b>，不是收益承诺。
     </div>
-    <p class="mt-2 text-[10px] text-slate-400">* topk 的 WF 为 10-26 旧档，按 ST 口径重跑后刷新；dividend 已更新为 11-22 新档（dy 分母修复 + 2018 分红扩年，产物 _div 指纹核对）。</p>
+    <p class="mt-2 text-[10px] text-slate-400">三行均为 11-22 同源新档（MDD = 05 号全样本 canonical，WF = 06 号样本外，产物指纹核对）。corrected 的 WF 暂采保守旧值 10.59%——新跑 12.44% 差异待定位（D-108）。</p>
   </div>
 </template>
