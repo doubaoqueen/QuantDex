@@ -24,6 +24,7 @@ from config import STORE_DIR
 from src.analysis.factor_test import _newey_west_tstat
 from src.analysis.factors import st_symbol_set
 from src.data.storage import ParquetStore
+from src.logsetup import get_logger
 
 COST_RT = 0.00025 * 2 + 0.0005 * 2 + 0.0005 + 0.00001 * 2
 SL, TP = 0.91, 1.14                       # -9% / +14%
@@ -116,6 +117,7 @@ def simulate_symbol(code: str, bars: pd.DataFrame, cal_pos: dict,
 
 
 def main() -> None:
+    log = get_logger(__file__)
     s = ParquetStore()
     st_syms = st_symbol_set(s)
     minute_dir = STORE_DIR / "market" / "minute"
@@ -128,7 +130,7 @@ def main() -> None:
     pit["in_date"] = pd.to_datetime(pit["in_date"])
     pit["out_date"] = pd.to_datetime(pit["out_date"])
     pit_g = pit.groupby("symbol")
-    print(f">> 游击首触回测：{len(files)} 只（PIT+ST 剔除），冷却三档 {COOLDOWNS}", flush=True)
+    log.info(">> 游击首触回测：%d 只（PIT+ST 剔除），冷却三档 %s", len(files), COOLDOWNS)
 
     all_events = {cd: [] for cd in COOLDOWNS}
     done = 0
@@ -150,17 +152,16 @@ def main() -> None:
             all_events[cd].extend(simulate_symbol(code, bars, cal_pos, cd))
         done += 1
         if done % 150 == 0:
-            print(f"   {done}/{len(files)}", flush=True)
+            log.info("   %d/%d", done, len(files))
 
     idx = s.read("daily", "000300__none", columns=["date", "close"])
     bench_ret = (idx.assign(date=pd.to_datetime(idx["date"])).set_index("date")["close"]
                  .pct_change())
     out = {}
-    print()
     for cd in COOLDOWNS:
         ev = pd.DataFrame(all_events[cd])
         if ev.empty:
-            print(f"[冷却 {cd}] 无事件")
+            log.info("[冷却 %d] 无事件", cd)
             continue
         ev["ret"] = ev["exit_price"] / ev["entry_price"] - 1.0 - COST_RT
         ev["baseline_ret"] = pd.to_numeric(ev.get("baseline_ret"), errors="coerce")
@@ -184,15 +185,17 @@ def main() -> None:
                          "daily_t": float(_newey_west_tstat(daily, 19)),
                          "baseline_mean": base_mean})
         out[f"cd{cd}"] = {"rows": rows, "n_events": int(len(ev))}
-        print(f"[冷却 {cd} 天]")
+        log.info("[冷却 %d 天]", cd)
         for r in rows:
             bl = f"{r['baseline_mean']:+.2%}" if pd.notna(r["baseline_mean"]) else "n/a"
-            print(f"   {r['kind']:<4} n={r['n']:<6} 止盈先触 {r['tp_first']:.1%} | "
-                  f"止损先触 {r['sl_first']:.1%} | 跳空出场 {r['gap_exit']:.1%} | "
-                  f"净均值 {r['mean']:+.2%} 中位 {r['median']:+.2%} 胜率 {r['win']:.0%} "
-                  f"| 持有 {r['hold']:.1f} 日 | NW-t {r['daily_t']:+.2f} | 基线(无条件T+1卖) {bl}")
+            log.info("   %-4s n=%-6d 止盈先触 %.1f%% | 止损先触 %.1f%% | 跳空出场 %.1f%% "
+                     "| 净均值 %+.2f%% 中位 %+.2f%% 胜率 %.0f%% "
+                     "| 持有 %.1f 日 | NW-t %+.2f | 基线(无条件T+1卖) %s",
+                     r['kind'], r['n'], r['tp_first'] * 100, r['sl_first'] * 100,
+                     r['gap_exit'] * 100, r['mean'] * 100, r['median'] * 100,
+                     r['win'] * 100, r['hold'], r['daily_t'], bl)
     json.dump(out, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2, default=str)
-    print(f"已存 {OUT}")
+    log.info("已存 %s", OUT)
 
 
 if __name__ == "__main__":
