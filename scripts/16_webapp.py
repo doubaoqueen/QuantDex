@@ -564,11 +564,12 @@ def _account_strategy(acc):
 
 
 PREFLIGHT_STRATEGIES = [
-    # D-076 v1 canonical（D-071 新口径；dividend/topk WF 为 10-26 旧档待重跑）
+    # D-076 v1 canonical（D-071 新口径；dividend 11-22 新档 = dy 分母修复 + 2018 分红扩年；
+    # topk WF 仍为 10-26 旧档待重跑）
     {"key": "corrected", "name": "现行版（低换手+低波+反转）", "mdd": 0.3141,
      "wf_ann": 0.1059, "wf_note": "2019+ 新档"},
-    {"key": "dividend", "name": "红利版（+股息率）", "mdd": 0.2755,
-     "wf_ann": 0.1107, "wf_note": "10-26 旧档，待 ST 口径重跑"},
+    {"key": "dividend", "name": "红利版（+股息率）", "mdd": 0.2899,
+     "wf_ann": 0.1244, "wf_note": "11-22 新档（dy 分母修复+2018 分红）"},
     {"key": "topkdrop", "name": "topk（换手机制优化）", "mdd": 0.2769,
      "wf_ann": 0.1277, "wf_note": "10-26 旧档，待 ST 口径重跑"},
 ]

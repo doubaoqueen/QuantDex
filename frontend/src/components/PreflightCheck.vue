@@ -80,6 +80,6 @@ run()
       标准档与保守档的差价，是为"没见过所有危机"支付的保险费。alpha 未裁决（D-010），
       期望带是<b>档案口径的参考带</b>，不是收益承诺。
     </div>
-    <p class="mt-2 text-[10px] text-slate-400">* dividend/topk 的 WF 为 10-26 旧档，周末按 ST 口径重跑后刷新。</p>
+    <p class="mt-2 text-[10px] text-slate-400">* topk 的 WF 为 10-26 旧档，按 ST 口径重跑后刷新；dividend 已更新为 11-22 新档（dy 分母修复 + 2018 分红扩年）。</p>
   </div>
 </template>
