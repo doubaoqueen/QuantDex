@@ -128,7 +128,10 @@ _instance_lock = None      # 单实例锁句柄（保持打开=持锁）
 
 
 def _db(acc):
-    p = ACCOUNTS[acc]["db"]
+    c = ACCOUNTS.get(acc)      # 未知账户名 → None（各处理器返回"账户不存在"）；
+    if c is None:              # 旧实现直接 ACCOUNTS[acc] 抛 KeyError → 500（冒烟测试抓出）
+        return None
+    p = c["db"]
     if not p.exists():
         return None
     return sqlite3.connect(p)
@@ -1725,6 +1728,114 @@ p.addEventListener('keydown',e=>{if(e.key==='Enter')go()});
 </script></body></html>"""
 
 
+# ---------------------------------------------------------------- 路由表
+# 深检重构（2026-11-23）：do_GET/do_POST 的 30+ 段 if u.path == ... 链改为声明式
+# 路由表——加端点 = 这里一行 + 一个处理函数，不再碰 Handler；参数提取集中在
+# _qparam/_acc（垃圾参数 → 400 而非 500）。保持零依赖（纯标准库），不上框架。
+class _BadParam(ValueError):
+    """query 参数解析失败 → HTTP 400（区别于处理逻辑异常的 500）。"""
+
+
+def _qparam(q: dict, name: str, default: str, cast=None):
+    """取 query 参数（parse_qs 产出 {k: [v, ...]}）；cast 失败抛 _BadParam。"""
+    vals = q.get(name)
+    raw = vals[0] if vals else default
+    if cast is None:
+        return raw
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        raise _BadParam(f"参数 {name}={raw!r} 非法") from None
+
+
+def _acc(q: dict, default: str = "large") -> str:
+    return q.get("account", [default])[0]
+
+
+# path -> 处理器(parse_qs 后的 query dict) -> 可 JSON 化 payload（统一 200 返回）
+_GET_ROUTES: dict = {
+    "/api/overview":         lambda q: overview(_acc(q)),
+    "/api/nav_history":      lambda q: nav_history(_acc(q)),
+    "/api/trades":           lambda q: trades(_acc(q), _qparam(q, "limit", "30", cast=int)),
+    "/api/backtest":         lambda q: backtest(_acc(q)),
+    "/api/rebalance_diff":   lambda q: rebalance_diff(_acc(q)),
+    "/api/fees":             lambda q: fees(_acc(q)),
+    "/api/factors":          lambda q: factor_view(_acc(q)),
+    "/api/strategy_outlook": lambda q: strategy_outlook(_acc(q)),
+    "/api/candidates":       lambda q: candidates(_acc(q)),
+    "/api/preflight":        lambda q: preflight_check(_qparam(q, "L", "20000", cast=float)),
+    "/api/school":           lambda q: school_data(),
+    "/api/research":         lambda q: research_list(),
+    "/api/research_detail":  lambda q: research_detail(_qparam(q, "name", "")),
+    "/api/strategies":       lambda q: {"accounts": [
+        {"key": k, "label": v["label"], "strategy": v["group"]}
+        for k, v in ACCOUNTS.items()]},
+    "/api/position_alerts":  lambda q: position_alerts(_acc(q)),
+    "/api/positions":        lambda q: {"rows": positions(_acc(q))},
+    "/api/orders":           lambda q: {"rows": orders(_acc(q))},
+    "/api/lookup":           lambda q: symbol_lookup(_qparam(q, "symbol", "")),
+    "/api/kline":            lambda q: kline(_qparam(q, "symbol", ""), _acc(q),
+                                             _qparam(q, "days", "250", cast=int)),
+    "/api/limit_watch":      lambda q: limit_watch(),
+    "/api/regime":           lambda q: regime(),
+    "/api/reports":          lambda q: {"dates": reports(_acc(q))},
+    "/api/report":           lambda q: {"text": report_text(_acc(q),
+                                                            _qparam(q, "date", ""))},
+    "/api/run/status":       lambda q: job_status(),
+    "/api/freshness":        lambda q: freshness_info(),
+    "/api/ops":              lambda q: {"rows": ops(_acc(q))},
+}
+
+
+# POST 处理器：签名 (self, body) -> payload；审计副作用写在各自处理器里
+# （/api/run、/api/update 无条件审计，orders/* 仅成功时审计——与旧分支语义一致）
+def _post_cancel(self, body):
+    r = cancel_order(body.get("account", "large"), body.get("id"))
+    if r.get("ok"):
+        self._audit("cancel", f"{body.get('account')} #{body.get('id')}")
+    return r
+
+
+def _post_cancel_batch(self, body):
+    r = cancel_orders_bulk(body.get("account", "large"),
+                           max_amount=body.get("max_amount"), ids=body.get("ids"))
+    if r.get("ok"):
+        self._audit("cancel_batch",
+                    f"{body.get('account')} n={r.get('n')} "
+                    f"max_amount={body.get('max_amount')}")
+    return r
+
+
+def _post_add_order(self, body):
+    r = add_order(body.get("account", "large"),
+                  body.get("symbol", ""), body.get("side", "buy"),
+                  body.get("qty", 0), body.get("price"))
+    if r.get("ok"):
+        self._audit("add_order",
+                    f"{body.get('account')} {body.get('symbol')} "
+                    f"{body.get('side')} {body.get('qty')}")
+    return r
+
+
+def _post_run(self, body):
+    self._audit("run_job", body.get("job", "pipeline"))
+    return start_job(body.get("job", "pipeline"))
+
+
+def _post_update(self, body):
+    self._audit("run_job", "spot_update")
+    return start_spot_update()
+
+
+_POST_ROUTES: dict = {
+    "/api/orders/cancel":       _post_cancel,
+    "/api/orders/cancel_batch": _post_cancel_batch,
+    "/api/orders/add":          _post_add_order,
+    "/api/run":                 _post_run,
+    "/api/update":              _post_update,
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, obj, ctype="application/json; charset=utf-8",
               cache=None, cookie=None):
@@ -1754,7 +1865,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
-        q = parse_qs(u.query)
         if not self._authed():
             if u.path.startswith("/api/"):
                 return self._send(401, {"authed": False})
@@ -1773,65 +1883,12 @@ class Handler(BaseHTTPRequestHandler):
                 if static:
                     return self._send(200, static[0], static[1],
                                        cache="public, max-age=604800")
-            if u.path == "/api/overview":
-                return self._send(200, overview(q.get("account", ["large"])[0]))
-            if u.path == "/api/nav_history":
-                return self._send(200, nav_history(q.get("account", ["large"])[0]))
-            if u.path == "/api/trades":
-                return self._send(200, trades(q.get("account", ["large"])[0],
-                                               q.get("limit", ["30"])[0]))
-            if u.path == "/api/backtest":
-                return self._send(200, backtest(q.get("account", ["large"])[0]))
-            if u.path == "/api/rebalance_diff":
-                return self._send(200, rebalance_diff(q.get("account", ["large"])[0]))
-            if u.path == "/api/fees":
-                return self._send(200, fees(q.get("account", ["large"])[0]))
-            if u.path == "/api/factors":
-                return self._send(200, factor_view(q.get("account", ["large"])[0]))
-            if u.path == "/api/strategy_outlook":
-                return self._send(200, strategy_outlook(q.get("account", ["large"])[0]))
-            if u.path == "/api/candidates":
-                return self._send(200, candidates(q.get("account", ["large"])[0]))
-            if u.path == "/api/preflight":
-                return self._send(200, preflight_check(float(q.get("L", ["20000"])[0])))
-            if u.path == "/api/school":
-                return self._send(200, school_data())
-            if u.path == "/api/research":
-                return self._send(200, research_list())
-            if u.path == "/api/research_detail":
-                return self._send(200, research_detail(q.get("name", [""])[0]))
-            if u.path == "/api/strategies":
-                return self._send(200, {"accounts": [
-                    {"key": k, "label": v["label"], "strategy": v["group"]}
-                    for k, v in ACCOUNTS.items()]})
-            if u.path == "/api/position_alerts":
-                return self._send(200, position_alerts(q.get("account", ["large"])[0]))
-            if u.path == "/api/positions":
-                return self._send(200, {"rows": positions(q.get("account", ["large"])[0])})
-            if u.path == "/api/orders":
-                return self._send(200, {"rows": orders(q.get("account", ["large"])[0])})
-            if u.path == "/api/lookup":
-                return self._send(200, symbol_lookup(q.get("symbol", [""])[0]))
-            if u.path == "/api/kline":
-                return self._send(200, kline(q.get("symbol", [""])[0],
-                                             q.get("account", ["large"])[0],
-                                             q.get("days", ["250"])[0]))
-            if u.path == "/api/limit_watch":
-                return self._send(200, limit_watch())
-            if u.path == "/api/regime":
-                return self._send(200, regime())
-            if u.path == "/api/reports":
-                return self._send(200, {"dates": reports(q.get("account", ["large"])[0])})
-            if u.path == "/api/report":
-                return self._send(200, {"text": report_text(q.get("account", ["large"])[0],
-                                                           q.get("date", [""])[0])})
-            if u.path == "/api/run/status":
-                return self._send(200, job_status())
-            if u.path == "/api/freshness":
-                return self._send(200, freshness_info())
-            if u.path == "/api/ops":
-                return self._send(200, {"rows": ops(q.get("account", ["large"])[0])})
-            return self._send(404, {"err": "not found"})
+            handler = _GET_ROUTES.get(u.path)
+            if handler is None:
+                return self._send(404, {"err": "not found"})
+            return self._send(200, handler(parse_qs(u.query)))
+        except _BadParam as e:                      # 垃圾 query 参数 → 400（原为 500）
+            return self._send(400, {"err": str(e)})
         except Exception as e:  # noqa: BLE001
             _log_500(self.path, e)          # D-085：500 必须留痕
             return self._send(500, {"err": str(e)})
@@ -1849,7 +1906,10 @@ class Handler(BaseHTTPRequestHandler):
             if _up(origin).netloc not in ALLOWED_ORIGINS:   # R3-18：精确比对防前缀绕过
                 return self._send(403, {"err": "forbidden: 跨源请求被拒绝"})
         n = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+        except json.JSONDecodeError:                # 深检补强：坏 JSON 原为无响应断连
+            return self._send(400, {"err": "请求体不是合法 JSON"})
         if u.path == "/api/login":
             if _verify_login(str(body.get("user", "")), str(body.get("pass", ""))):
                 _LOGIN_FAILS["n"] = 0
@@ -1870,37 +1930,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True}, cookie=ck)
         if not self._authed():
             return self._send(401, {"authed": False})
-        try:
-            if u.path == "/api/orders/cancel":
-                r = cancel_order(body.get("account", "large"), body.get("id"))
-                if r.get("ok"):
-                    self._audit("cancel", f"{body.get('account')} #{body.get('id')}")
-                return self._send(200, r)
-            if u.path == "/api/orders/cancel_batch":
-                r = cancel_orders_bulk(body.get("account", "large"),
-                                       max_amount=body.get("max_amount"),
-                                       ids=body.get("ids"))
-                if r.get("ok"):
-                    self._audit("cancel_batch",
-                                f"{body.get('account')} n={r.get('n')} "
-                                f"max_amount={body.get('max_amount')}")
-                return self._send(200, r)
-            if u.path == "/api/orders/add":
-                r = add_order(body.get("account", "large"),
-                              body.get("symbol", ""), body.get("side", "buy"),
-                              body.get("qty", 0), body.get("price"))
-                if r.get("ok"):
-                    self._audit("add_order",
-                                f"{body.get('account')} {body.get('symbol')} "
-                                f"{body.get('side')} {body.get('qty')}")
-                return self._send(200, r)
-            if u.path == "/api/run":
-                self._audit("run_job", body.get("job", "pipeline"))
-                return self._send(200, start_job(body.get("job", "pipeline")))
-            if u.path == "/api/update":
-                self._audit("run_job", "spot_update")
-                return self._send(200, start_spot_update())
+        handler = _POST_ROUTES.get(u.path)
+        if handler is None:
             return self._send(404, {"err": "not found"})
+        try:
+            return self._send(200, handler(self, body))
         except Exception as e:  # noqa: BLE001
             _log_500(self.path, e)          # D-085：500 必须留痕
             return self._send(500, {"err": str(e)})

@@ -87,6 +87,9 @@ Transformer / QLoRA / RAG / agent / 新闻管线 / LightGBM——全部排在主
 
 ## 🔧 工程债
 
+- [x] **结构债：run_pipeline 拆解**（✅ 2026-11-23 完成，D-113 结构轮）：272 语句/77 分支/mccabe 68 → 六段阶段函数 + 46 语句/9 分支/mccabe 11 的编排主干；**ruff.toml 的 pipeline.py 豁免已按约删除**；110/0 全绿（含真实库 e2e 特征测试）。典型病灶与前后对比记录在 docs/blog/第七篇.md
+- [ ] **结构债：run_portfolio_backtest 拆解**（138 语句/35 分支/复杂度 33）：limit 判定与分红段各自成函数；ruff.toml per-file-ignores 白名单为前置豁免——**改完即删豁免**（铁律见 CODE_STANDARD §10）
+- [ ] **结构债：16_webapp.py（1986 行）拆 src/webapp/ 包**：auth / statics / routes / api_read / api_write / handler 六模块（每个 ≤300 行）+ scripts/16_webapp.py 保留薄入口（import + main）；test_webapp*.py 的 importlib 文件加载路径跟随；HTTP 冒烟测试已就位（test_webapp_http）作特征测试
 - [ ] **19:00 锁冲突修复**（2026-11-16 实测事件）：webapp 自动链的 gap 修复（慢源逐只补齐）占锁 15:04→19:00+，把计划任务挡在门外（R3-02 去重生效未写坏数据）。修法：18:30 后自动链不再启动新的重抓/批量任务（时间窗让位 19:00 任务计划）；顺带发现 11-16 合并邮件被 D-029 误跳过（已在 11-17 手动补发）
 - [x] **LICENSE 文件**（2026-11-15 完成）：MIT 协议（用户选定），README 已补许可证节——开源第一优先
 - [ ] **pyproject.toml**（2026-11-15 核实缺失）：项目元数据 + `pip install -e .` 支持，与 conda/requirements 共存不冲突——降低陌生人上手门槛（配套：README 快速开始已具备）

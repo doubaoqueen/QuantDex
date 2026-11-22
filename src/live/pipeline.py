@@ -22,7 +22,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import FEE_RATE, LOT, MIN_FEE, SLIP_RATE, STAMP_RATE, STORE_DIR, TRANSFER_RATE, board_limit
+from config import (
+    FEE_RATE,
+    LOT,
+    MIN_FEE,
+    SLIP_RATE,
+    STAMP_RATE,
+    STORE_DIR,
+    TRANSFER_RATE,
+    board_limit,
+)
 from src.analysis.factors import build_factor_panel
 from src.data import financials, universe
 from src.data.market import get_kline
@@ -468,52 +477,62 @@ def _plan_small_orders(day: pd.DataFrame, cur_shares: dict[str, float],
     return orders
 
 
-# ---------------------------------------------------------------- 主流程
-def run_pipeline(index_code: str = "000300", top_n: int = 50,
-                 rebalance: int = 20, capital: float = 1_000_000.0,
-                 max_single: float = 0.10, dry_run: bool = False,
-                 push: bool = True,
-                 db_path=None, label: str = "large",
-                 max_positions: int | None = None,
-                 strategy: str = "corrected",
-                 _panel: pd.DataFrame | None = None) -> dict:
-    store = ParquetStore()
-    panel = (_panel if _panel is not None
-             else _load_panel(store, index_code,
-                              with_dividend=(strategy == "dividend")))
-    latest = pd.Timestamp(panel["date"].max())
-    if strategy == "dividend":
-        W = turnover_lowvol_dividend_topn(panel, top_n=top_n,
-                                          rebalance_days=rebalance)
-    elif strategy == "topkdrop":
-        # 与 corrected 相同因子，仅换手机制不同（TopkDropout）——干净 A/B（D-031）
-        W = topk_dropout_topn(panel,
-                              [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
-                              topk=top_n, n_drop=5, rebalance_days=rebalance)
-    else:
-        W = turnover_lowvol_reversal_topn(panel, top_n=top_n,
-                                          rebalance_days=rebalance)
+# ---------------------------------------------------------------- 主流程阶段函数
+# D-113 结构轮（2026-11-23）：run_pipeline 原 412 行 / 272 语句 / mccabe 68——
+# 撮合、自愈重放、状态应用、净值、下单、快照回填、日报组装八件事挤在一个函数里。
+# 拆为阶段函数后主干只留流程编排；显式传参、显式返回，不改任何行为。
+# 特征测试：tests/test_pipeline.py::test_report_email_sent_once_per_day
+# （真实库端到端 + 邮件去重幂等）+ 全量 run_tests.py。
 
-    led = Ledger(db_path)
-    # 1) 撮合到期订单（T+1 开盘价）
-    fill_results: list[dict] = []
-    if not dry_run:
-        pend = led.pending_orders()
-        lookup = {}
-        last_dates = {}
-        if not pend.empty:
-            symbols = sorted({str(s) for s in pend["symbol"]})
-            for d in sorted({pd.Timestamp(x) for x in pend["fill_date"]}):
-                lookup[d] = _day_prices(store, d, symbols)
-            for sym in symbols:
-                try:
-                    k = get_kline(sym, adjust="qfq", store=store)
-                    last_dates[sym] = pd.to_datetime(k["date"]).max()
-                except Exception:  # noqa: BLE001
-                    last_dates[sym] = None
-        fill_results = _fill_pending(led, lookup, latest, last_dates=last_dates)
+_STRATEGY_BUILDERS: dict = {
+    # 与 corrected 相同因子，仅换手机制不同（TopkDropout）——干净 A/B（D-031）
+    "topkdrop": lambda p, tn, rb: topk_dropout_topn(
+        p, [("turnover_20", -1), ("vol_20", -1), ("rev_5", -1)],
+        topk=tn, n_drop=5, rebalance_days=rb),
+    "dividend": lambda p, tn, rb: turnover_lowvol_dividend_topn(
+        p, top_n=tn, rebalance_days=rb),
+    "corrected": lambda p, tn, rb: turnover_lowvol_reversal_topn(
+        p, top_n=tn, rebalance_days=rb),
+}
 
-    # 2) 账户状态 + 应用撮合结果
+
+def _strategy_weights(panel: pd.DataFrame, strategy: str,
+                      top_n: int, rebalance: int) -> pd.DataFrame:
+    """策略名 → 权重矩阵。未知策略硬报错（D-106 同款：拒绝静默 fallback）。"""
+    builder = _STRATEGY_BUILDERS.get(strategy)
+    if builder is None:
+        raise SystemExit(f"未知策略名 {strategy!r}"
+                         f"（合法：{sorted(_STRATEGY_BUILDERS)}）——拒绝静默 fallback")
+    return builder(panel, top_n, rebalance)
+
+
+def _match_pending_orders(store: ParquetStore, led: Ledger,
+                          latest: pd.Timestamp, dry_run: bool) -> list[dict]:
+    """撮合 fill_date ≤ latest 的待成交订单（T+1 开盘价）；dry_run 不动账本。"""
+    if dry_run:
+        return []
+    pend = led.pending_orders()
+    lookup: dict = {}
+    last_dates: dict = {}
+    if not pend.empty:
+        symbols = sorted({str(s) for s in pend["symbol"]})
+        for d in sorted({pd.Timestamp(x) for x in pend["fill_date"]}):
+            lookup[d] = _day_prices(store, d, symbols)
+        for sym in symbols:
+            try:
+                k = get_kline(sym, adjust="qfq", store=store)
+                last_dates[sym] = pd.to_datetime(k["date"]).max()
+            except Exception:  # noqa: BLE001
+                last_dates[sym] = None
+    return _fill_pending(led, lookup, latest, last_dates=last_dates)
+
+
+def _apply_state(led: Ledger, latest: pd.Timestamp, fill_results: list[dict],
+                 capital: float) -> tuple[float, dict, pd.DataFrame, str | None]:
+    """账户状态：快照 → 初始化 → 应用本次撮合 → 自愈重放 → 负现金告警。
+
+    返回 (cash, new_shares, snap_now, last_snap_date)。
+    """
     snap_now = led.snapshot()
     last_snap_date = str(snap_now["date"].iloc[-1]) if not snap_now.empty else None
     cash, cur_shares, _ = _load_state(led)
@@ -558,10 +577,15 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     if cash < -1e-6:
         print(f"[warn] 现金为负 {cash:,.2f}——请核对是否有成交被重复记账"
               f"（trade_log 与 positions 的股数/成交净额是否一致）", flush=True)
+    return cash, new_shares, snap_now, last_snap_date
 
-    # 3) 最新收盘价与净值
+
+def _account_nav(store: ParquetStore, panel: pd.DataFrame, latest: pd.Timestamp,
+                 cash: float, new_shares: dict) -> tuple[float, float, dict]:
+    """最新收盘价（停牌回退最近收盘）与净值。返回 (mv, nav_now, prices_close)。"""
     day = panel[panel["date"] == latest]
-    prices_close = dict(zip(day["symbol"].astype(str), day["close"].astype(float), strict=False))
+    prices_close = dict(zip(day["symbol"].astype(str),
+                            day["close"].astype(float), strict=False))
     mv = 0.0
     for s, sh in new_shares.items():
         px = prices_close.get(s)
@@ -572,13 +596,17 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
             except Exception:  # noqa: BLE001
                 px = 0.0
         mv += sh * px
-    nav_now = cash + mv
+    return mv, cash + mv, prices_close
 
-    # 4) 下单（调仓日或首次建仓；已有 pending 时不再重复下单）
-    # D-057：全局调仓日只是"候选日"，账户自己的持有天数不够就不调仓。
-    # 反例（事故前）：账户 10-20 半路建仓、11-02 是全局调仓日 → 只持有 9 个交易日
-    # 就再整仓换一遍，等于凭空多出一次换手，回测里没有这一段。
-    bootstrap = snap_now.empty and len(W) > 0
+
+def _rebalance_decision(led: Ledger, panel: pd.DataFrame, W: pd.DataFrame,
+                        latest: pd.Timestamp, rebalance: int,
+                        snap_empty: bool) -> tuple[bool, int | None, bool, bool, bool]:
+    """D-057：全局调仓日只是候选日，账户自己的持有天数不够就不调仓。
+
+    返回 (bootstrap, held_days, cadence_ok, scheduled, rebalance_day)。
+    """
+    bootstrap = snap_empty and len(W) > 0
     cal = pd.DatetimeIndex(sorted(pd.to_datetime(panel["date"]).unique()))
     last_fill = led.last_fill_date()
     held_days = _held_trading_days(cal, last_fill, latest)
@@ -588,38 +616,55 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     if scheduled and not cadence_ok and not bootstrap:
         print(f"[cadence] 距上次成交 {held_days} 个交易日 < {rebalance}，"
               f"本次全局调仓日跳过（账户按自己的持有天数走）", flush=True)
-    orders_df = None
-    if not dry_run and (rebalance_day or bootstrap) and led.pending_orders().empty:
-        next_td = _next_trading_day(store, latest)
-        if next_td is None:
-            # R3-41：日历缺失/到期时不落"自然日"单（可能落周末被误拒单）
-            print("[warn] 下一交易日无法确定（日历缺失/到期）——本期不挂单，请刷新日历后重跑")
-        elif max_positions:
-            # 小资金模式：整手组合，按分数挑最多 max_positions 只
-            orders = _plan_small_orders(day, new_shares, prices_close, cash,
-                                        max_positions=max_positions)
-        else:
-            w_row = (W.loc[latest] if rebalance_day else W.iloc[-1]).astype(float)
-            # D-069：回撤断路器已按证据移除（-15% 减半设计意图被五轮回测否定；
-            # R3-05 bug 使其实际从未触发——"意外 no-op"被证实恰是最优行为）。
-            # 保留 apply_risk 的单票上限功能（真风控），不再传入 nav。
-            w_series = apply_risk(w_row.to_frame().T, nav=None,
-                                  max_single=max_single, max_total=1.0).iloc[0]
-            target_w = {str(k): float(v) for k, v in w_series.items() if float(v) > 0}
-            orders = _plan_orders(target_w, new_shares, prices_close, nav_now, cash)
-        if orders:
-            rows = [{
-                "signal_date": str(latest.date()), "fill_date": str(next_td.date()),
-                "symbol": o["symbol"], "side": o["side"], "qty": o["qty"],
-                "price": o["price"], "amount": o["amount"], "fee": o["fee"],
-                "stamp_duty": o["stamp"], "status": "pending",
-                "note": "T+1 开盘成交（参考价=信号日收盘）",
-            } for o in orders]
-            orders_df = pd.DataFrame(rows)
-            led.add_pending(orders_df)
+    return bootstrap, held_days, cadence_ok, scheduled, rebalance_day
 
-    # 5) 持仓表（最新收盘价） + 快照 + 日报
-    first_held = {}
+
+def _submit_orders(store: ParquetStore, led: Ledger, panel: pd.DataFrame,
+                   W: pd.DataFrame, latest: pd.Timestamp, rebalance_day: bool,
+                   bootstrap: bool, dry_run: bool, new_shares: dict,
+                   prices_close: dict, cash: float, nav_now: float,
+                   max_single: float,
+                   max_positions: int | None) -> pd.DataFrame | None:
+    """调仓日/首次建仓且无在途订单时，生成并挂出 T+1 订单。返回挂单表或 None。"""
+    if dry_run or not (rebalance_day or bootstrap) or not led.pending_orders().empty:
+        return None
+    next_td = _next_trading_day(store, latest)
+    if next_td is None:
+        # R3-41：日历缺失/到期时不落"自然日"单（可能落周末被误拒单）
+        print("[warn] 下一交易日无法确定（日历缺失/到期）——本期不挂单，请刷新日历后重跑")
+        return None
+    if max_positions:
+        # 小资金模式：整手组合，按分数挑最多 max_positions 只
+        orders = _plan_small_orders(panel[panel["date"] == latest], new_shares,
+                                    prices_close, cash, max_positions=max_positions)
+    else:
+        w_row = (W.loc[latest] if rebalance_day else W.iloc[-1]).astype(float)
+        # D-069：回撤断路器已按证据移除（-15% 减半设计意图被五轮回测否定；
+        # R3-05 bug 使其实际从未触发——"意外 no-op"被证实恰是最优行为）。
+        # 保留 apply_risk 的单票上限功能（真风控），不再传入 nav。
+        w_series = apply_risk(w_row.to_frame().T, nav=None,
+                              max_single=max_single, max_total=1.0).iloc[0]
+        target_w = {str(k): float(v) for k, v in w_series.items() if float(v) > 0}
+        orders = _plan_orders(target_w, new_shares, prices_close, nav_now, cash)
+    if not orders:
+        return None
+    rows = [{
+        "signal_date": str(latest.date()), "fill_date": str(next_td.date()),
+        "symbol": o["symbol"], "side": o["side"], "qty": o["qty"],
+        "price": o["price"], "amount": o["amount"], "fee": o["fee"],
+        "stamp_duty": o["stamp"], "status": "pending",
+        "note": "T+1 开盘成交（参考价=信号日收盘）",
+    } for o in orders]
+    orders_df = pd.DataFrame(rows)
+    led.add_pending(orders_df)
+    return orders_df
+
+
+def _build_positions(store: ParquetStore, led: Ledger, latest: pd.Timestamp,
+                     new_shares: dict, prices_close: dict,
+                     nav_now: float) -> tuple[pd.DataFrame, list[dict]]:
+    """持仓明细行（现价/前收/持有期高点回撤/权重），供快照与日报。"""
+    first_held: dict = {}
     try:
         allpos = led.positions()
         first_held = allpos.groupby(allpos["symbol"].astype(str))["date"].min().to_dict()
@@ -657,15 +702,32 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     positions = pd.DataFrame(pos_rows)
     if len(positions):
         positions = positions.sort_values("weight", ascending=False)
+    return positions, pos_rows
 
+
+def _benchmark(store: ParquetStore, index_code: str,
+               latest: pd.Timestamp) -> tuple[pd.DataFrame | None, float]:
+    """基准指数收盘序列与最新值（缺数据返回 (None, nan)）。"""
     try:
         bench = get_kline(index_code, adjust="none", store=store)
         bench = bench.set_index(pd.to_datetime(bench["date"]))["close"].sort_index()
         bench_close = float(bench[bench.index <= latest].iloc[-1])
+        return bench, bench_close
     except Exception:  # noqa: BLE001
-        bench = None
-        bench_close = float("nan")
+        return None, float("nan")
 
+
+def _persist_day(store: ParquetStore, led: Ledger, latest: pd.Timestamp,
+                 label: str, cash: float, mv: float, positions: pd.DataFrame,
+                 bench, bench_close: float, last_snap_date: str | None,
+                 fill_results: list[dict], nav_now: float,
+                 dry_run: bool) -> tuple[float, list[str], bool, pd.DataFrame]:
+    """落快照 + 缺口回填 + 操作记录 + 累计费用 + 自检（非 dry_run 收尾关连接）。
+
+    D-062：累计费用/自检/待成交必须在 close 之前算好——close 后再 connect
+    会重开连接且永不关闭（Windows 文件锁）。
+    返回 (cum_cost, check_lines, check_ok, pending_after)。
+    """
     if not dry_run:
         led.record_day(str(latest.date()), cash=cash, market_value=mv,
                        positions=positions, trades=None,
@@ -685,7 +747,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                     st = _replay_state(led, ds)
                     if st is None:
                         continue
-                    pos_rows, mv_b = [], 0.0
+                    back_rows, mv_b = [], 0.0
                     for sym, sh in st["shares"].items():
                         if sh <= 0:
                             continue
@@ -697,11 +759,11 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
                             px = 0.0
                         mv_b += sh * px
                         denom = st["cash"] + mv_b
-                        pos_rows.append({"symbol": sym, "shares": sh, "close": px,
-                                         "weight": sh * px / denom if denom else 0.0})
+                        back_rows.append({"symbol": sym, "shares": sh, "close": px,
+                                          "weight": sh * px / denom if denom else 0.0})
                     bb = bench[bench.index <= d]
                     led.record_day(ds, cash=st["cash"], market_value=mv_b,
-                                   positions=pd.DataFrame(pos_rows) if pos_rows else None,
+                                   positions=pd.DataFrame(back_rows) if back_rows else None,
                                    benchmark_nav=float(bb.iloc[-1]) if len(bb) else None)
                     print(f"[backfill] 已补写 {ds} 快照（延迟撮合，R3-06）", flush=True)
         except Exception as e:  # noqa: BLE001
@@ -724,32 +786,31 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         pending_after = led.pending_orders()
         led.daily_backup()
         led.close()
-    else:
-        pending_after = pd.DataFrame()
-        cum_cost = _cum_cost(led)
-        check_lines, check_ok = _self_check(
-            led, cash, positions if len(positions) else pd.DataFrame())
+        return cum_cost, check_lines, check_ok, pending_after
+    pending_after = pd.DataFrame()
+    cum_cost = _cum_cost(led)
+    check_lines, check_ok = _self_check(
+        led, cash, positions if len(positions) else pd.DataFrame())
+    return cum_cost, check_lines, check_ok, pending_after
 
-    # ---- 日报 ----
+
+def _daily_report(latest: pd.Timestamp, label: str, cash: float, mv: float,
+                  nav_now: float, bench_close: float, positions: pd.DataFrame,
+                  pos_rows: list[dict], fill_results: list[dict],
+                  pending_after: pd.DataFrame, cum_cost: float,
+                  check_lines: list[str], held_days: int | None, rebalance: int,
+                  scheduled: bool, cadence_ok: bool, bootstrap: bool,
+                  dry_run: bool, day_pnl: float, day_ret: float,
+                  cum_ret: float) -> tuple:
+    """组装日报文本与推送水位（重复运行/周末重跑去重、发送失败标记）。"""
     report_dir = STORE_DIR / "reports" / label
     report_dir.mkdir(parents=True, exist_ok=True)
-    # 昨日净值：必须是"日期早于今天"的最后一条快照（同一天重跑时不能拿自己当昨日）
-    prev_nav = nav_now
-    if not snap_now.empty:
-        prior = snap_now[pd.to_datetime(snap_now["date"]) < latest]
-        if len(prior):
-            prev_nav = float(prior["total_nav"].iloc[-1])
-    day_pnl = nav_now - prev_nav
-    day_ret = (nav_now / prev_nav - 1.0) if prev_nav else 0.0
-    base_nav = float(snap_now["total_nav"].iloc[0]) if not snap_now.empty else nav_now
-    cum_ret = (nav_now / base_nav - 1.0) if base_nav else 0.0
+    chg_txt = "-"
     if len(positions) and "pct_chg" in positions.columns:
         up = int((positions["pct_chg"] > 0).sum())
         down = int((positions["pct_chg"] < 0).sum())
         flat = int((positions["pct_chg"].isna() | (positions["pct_chg"] == 0)).sum())
         chg_txt = f"涨 {up} / 跌 {down} / 平 {flat}"
-    else:
-        chg_txt = "-"
     lines = [f"# 影子盘日报[{label}] {latest.date()}", "", "## 账户",
              f"- 现金: {cash:,.2f}",
              f"- 持仓市值: {mv:,.2f}",
@@ -793,7 +854,7 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
         lines.append(f"- {len(pending_after)} 笔（成交日 {pd.Timestamp(pending_after['fill_date'].iloc[0]).date()} 开盘）")
         lines.append("")
         lines.append("| 代码 | 方向 | 数量 | 参考价 |")
-        lines.append("|---|---|---|---|")
+        lines.append("|---|---|---|---|---|")
         for r in pending_after.itertuples(index=False):
             lines.append(f"| {r.symbol} | {r.side} | {r.qty:.0f} | {r.price:.2f} |")
     else:
@@ -841,6 +902,67 @@ def run_pipeline(index_code: str = "000300", top_n: int = 50,
     send_fail_marker = report_path.with_name(report_path.name + ".send_failed")
     if not dry_run:
         report_path.write_text(report, encoding="utf-8")
+    return report, report_path, already_reported, send_fail_marker
+
+
+# ---------------------------------------------------------------- 主流程（编排）
+def run_pipeline(index_code: str = "000300", top_n: int = 50,
+                 rebalance: int = 20, capital: float = 1_000_000.0,
+                 max_single: float = 0.10, dry_run: bool = False,
+                 push: bool = True,
+                 db_path=None, label: str = "large",
+                 max_positions: int | None = None,
+                 strategy: str = "corrected",
+                 _panel: pd.DataFrame | None = None) -> dict:
+    store = ParquetStore()
+    panel = (_panel if _panel is not None
+             else _load_panel(store, index_code,
+                              with_dividend=(strategy == "dividend")))
+    latest = pd.Timestamp(panel["date"].max())
+    W = _strategy_weights(panel, strategy, top_n, rebalance)
+
+    led = Ledger(db_path)
+    # 1) 撮合到期订单（T+1 开盘价）
+    fill_results = _match_pending_orders(store, led, latest, dry_run)
+
+    # 2) 账户状态 + 应用撮合结果 + 自愈重放（D-053/D-062）
+    cash, new_shares, snap_now, last_snap_date = _apply_state(
+        led, latest, fill_results, capital)
+
+    # 3) 最新收盘价与净值
+    mv, nav_now, prices_close = _account_nav(store, panel, latest,
+                                             cash, new_shares)
+
+    # 4) 下单（调仓日或首次建仓；已有 pending 时不再重复下单）
+    bootstrap, held_days, cadence_ok, scheduled, rebalance_day = \
+        _rebalance_decision(led, panel, W, latest, rebalance, snap_now.empty)
+    _submit_orders(store, led, panel, W, latest, rebalance_day,
+                   bootstrap, dry_run, new_shares, prices_close,
+                   cash, nav_now, max_single, max_positions)
+
+    # 5) 持仓表（最新收盘价） + 快照 + 日报
+    positions, pos_rows = _build_positions(store, led, latest, new_shares,
+                                           prices_close, nav_now)
+    bench, bench_close = _benchmark(store, index_code, latest)
+    cum_cost, check_lines, check_ok, pending_after = _persist_day(
+        store, led, latest, label, cash, mv, positions, bench, bench_close,
+        last_snap_date, fill_results, nav_now, dry_run)
+
+    # ---- 日报（组装在 _daily_report；昨日净值/收益比在此计算）----
+    prev_nav = nav_now
+    if not snap_now.empty:
+        prior = snap_now[pd.to_datetime(snap_now["date"]) < latest]
+        if len(prior):
+            prev_nav = float(prior["total_nav"].iloc[-1])
+    day_pnl = nav_now - prev_nav
+    day_ret = (nav_now / prev_nav - 1.0) if prev_nav else 0.0
+    base_nav = float(snap_now["total_nav"].iloc[0]) if not snap_now.empty else nav_now
+    cum_ret = (nav_now / base_nav - 1.0) if base_nav else 0.0
+    report, report_path, already_reported, send_fail_marker = _daily_report(
+        latest, label, cash, mv, nav_now, bench_close, positions, pos_rows,
+        fill_results, pending_after, cum_cost, check_lines, held_days,
+        rebalance, scheduled, cadence_ok, bootstrap, dry_run,
+        day_pnl, day_ret, cum_ret)
 
     print(report)
     if not dry_run:

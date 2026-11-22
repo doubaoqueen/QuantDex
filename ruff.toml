@@ -4,15 +4,25 @@ target-version = "py311"
 exclude = ["frontend", "data", "quantdex_vault", "docs", "_legacy_old_naming"]
 
 [lint]
-select = ["E", "F", "W", "I", "B", "UP"]
+select = ["E", "F", "W", "I", "B", "UP", "C901", "PLR0912", "PLR0915"]
 ignore = [
   "E501",   # 行宽由人掌握（中文注释与长公式）
   "E402",   # scripts 需先 import _bootstrap 再 import src（结构性前置）
   "B008",   # FastAPI 风格默认参数调用不适用本项目
 ]
 
+# 结构守卫（D-113 深检后加，2026-11-22）：行为测试与语义审查看不见"形状"，
+# 复杂度/分支/语句数用机械执法。阈值钉在现存最差之下——新函数超线即报，
+# 存量两处结构债进 per-file-ignores 白名单（只许减不许增，改到可删豁免即删）。
+[lint.mccabe]
+max-complexity = 25     # 现存最差 run_pipeline=68（豁免还债中）
+[lint.pylint]
+max-branches = 20       # 同上
+max-statements = 90     # 线性步骤脚本豁免见 per-file-ignores
+
 [lint.per-file-ignores]
-"scripts/*" = ["F401"]  # 脚本顶部的预留导入（_bootstrap 等）
+"scripts/*" = ["F401", "C901", "PLR0912", "PLR0915"]  # 脚本顶部预留导入（_bootstrap 等）+ 线性步骤脚本的 main 豁免复杂度执法（脚本债务在 TODO 工程债跟踪）
+"src/backtest/portfolio.py" = ["C901", "PLR0912", "PLR0915"]  # run_portfolio_backtest 138 语句/35 分支——拆解前置豁免（TODO 工程债；pipeline.py 的同款豁免已于结构轮后删除）
 "tests/*" = ["E501"]
 
 [lint.isort]
