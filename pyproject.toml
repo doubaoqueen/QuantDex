@@ -3,22 +3,27 @@ name = "quantdex"
 version = "0.4.0"
 description = "A股个人量化研究系统：多源数据仓库 → 因子研究 → 闸门检验 → 影子盘 → （QMT 实盘对接规划中）"
 requires-python = ">=3.11"
+# 依赖版本与 requirements.txt 锁定一致（D-034：版本锁定=当前实测环境）——
+# 此前用 >= 范围，与锁定文件双轨漂移（周末清单 2026-11-23 收口）
 dependencies = [
-    "pandas>=2.0",
-    "numpy>=1.26",
-    "akshare>=1.14",
-    "baostock>=0.8",
-    "requests>=2.31",
-    "tqdm>=4.66",
-    "pytdx>=1.72",
+    "pandas==3.0.6",
+    "numpy==2.4.6",
+    "akshare==1.19.1",
+    "baostock==0.9.4",
+    "requests==2.34.2",
+    "tqdm==4.70.1",
+    "pytdx==1.72",
+    "pyarrow==26.0.0",
+    "pillow==12.3.0",
 ]
 
-[tool.ruff]
-line-length = 110
-target-version = "py311"
+[project.optional-dependencies]
+# 14_scheduler.py 常驻调度用（与 Windows 计划任务二选一，见 TODO 工程债）
+scheduler = ["apscheduler>=3.10"]
 
-[tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+# 代码规范唯一事实来源是根目录 ruff.toml（含 C901/PLR 复杂度棘轮，CODE_STANDARD §10）——
+# 此前这里内嵌过一份 [tool.ruff]（line-length 110/E-F-W-I），与 ruff.toml 双配置漂移
+# 且 ruff.toml 优先生效、此段为死配置，2026-11-23 删除。
 
 # 无构建系统（脚本直跑 + conda 环境），pip install -e . 不可用——
 # 依赖以 conda 环境为准（environment.md 若缺失以 requirements.txt 为准）。

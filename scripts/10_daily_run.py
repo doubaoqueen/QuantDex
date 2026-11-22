@@ -207,6 +207,16 @@ def main() -> None:
     if "--skip-update" not in sys.argv and "--skip-minute" not in sys.argv:
         _update_minutes(symbols, store)
 
+    # 涨停池每日采集入链（2026-11-23，TODO 周末清单收口）：东财池子保留期仅约
+    # 1 个月，**过期即失**——每天不采就丢一天 D-093 的研究原料。50 号自带幂等
+    # （date+code 去重覆盖）与 15:05 盘中守卫；重抓整个保留窗口顺带修复此前
+    # 失败的日子。失败只告警不阻断（研究原料，非质检门槛，不进退出码）；
+    # QUANTDEX_ZTPOOL=0 可关闭。放分钟线之后（东财单请求，不占 baostock）。
+    if os.environ.get("QUANTDEX_ZTPOOL", "1") != "0":
+        print(">> 涨停池采集（东财，保留窗口 26 交易日，幂等）...")
+        if _run_audit("50_ztpool_backfill.py"):
+            print(">> [ztpool] 采集失败——保留期 1 个月，连续失败会丢研究原料，请检查日志")
+
     if check_bad:
         sys.exit(4)  # D-059：自检异常——数据可能有 D-053 同类指纹，优先处理
     if audit_bad:
