@@ -1,4 +1,4 @@
-﻿"""
+"""
 第 5 步：组合 / 截面回测 —— 20日动量 + 低波 Top-N 等权，定期调仓，对比基准。
 
 用法：
@@ -57,7 +57,7 @@ def main() -> None:
             # D-106 教训：分红面板失败过去会静默降级 corrected——把"红利意图"跑成
             # corrected 数字。改为硬失败，保真口径不许静默换档。
             raise SystemExit(f"分红面板加载失败（{e}）——拒绝静默降级 corrected；"
-                             "请先修分红数据再重跑（12 号 --force）")
+                             "请先修分红数据再重跑（12 号 --force）") from e
     if div_panel is not None:
         panel = build_factor_panel(store, symbols, start=START_DATE,
                                    pit_constituents=pit, dividend_panel=div_panel,
@@ -131,17 +131,22 @@ def main() -> None:
     res["nav"].rename("nav").to_frame().to_parquet(out / f"nav_{tag}.parquet")
     W.to_parquet(out / f"weights_{tag}.parquet")
 
-    try:
-        from src.analysis.experiments import record
-        record("portfolio_backtest",
-               params={"index": index_code, "top_n": top_n, "rebalance": rebalance,
-                       "strategy": strategy},
-               metrics={k: (float(v) if isinstance(v, (int, float)) else v)
-                        for k, v in perf.items()},
-               notes="05 保真口径（佣金含最低5元/印花/过户/滑点/涨跌停停牌跳过）",
-               artifacts=[f"portfolio_results/nav_{tag}.parquet"])
-    except Exception as e:  # noqa: BLE001
-        print(f"[experiments] 记录失败: {e}")
+    # --no-archive（D-117）：日更链里每晚刷新回测产物时不写实验存档——
+    # 时间戳 JSON 一天 6 份会把研究档案刷屏；手动跑研究时默认照旧存档。
+    if "--no-archive" in sys.argv:
+        print(">> 跳过实验存档（--no-archive，日更链口径）")
+    else:
+        try:
+            from src.analysis.experiments import record
+            record("portfolio_backtest",
+                   params={"index": index_code, "top_n": top_n, "rebalance": rebalance,
+                           "strategy": strategy},
+                   metrics={k: (float(v) if isinstance(v, (int, float)) else v)
+                            for k, v in perf.items()},
+                   notes="05 保真口径（佣金含最低5元/印花/过户/滑点/涨跌停停牌跳过）",
+                   artifacts=[f"portfolio_results/nav_{tag}.parquet"])
+        except Exception as e:  # noqa: BLE001
+            print(f"[experiments] 记录失败: {e}")
 
     # 复用 plot.plot_backtest：构造其所需列
     plot_df = pd.DataFrame({"date": res["dates"], "nav": res["nav"].values,

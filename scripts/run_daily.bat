@@ -24,6 +24,14 @@ echo ===== STAGE 3/3 minute-bars start %date% %time% RC_MAIL=%RC_MAIL% >> data\s
 rem stage 3: 5-minute bars; failure here must NOT mask a successful mail run
 "%PY%" scripts\02b_update_pit.py --minute-only >> data\store\logs\daily_run.log 2>&1
 echo ===== STAGE 3/3 minute-bars done %date% %time% RC_MINUTE=%ERRORLEVEL% >> data\store\logs\daily_run.log
+rem stage 4 (D-117): refresh backtest artifacts (05/06 x3 strategies, ~3.5 min, offline)
+rem so the backtest panel never goes stale again; --no-archive avoids experiment spam
+echo ===== STAGE 4/4 backtest-refresh start %date% %time% >> data\store\logs\daily_run.log
+for %%S in (corrected dividend topkdrop) do (
+  "%PY%" scripts\05_portfolio_backtest.py 000300 50 20 %%S --no-archive >> data\store\logs\daily_run.log 2>&1
+  "%PY%" scripts\06_walkforward.py 000300 %%S --no-archive >> data\store\logs\daily_run.log 2>&1
+)
+echo ===== STAGE 4/4 backtest-refresh done %date% %time% RC_BT=%ERRORLEVEL% >> data\store\logs\daily_run.log
 if not "%RC_MAIL%"=="0" exit /b %RC_MAIL%
 if not "%RC_DATA%"=="0" exit /b %RC_DATA%
 exit /b 0

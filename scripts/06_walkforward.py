@@ -234,17 +234,21 @@ def main() -> None:
 
     # 深检修复（2026-11-22）：record 移到产物落盘之后——此前 artifacts 引用的
     # parquet 在记录写入时还不存在，首次运行的实验记录指向悬空路径
-    try:
-        from src.analysis.experiments import record
-        record("walkforward",
-               params={"index": index_code, "strategy": strategy,
-                       "test_years": TEST_YEARS, "grid": str(GRID)},
-               metrics={"oos_total": total, "oos_ann": ann, "oos_ir": ir,
-                        "oos_mdd": mdd, "n_folds": len(folds)},
-               notes="06 walk-forward 样本外（每年仅用此前数据选参）",
-               artifacts=[f"walkforward_results/folds_{index_code}{suffix}.parquet"])
-    except Exception as e:  # noqa: BLE001
-        print(f"[experiments] 记录失败: {e}")
+    # --no-archive（D-117）：日更链每晚刷新时不写实验存档（避免时间戳 JSON 刷屏）
+    if "--no-archive" in sys.argv:
+        print(">> 跳过实验存档（--no-archive，日更链口径）")
+    else:
+        try:
+            from src.analysis.experiments import record
+            record("walkforward",
+                   params={"index": index_code, "strategy": strategy,
+                           "test_years": TEST_YEARS, "grid": str(GRID)},
+                   metrics={"oos_total": total, "oos_ann": ann, "oos_ir": ir,
+                            "oos_mdd": mdd, "n_folds": len(folds)},
+                   notes="06 walk-forward 样本外（每年仅用此前数据选参）",
+                   artifacts=[f"walkforward_results/folds_{index_code}{suffix}.parquet"])
+        except Exception as e:  # noqa: BLE001
+            print(f"[experiments] 记录失败: {e}")
     print()
     print(f">> 结果已保存到 {out}")
 
