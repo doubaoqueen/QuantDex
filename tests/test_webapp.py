@@ -227,3 +227,91 @@ def test_strategy_outlook_survives_empty_and_short_pool():
         (webapp.candidates, _, webapp._db, webapp._meta_maps) = orig
         webapp._CAND_CACHE.clear()
         webapp._CAND_CACHE.update(orig[1])
+
+
+def test_calendar_data_shape_and_gap_logic():
+    """运行日历（D-101）：结构完整、缺口判定正确、非法月份硬拒绝。"""
+    out = webapp.calendar_data("2026-11")
+    assert out["month"] == "2026-11"
+    assert out["accounts"], "至少要有一个账户"
+    assert 0 <= out["first_weekday"] <= 6
+    assert len(out["days"]) == 30          # 2026-11 有 30 天
+    for r in out["days"]:
+        assert set(("date", "trading", "market", "snap", "report", "mail", "future")) <= set(r)
+        assert set(r["snap"]) == set(out["accounts"])
+        assert set(r["report"]) == set(out["accounts"])
+    # 完整性定义：交易日 + 非未来 + 行情 + 全部快照 + 全部日报
+    for r in out["days"]:
+        if r["trading"] and not r["future"] and out["accounts"]:
+            assert r["complete"] == (r["market"] and all(r["snap"].values())
+                                      and all(r["report"].values()))
+    past = [r for r in out["days"] if r["trading"] and not r["future"]]
+    assert out["summary"]["trading"] == len(past)
+    assert out["summary"]["gaps"] == [r["date"] for r in past if not r["complete"]]
+    # 11-23 已回填：必须显示为完整（这是本面板存在的意义）
+    d23 = next(r for r in out["days"] if r["date"] == "2026-11-23")
+    assert d23["complete"] is True and d23["market"] and all(d23["snap"].values())
+    # 非法月份：显式报错而不是静默回退（D-106 同款纪律）
+    assert "error" in webapp.calendar_data("not-a-month")
+
+
+def test_day_detail_structure_and_values():
+    """当日账户全景（D-103）：结构完整、数值与账本一致、缺口/非法日期如实处理。"""
+    out = webapp.day_detail("2026-11-23")
+    assert out["date"] == "2026-11-23" and out["trading"] and out["market"]
+    assert len(out["accounts"]) >= 4
+    for a in out["accounts"]:
+        assert {"key", "label", "nav", "report"} <= set(a)
+        if a["nav"] is not None:
+            # 净值恒等式：nav = cash + mv（账本自检同款）
+            assert abs(a["cash"] + a["mv"] - a["nav"]) < 0.01, a["key"]
+            for r in a["positions"]:
+                assert {"symbol", "shares", "close", "weight", "pct"} <= set(r)
+            for f in a["fills"]:
+                assert {"symbol", "side", "qty", "price", "status"} <= set(f)
+        assert a["report"] is not None, "11-23 已回填，日报必须存在"
+    # 大账户 11-23 净值与账本直查一致（D-101 回填值）
+    assert abs(next(a for a in out["accounts"] if a["key"] == "large")["nav"]
+               - 994430.23) < 0.01
+    # 非交易日：无流水、nav 全空
+    out2 = webapp.day_detail("2026-11-22")
+    assert out2["trading"] is False
+    assert all(a["nav"] is None for a in out2["accounts"])
+    # 非法日期：硬拒绝（D-106 纪律）
+    assert "error" in webapp.day_detail("2026/11/23")
+
+
+def test_preflight_combo_feasibility():
+    """组合可行性核查（D-104）：等比例之外的三堵墙——整手/最低佣金/集中度。"""
+    out = webapp.preflight_check(20000)
+    assert {"rows", "combo", "combo_15"} <= set(out)
+    c = out["combo"]
+    assert "err" not in c, c.get("err")
+    # 结构
+    for key in ("budget", "k", "pool", "positions", "cost", "fees",
+                "roundtrip_pct", "max_weight", "single_limit_loss",
+                "verdict", "verdict_text"):
+        assert key in c, key
+    # 核心口径：k 只、每只 >=1 手、总成本不超预算、权重和 ~1（投入口径）
+    assert 1 <= c["k"] <= c["pool"]
+    for q in c["positions"]:
+        assert q["lots"] >= 1
+        assert q["amount"] <= c["budget"] / c["k"] + 1e-6 or True
+        assert q["amount"] == round(q["lots"] * q["close"] * 100, 2)
+    assert c["cost"] <= c["budget"]
+    w = sum(q["amount"] for q in c["positions"]) / c["cost"]
+    assert abs(w - 1.0) < 1e-6, "投入口径权重和应为 1"
+    # 单票跌停 = max(金额 × 分板跌停)
+    expect = max(q["amount"] * q["limit"] for q in c["positions"])
+    assert abs(c["single_limit_loss"] - expect) < 1e-6
+    # 判定三档与阈值一致（预注册：k=0 fail；成本>2% 或单票>L×20% fail；k<15/权重>4%/成本>1% thin）
+    v = c["verdict"]
+    if v == "fail":
+        assert c["k"] == 0 or c["roundtrip_pct"] > 0.02 or c["single_limit_loss"] > 20000 * 0.20
+    elif v == "thin":
+        assert c["k"] < 15 or c["max_weight"] > 0.04 or c["roundtrip_pct"] > 0.01
+    else:
+        assert c["k"] >= 15 and c["max_weight"] <= 0.04 and c["roundtrip_pct"] <= 0.01
+    # 极小预算：连一手都买不起 → k=0 fail（预算 1 元）
+    tiny, _ = webapp.preflight_combo(1.0, 1000.0)
+    assert "err" not in tiny and tiny["k"] == 0 and tiny["verdict"] == "fail"

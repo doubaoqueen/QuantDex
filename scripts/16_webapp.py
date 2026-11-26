@@ -587,6 +587,90 @@ PREFLIGHT_STRATEGIES = [
 ]
 
 
+def preflight_combo(budget: float, l_amount: float, acc: str = "large") -> dict:
+    """组合可行性核查（D-104）：等比例公式看不见的三堵墙。
+
+    等比例估算（可投入 = L÷|MDD|）隐含两个假设：等权 50 只分散可实现、
+    交易无摩擦。小预算下两个都不成立：整手约束决定真实持仓数，最低佣金 5 元
+    决定真实成本率，集中度决定单票跌停的真实冲击。本函数按**当前候选池**
+    （分数序前 15，非按便宜挑）逐项算出实组合：
+      k* = 最大的 k，使分数序前 k 只全部能在等权预算 B/k 内买到 ≥1 手；
+      手数 = floor((B/k*)/一手价)；成本含最低佣金/印花/过户/滑点；
+      压力 = 单票跌停（元）与全组合跌停（元），对照 L 与理想 50 只设计。
+    """
+    from config import board_limit
+    try:
+        cand = candidates(acc)
+        pool = cand.get("rows") or []
+    except Exception as e:  # noqa: BLE001
+        return {"err": f"候选池不可用: {e}"}, 0
+    B_ = max(float(budget or 0), 0.0)
+    L_ = max(float(l_amount or 0), 0.0)
+    LOT = 100
+    one_lot = []
+    for r in pool:
+        c = float(r.get("close") or 0)
+        lc = float(r.get("lot_cost") or 0)
+        one_lot.append(lc if lc > 0 else c * LOT)
+    k = 0
+    for kk in range(len(pool), 0, -1):
+        p = B_ / kk if kk else 0
+        if p > 0 and all(ol <= p for ol in one_lot[:kk]):
+            k = kk
+            break
+    positions = []
+    cost = fees = 0.0
+    if k:
+        p = B_ / k
+        for r, ol in zip(pool[:k], one_lot[:k], strict=False):
+            lots = max(1, int(p / ol))
+            amt = lots * ol
+            cost += amt
+            positions.append({"rank": r.get("rank"), "symbol": r["symbol"],
+                                "name": r.get("name"), "close": float(r["close"]),
+                                "lots": lots, "amount": round(amt, 2),
+                                "limit": board_limit(str(r["symbol"]))})
+        # 单轮全成本（建仓买入 + 清仓卖出）：最低佣金 5 元/笔 + 印花(卖) + 过户 + 滑点
+        comm = sum(max(a * 2.5e-4, 5.0) for a in (q["amount"] for q in positions)) * 2
+        stamp = cost * 5e-4
+        trans = cost * 1e-5 * 2
+        slip = cost * 5e-4 * 2
+        fees = comm + stamp + trans + slip
+    invested_w = [(q["amount"] / cost if cost else 0) for q in positions]
+    max_w = max(invested_w) if invested_w else 0.0
+    single = max((q["amount"] * (q["limit"] or 0.10) for q in positions), default=0.0)
+    all_limit = sum(q["amount"] * (q["limit"] or 0.10) for q in positions)
+    ideal_single = B_ / 50 * 0.10                      # 理想 50 只等权的单票跌停冲击
+    rt_pct = fees / B_ if B_ else 0.0
+    # 判定（预注册阈值）：k=0 不可行；成本>2% 或单票跌停>L×20% 红牌；
+    # 分散不足（k<15 或 权重>设计 2 倍=4%）或成本>1% 橙牌
+    if k == 0:
+        verdict, text = "fail", "预算连第一只候选的一手都买不起——不可行"
+    elif rt_pct > 0.02 or (L_ > 0 and single > L_ * 0.20):
+        verdict, text = ("fail",
+                         f"单轮全成本 {rt_pct:.2%} / 单票跌停 {single:,.0f} 元"
+                         f"（L 的 {single / L_:.0%}）——摩擦或集中度刺穿红线")
+    elif k < 15 or max_w > 0.04 or rt_pct > 0.01:
+        verdict, text = ("thin",
+                         f"分散不足：{k} 只 / 最大权重 {max_w:.1%}"
+                         f"（设计 2%）/ 成本 {rt_pct:.2%}——MDD 口径低估真实风险")
+    else:
+        verdict, text = "ok", f"{k} 只 · 最大权重 {max_w:.1%} · 成本 {rt_pct:.2%}——可行"
+    b_min = round(max(one_lot[:10]) * 10 * 1.03) if len(one_lot) >= 10 else None
+    return {
+        "budget": round(B_), "k": k, "pool": len(pool),
+        "positions": positions, "cost": round(cost, 2),
+        "cash_left": round(B_ - cost, 2), "fees": round(fees, 2),
+        "roundtrip_pct": round(rt_pct, 5),
+        "max_weight": round(max_w, 4), "design_weight": 0.02,
+        "single_limit_loss": round(single, 2),
+        "ideal_single_limit": round(ideal_single, 2),
+        "all_limit_loss": round(all_limit, 2),
+        "single_vs_L": round(single / L_, 4) if L_ else None,
+        "verdict": verdict, "verdict_text": text, "b_min": b_min,
+    }, k
+
+
 def preflight_check(l_amount: float):
     """开户前体检（D-068 构想一 / D-076 v1 公式 / D-098 归因校准输入）。
 
@@ -610,7 +694,18 @@ def preflight_check(l_amount: float):
         "st_exposure": 0,
         "d010": "挂起，观察期延至 12-29（8 周功效 ×√2）",
     }
-    return {"L": l_amount, "rows": rows, "calibration": calibration}
+    # D-104：等比例只是第一层——组合可行性（整手/最低佣金/集中度）才是用户要的答案
+    combo = None
+    combo_15 = None
+    try:
+        main_invest = rows[0]["invest"] if rows else 0
+        combo, _ = preflight_combo(main_invest, l_amount, "large")
+        if rows:
+            combo_15, _ = preflight_combo(rows[0]["invest_15"], l_amount, "large")
+    except Exception as e:  # noqa: BLE001  组合核查失败不拖垮体检主表
+        combo = {"err": str(e)[:80]}
+    return {"L": l_amount, "rows": rows, "calibration": calibration,
+            "combo": combo, "combo_15": combo_15}
 
 
 def research_list():
@@ -1410,6 +1505,160 @@ def report_text(acc, date):
     return p.read_text(encoding="utf-8") if p.exists() else "未找到日报"
 
 
+def calendar_data(month: str = "") -> dict:
+    """日历面板数据（D-101）：一个月里每个交易日的完整性一览。
+
+    每天四列状态：行情分区 / 各账户账本快照 / 各账户日报 / 邮件。动机：11-23 的
+    19:00 任务未触发，账本快照/日报/邮件整日静默消失，用户翻净值曲线才发现——
+    "哪天缺了什么"必须打开控制台一眼可见。邮件取 mail.log（D-101 起记录，
+    更早的日期为 null=未知，如实显示不猜）。
+    """
+    import sqlite3
+    now = pd.Timestamp.now()
+    m = month or f"{now:%Y-%m}"
+    try:
+        y, mm = (int(x) for x in m.split("-"))
+        first = pd.Timestamp(year=y, month=mm, day=1)
+    except Exception:  # noqa: BLE001
+        return {"error": f"非法月份 {m!r}（应为 YYYY-MM）"}
+    nxt_m = mm + 1 if mm < 12 else 1
+    nxt_y = y + (1 if mm == 12 else 0)
+    last = pd.Timestamp(year=nxt_y, month=nxt_m, day=1) - pd.Timedelta(days=1)
+    cal = pd.to_datetime(
+        pd.read_parquet(STORE_DIR / "meta" / "trade_calendar.parquet")["date"])
+    trading = {str(d.date()) for d in cal if first <= d <= last}
+    market = {p.stem for p in
+              (STORE_DIR / "market" / "daily_by_date").glob("*.parquet")}
+    accs = []
+    snap: dict[str, set] = {}
+    rep: dict[str, set] = {}
+    try:
+        from src.strategies.registry import enabled_accounts as _ea
+        for key, cfg in _ea().items():
+            accs.append(key)
+            con = sqlite3.connect(
+                f"file:{STORE_DIR / 'sim' / cfg['ledger']}?mode=ro", uri=True)
+            try:
+                snap[key] = set(pd.read_sql(
+                    "SELECT DISTINCT date FROM account_snapshot", con)["date"])
+            finally:
+                con.close()
+            rep[key] = {q.stem for q in
+                        (STORE_DIR / "reports" / cfg["reports"]).glob("*.md")}
+    except Exception as e:  # noqa: BLE001
+        _log_500('calendar_data', e)
+    mail: set = set()
+    mail_known = False
+    ml = STORE_DIR / "logs" / "mail.log"
+    if ml.exists():
+        mail_known = True
+        for ln in ml.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = ln.split("\t")
+            if parts and parts[0]:
+                mail.add(parts[0])
+    days = []
+    d = first
+    while d <= last:
+        ds = f"{d:%Y-%m-%d}"
+        row = {"date": ds, "trading": ds in trading, "market": ds in market,
+               "snap": {k: ds in snap.get(k, set()) for k in accs},
+               "report": {k: ds in rep.get(k, set()) for k in accs},
+               "mail": (ds in mail) if mail_known else None,
+               "future": d > now}
+        if row["trading"] and not row["future"] and accs:
+            row["complete"] = bool(row["market"]) \
+                and all(row["snap"].values()) and all(row["report"].values())
+        days.append(row)
+        d += pd.Timedelta(days=1)
+    past = [r for r in days if r["trading"] and not r["future"]]
+    gaps = [r["date"] for r in past if not r.get("complete", True)]
+    return {"month": m, "accounts": accs, "first_weekday": int(first.dayofweek),
+            "days": days, "mail_known": mail_known,
+            "summary": {"trading": len(past), "complete": len(past) - len(gaps),
+                        "gaps": gaps}}
+
+
+def day_detail(date: str) -> dict:
+    """某交易日的账户全景（D-103）：四账户净值/当日收益/持仓明细/当日成交/日报。
+
+    日历面板点选某天后展示：值取自账本快照（按当日收盘价），当日成交取
+    trade_log（fill_date=当日），日报取 reports/<账户>/<当日>.md。缺快照的
+    账户如实显示缺口（nav=None）——点缺口日能看到"那天什么都没跑"。
+    """
+    import re as _re
+    import sqlite3
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(date or "")):
+        return {"error": "日期非法（应为 YYYY-MM-DD）"}
+    cal = pd.to_datetime(
+        pd.read_parquet(STORE_DIR / "meta" / "trade_calendar.parquet")["date"])
+    out = {"date": date, "trading": pd.Timestamp(date) in set(cal),
+           "market": (STORE_DIR / "market" / "daily_by_date" / f"{date}.parquet").exists(),
+           "accounts": []}
+    try:
+        from src.strategies.registry import enabled_accounts as _ea
+        accs = _ea()
+    except Exception:  # noqa: BLE001
+        accs = {}
+    for key, cfg in accs.items():
+        entry = {"key": key, "label": cfg["label"], "group": cfg["group"], "nav": None}
+        db = STORE_DIR / "sim" / cfg["ledger"]
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            snap = pd.read_sql("SELECT date, cash, market_value, total_nav "
+                               "FROM account_snapshot ORDER BY date", con)
+            row = snap[snap["date"] == date]
+            if len(row):
+                r = row.iloc[0]
+                prior = snap[snap["date"] < date]
+                prev_nav = float(prior["total_nav"].iloc[-1]) if len(prior) else None
+                base = float(snap["total_nav"].iloc[0]) if len(snap) else None
+                nav = float(r["total_nav"])
+                entry.update({"cash": float(r["cash"]),
+                                "mv": float(r["market_value"]), "nav": nav,
+                                "day_ret": (nav / prev_nav - 1.0) if prev_nav else None,
+                                "cum_ret": (nav / base - 1.0) if base else None})
+                pos = pd.read_sql("SELECT symbol, shares, close, weight FROM positions "
+                                  "WHERE date = ? ORDER BY weight DESC", con,
+                                  params=(date,))
+                pct: list = []
+                if len(prior):
+                    prev_d = str(prior["date"].iloc[-1])
+                    pp = pd.read_sql("SELECT symbol, close FROM positions WHERE date = ?",
+                                      con, params=(prev_d,))
+                    pm = {str(s): float(c) for s, c in
+                          zip(pp["symbol"], pp["close"], strict=False)}
+                    pct = [((float(c) / pm[str(s)] - 1.0)
+                            if str(s) in pm and pm[str(s)] else None)
+                           for s, c in zip(pos["symbol"], pos["close"], strict=False)]
+                entry["positions"] = [
+                    {"symbol": str(t.symbol), "shares": float(t.shares),
+                     "close": (float(t.close) if pd.notna(t.close) else None),
+                     "weight": (float(t.weight) if pd.notna(t.weight) else None),
+                     "pct": p}
+                    for t, p in zip(pos.itertuples(index=False), pct, strict=False)] if len(pos) else []
+                entry["n_pos"] = int(len(pos))
+                fills = pd.read_sql("SELECT symbol, side, qty, price, status FROM trade_log "
+                                    "WHERE fill_date = ? ORDER BY id", con,
+                                    params=(date,))
+                entry["fills"] = [
+                    {"symbol": str(t.symbol), "side": str(t.side),
+                     "qty": float(t.qty), "price": float(t.price),
+                     "status": str(t.status)}
+                    for t in fills.itertuples(index=False)] if len(fills) else []
+            con.close()
+        except Exception as e:  # noqa: BLE001
+            entry["err"] = str(e)[:80]
+        rp = STORE_DIR / "reports" / cfg["reports"] / f"{date}.md"
+        entry["report"] = rp.read_text(encoding="utf-8") if rp.exists() else None
+        out["accounts"].append(entry)
+    ml = STORE_DIR / "logs" / "mail.log"
+    if ml.exists():
+        out["mail"] = any(ln.split("\t")[0] == date
+                          for ln in ml.read_text(
+                              encoding="utf-8", errors="ignore").splitlines())
+    return out
+
+
 def _job_cmd(name: str) -> list:
     """任务名 -> 命令行。D-045：把"只更新行情"和"跑完整每日流程（含发信）"分开。"""
     py = sys.executable
@@ -1779,6 +2028,8 @@ _GET_ROUTES: dict = {
     "/api/limit_watch":      lambda q: limit_watch(),
     "/api/regime":           lambda q: regime(),
     "/api/reports":          lambda q: {"dates": reports(_acc(q))},
+    "/api/calendar":        lambda q: calendar_data(_qparam(q, "month", "")),
+    "/api/day_detail":     lambda q: day_detail(_qparam(q, "date", "")),
     "/api/report":           lambda q: {"text": report_text(_acc(q),
                                                             _qparam(q, "date", ""))},
     "/api/run/status":       lambda q: job_status(),
@@ -1847,6 +2098,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", cache)
         if cookie:
             self.send_header("Set-Cookie", cookie)
+        renew = getattr(self, "_renew_cookie", None)      # D-105 滑动续期
+        if renew:
+            self.send_header("Set-Cookie", renew)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1855,7 +2109,19 @@ class Handler(BaseHTTPRequestHandler):
         if "qd_session=" not in c:
             return False
         tok = c.split("qd_session=", 1)[1].split(";", 1)[0].strip()
-        return _check_token(tok)
+        ok = _check_token(tok)
+        # D-105 滑动续期：token 有效但 24h 内到期 → 顺手换发新 7 天 token。
+        # 控制台是"常年开着的标签页"，固定 TTL 会在第 7 天突然全体 401（2026-11-25
+        # 实录：更新行情 401，页面还停在 SPA 里、没有任何回登录的路径）。
+        if ok:
+            try:
+                exp = int(tok.split(".", 1)[0])
+                if exp - time.time() < 24 * 3600:
+                    self._renew_cookie = (f"qd_session={_make_token()};"
+                                          f" Max-Age={SESSION_TTL}; Path=/")
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
 
     def _audit(self, action: str, detail: str = "") -> None:
         AUDIT.parent.mkdir(parents=True, exist_ok=True)
