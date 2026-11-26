@@ -60,7 +60,12 @@ def is_configured() -> bool:
 
 
 def send_report(subject: str, body: str, to: str | None = None) -> bool:
-    """发送纯文本邮件；未配置或失败返回 False（不影响主流程）。"""
+    """发送纯文本邮件；未配置或失败返回 False（不影响主流程）。
+
+    D-101：成功发送后追加一行到 data/store/logs/mail.log（日期\t主题\t收件人）——
+    日历面板据此显示"当日邮件已发"；此前邮件只有控制台回显、无持久痕迹，
+    11-23 缺邮件这种事要等用户翻收件箱才发现。
+    """
     c = config()
     if not (c["user"] and c["password"]):
         print("[notifier] 未配置 SMTP_USER/SMTP_PASS，跳过邮件推送")
@@ -76,6 +81,15 @@ def send_report(subject: str, body: str, to: str | None = None) -> bool:
             s.login(c["user"], c["password"])
             s.sendmail(c["user"], [to], msg.as_string())
         print(f"[notifier] 邮件已发送 -> {to}")
+        try:
+            import datetime as _dt
+            from config import STORE_DIR as _STORE
+            log = _STORE / "logs" / "mail.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(f"{_dt.date.today().isoformat()}\t{subject}\t{to}\n")
+        except Exception:  # noqa: BLE001  日志失败不影响发送结果
+            pass
         return True
     except Exception as e:  # noqa: BLE001
         print(f"[notifier] 邮件发送失败: {type(e).__name__}: {e}")

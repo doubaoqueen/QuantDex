@@ -72,6 +72,52 @@ def _update_minutes(symbols, store) -> None:
                 print(f"[minute] 5 分钟线更新失败（不影响后续流程）: {e}")
 
 
+def _ledger_gap_days(store, lookback: int = 30) -> list[tuple[str, list[str]]]:
+    """交易日有行情分区、但任一账户缺快照的日期（D-101）。
+
+    11-23 事故：19:00 任务未触发 → 行情缺口次日被 02b 修复，但流水线只处理
+    "最新数据日"，账本快照/日报/邮件整日静默消失。此守卫让缺口在**当晚**
+    的日志与邮件标题上可见（不再等用户翻净值曲线才发现空洞）。
+    """
+    import sqlite3
+
+    import pandas as pd
+
+    from src.strategies.registry import enabled_accounts as _ea
+    cal = pd.to_datetime(
+        pd.read_parquet(STORE_DIR / "meta" / "trade_calendar.parquet")["date"])
+    snaps: dict[str, set] = {}
+    firsts: dict[str, str] = {}
+    last = pd.Timestamp("2000-01-01")
+    for _k, cfg in _ea().items():
+        con = sqlite3.connect(
+            f"file:{STORE_DIR / 'sim' / cfg['ledger']}?mode=ro", uri=True)
+        try:
+            ds = set(pd.read_sql(
+                "SELECT DISTINCT date FROM account_snapshot", con)["date"])
+        finally:
+            con.close()
+        snaps[cfg["ledger"]] = ds
+        if ds:
+            firsts[cfg["ledger"]] = min(ds)
+            last = max(last, pd.Timestamp(max(ds)))
+    if last == pd.Timestamp("2000-01-01"):
+        return []
+    window = [d for d in sorted(cal) if last - pd.Timedelta(days=45) < d <= last]
+    window = window[-lookback:]
+    out: list[tuple[str, list[str]]] = []
+    for d in window:
+        ds = str(d.date())
+        part = STORE_DIR / "market" / "daily_by_date" / f"{ds}.parquet"
+        if not part.exists():
+            continue        # 行情缺 = 02b 的事，有 gap repair 兜底
+        miss = [k for k, ds_set in snaps.items()
+                if k in firsts and ds > firsts[k] and ds not in ds_set]
+        if miss:
+            out.append((ds, miss))
+    return out
+
+
 def main() -> None:
     import os
 
@@ -119,14 +165,62 @@ def main() -> None:
 
     print("")
 
+    from src.live.pipeline import _load_panel
     from src.strategies.registry import enabled_accounts
     results = []
+    backfilled: list[str] = []          # D-102：本次自动补回的交易日
+    _panels: dict = {}                  # 面板按策略缓存（corrected/topk 同源）
+
+    def _panel_for(strategy: str):
+        k = "dividend" if strategy == "dividend" else "base"
+        if k not in _panels:
+            _panels[k] = _load_panel(store, "000300",
+                                       with_dividend=(k == "dividend"))
+        return _panels[k]
+
     for key, cfg in enabled_accounts().items():
+        # D-102 自动补流水：账本落后于数据面 N 个交易日时，先把缺口日逐日
+        # 重放（面板截断到当日、挂单按当日开盘撮合、当日若是调仓日照常下单），
+        # 再跑最新日——人在不在、漏一天两天，净值/日报/邮件都不再有空洞。
+        # 幂等：快照 INSERT OR REPLACE、已成交订单不再是 pending 不会重复撮合。
+        try:
+            import sqlite3 as _sq
+
+            import pandas as _pd
+            panel = _panel_for(cfg["strategy"])
+            latest = _pd.Timestamp(panel["date"].max())
+            con = _sq.connect(
+                f"file:{STORE_DIR / 'sim' / cfg['ledger']}?mode=ro", uri=True)
+            try:
+                have = set(_pd.read_sql(
+                    "SELECT DISTINCT date FROM account_snapshot", con)["date"])
+            finally:
+                con.close()
+            if have:
+                floor = _pd.Timestamp(min(have))
+                miss = sorted(d for d in _pd.DatetimeIndex(panel["date"].unique())
+                              if floor < d < latest and str(d.date()) not in have)
+                for d in miss:
+                    sub = panel[panel["date"] <= d]
+                    rb = run_pipeline(
+                        capital=cfg["capital"], push=False,
+                        db_path=STORE_DIR / "sim" / cfg["ledger"],
+                        label=cfg["reports"], strategy=cfg["strategy"],
+                        max_positions=cfg["max_positions"], _panel=sub)
+                    if rb.get("date"):
+                        backfilled.append(f"{key} {rb['date']}")
+                        print(f">> [auto-backfill] {key} 补跑 {rb['date']}"
+                              f"（nav {rb.get('nav') or float('nan'):,.2f}）")
+        except Exception as e:  # noqa: BLE001  补跑失败不拦最新日；缺口守卫会兜底告警
+            import traceback
+            traceback.print_exc()
+            print(f">> [auto-backfill] {key} 补跑失败（继续跑最新日）: {e}")
         try:
             r = run_pipeline(capital=cfg["capital"], push=False,
                              db_path=STORE_DIR / "sim" / cfg["ledger"],
                              label=cfg["reports"], strategy=cfg["strategy"],
-                             max_positions=cfg["max_positions"])
+                             max_positions=cfg["max_positions"],
+                             _panel=_panel_for(cfg["strategy"]))
         except Exception as e:  # noqa: BLE001  R3-25：单账户失败不拖垮其余账户与合并邮件
             import traceback
             traceback.print_exc()
@@ -134,6 +228,19 @@ def main() -> None:
                  "day_ret": None, "cum_ret": None,
                  "report_text": f"# 账户 {key} 流水线失败：{e}"}
         results.append((cfg["group"], r))
+
+    # D-101：账本缺口守卫——交易日有行情但没快照（任务未触发/被静默跳过），
+    # 当晚就必须看见，不能再等净值曲线出空洞（11-23 教训）
+    try:
+        ledger_gaps = _ledger_gap_days(store)
+    except Exception as e:  # noqa: BLE001  守卫本身不许把日更打挂
+        ledger_gaps = []
+        print(f">> [gap-ledger] 缺口检查失败（不影响流程）: {e}")
+    if ledger_gaps:
+        for ds, miss in ledger_gaps:
+            print(f">> [gap-ledger] ⚠️ {ds} 有行情但账本缺快照：{', '.join(miss)}")
+        print(">> [gap-ledger] 用 python scripts/54_backfill_day.py 补跑这些日子"
+              "（幂等，含补发邮件）")
 
     # D-059：自检/审计异常必须在"推送标题与退出码"两个层面可见——
     # 事故复盘教训 4："异常值要当信号"，只写进日报文本等于没人响应。
@@ -185,6 +292,9 @@ def main() -> None:
                 {"title": t, "text": r["report_text"], "nav": r["nav"],
                  "day_ret": r.get("day_ret"), "cum_ret": r.get("cum_ret")}
                 for t, r in results])
+            if backfilled:   # D-102：补回的日子写进邮件正文，收件人一眼可见
+                body = ("> ⚠️ 本次运行自动补回缺失交易日：" + "、".join(backfilled) +
+                        "（按各日收盘价重估，含当日撮合）\n\n" + body)
             if not is_configured():
                 print("\n>> SMTP 未配置，跳过合并日报推送")
             elif "--dry-push" in sys.argv:
@@ -196,6 +306,8 @@ def main() -> None:
                     subj = f"⚠️自检异常 {subj}"
                 elif audit_bad:
                     subj = f"⚠️审计异常 {subj}"
+                elif ledger_gaps:
+                    subj = f"⚠️账本缺口 {subj}"
                 ok = send_report(subj, body)
                 if ok:
                     combine_fail.unlink(missing_ok=True)
