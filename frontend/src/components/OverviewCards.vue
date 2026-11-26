@@ -10,11 +10,11 @@ const shortName = { large: '大账户', small: '小账户', div: '红利', topk:
 <template>
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
     <div v-for="a in accounts" :key="a.key"
-         class="cursor-pointer rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur transition"
+         class="cursor-pointer qd-card qd-card--hover transition"
          :class="selected === a.key ? 'ring-2 ring-sky-500' : 'hover:ring-1 hover:ring-slate-300'"
          @click="emit('select', a.key)">
       <div class="flex items-center justify-between">
-        <span class="text-xs font-medium text-slate-500">{{ a.label }}</span>
+        <span class="qd-title">{{ a.label }}</span>
         <span v-if="selected===a.key" class="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] text-sky-700">当前</span>
       </div>
       <template v-if="overviews && overviews[a.key] && !overviews[a.key].empty">

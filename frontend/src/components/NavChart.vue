@@ -68,7 +68,7 @@ watch(() => props.account, render)
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="mb-1 flex items-center justify-between">
       <span class="text-sm font-semibold">净值曲线 <span class="ml-1 text-xs font-normal text-slate-400">{{ label }} vs 沪深300</span></span>
     </div>

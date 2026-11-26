@@ -98,7 +98,7 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
 </script>
 
 <template>
-  <div class="flex h-full flex-col rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="flex h-full flex-col qd-card qd-card--hover">
     <div class="mb-2 flex items-center gap-2">
       <span class="text-sm font-semibold">订单</span>
       <div class="ml-auto flex overflow-hidden rounded-lg border border-slate-300 text-xs">
@@ -247,7 +247,7 @@ const shownTrades = computed(() => (props.trades || []).slice(0, 30))
     <!-- 人工挂单 -->
     <div class="mt-auto space-y-2 border-t border-slate-100 pt-3">
       <div class="flex items-center gap-2">
-        <span class="text-xs font-medium text-slate-500">人工挂单（T+1 开盘撮合 · {{ account==='large' ? '大账户' : '小账户' }}）</span>
+        <span class="qd-title">人工挂单（T+1 开盘撮合 · {{ account==='large' ? '大账户' : '小账户' }}）</span>
         <span v-if="lookup && lookup.name" class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
           {{ lookup.name }}<template v-if="lookup.industry"> · {{ lookup.industry }}</template>
           <template v-if="lookup.close != null"> · {{ fmt.n(lookup.close) }} 元</template>

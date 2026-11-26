@@ -76,7 +76,7 @@ onUnmounted(() => { window.removeEventListener('keydown', onKey); chart?.dispose
   <Teleport to="body">
     <div v-if="req" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
          @click.self="close">
-      <div class="w-full max-w-3xl rounded-xl bg-white p-4 shadow-2xl">
+      <div class="w-full max-w-3xl rounded-2xl bg-white p-5 shadow-2xl">
         <div class="mb-2 flex flex-wrap items-baseline gap-2">
           <span class="text-base font-bold">{{ req.name || req.ctx?.name || detail?.name || req.symbol }}</span>
           <span class="text-xs text-slate-400">{{ req.symbol }}<template v-if="detail && detail.industry"> · {{ detail.industry }}</template></span>

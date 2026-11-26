@@ -72,7 +72,7 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
 </script>
 
 <template>
-  <div class="h-full rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="h-full qd-card qd-card--hover">
     <div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-sm font-semibold">持仓</span>
       <span class="text-xs text-slate-400">{{ ({large:'大账户',small:'小账户',div:'红利账户',topk:'换手账户'})[account] }} · {{ (rows||[]).length }} 只</span>
@@ -89,7 +89,7 @@ function weightW(w) { return ((Number(w) || 0) * 100).toFixed(1) + '%' }
 
     <!-- 当日涨跌停：封板意味着当日买卖都会受限（撮合已按涨跌停拒单） -->
     <div v-if="limitRows.length" class="mb-2 flex flex-wrap items-center gap-1.5">
-      <span class="text-xs font-medium text-slate-500">今日封板</span>
+      <span class="qd-title">今日封板</span>
       <span v-for="r in limitRows" :key="r.symbol"
             class="tabular cursor-pointer rounded-full px-2 py-0.5 text-[11px] transition hover:opacity-80"
             :class="r.limit === '涨停' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'"

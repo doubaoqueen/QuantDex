@@ -4,7 +4,7 @@ defineProps({ rows: Array, account: String })
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="mb-2 flex items-center gap-2">
       <span class="text-sm font-semibold">每日操作记录</span>
       <span class="text-xs text-slate-400">一天一条 · {{ account === 'large' ? '大账户' : '小账户' }}</span>

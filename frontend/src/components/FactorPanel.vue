@@ -65,7 +65,7 @@ function rawText(key, v) {
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/80 p-3 backdrop-blur">
+  <div class="qd-card qd-card--hover p-3">
     <div class="mb-2 flex flex-wrap items-baseline gap-2">
       <h3 class="text-sm font-semibold text-slate-800">因子</h3>
       <span class="text-[11px] text-slate-400">

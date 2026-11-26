@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue'
 import { api, fmt } from './api.js'
 import OverviewCards from './components/OverviewCards.vue'
@@ -14,8 +14,10 @@ import FactorPanel from './components/FactorPanel.vue'
 import OrdersPanel from './components/OrdersPanel.vue'
 import RegimeCard from './components/RegimeCard.vue'
 import LimitWatch from './components/LimitWatch.vue'
+import CalendarPanel from './components/CalendarPanel.vue'
+import DayDetailModal from './components/DayDetailModal.vue'
 import StrategyOutlook from './components/StrategyOutlook.vue'
-import ReportViewer from './components/ReportViewer.vue'
+import TodayBrief from './components/TodayBrief.vue'
 import OpsTable from './components/OpsTable.vue'
 import JobLog from './components/JobLog.vue'
 
@@ -70,6 +72,39 @@ provide('kline', {
     klineReq.value = { symbol, ctx, name, account: account.value }
   },
 })
+
+// 日历点选（D-103）：点某交易日 → 弹出该日四账户全景（净值/持仓/成交/日报）
+const dayReq = ref(null)
+
+// D-114 方案 A：控制台二级子页（总览/持仓/策略/复盘），默认总览。
+// 日报面板被踢出控制台（用户裁决：功能与其他面板重复）——摘要由 TodayBrief
+// 承担，全文由日历点选（DayDetailModal）承担。
+const consoleView = ref('overview')
+const consoleTabs = [
+  { key: 'overview', label: '总览' },
+  { key: 'positions', label: '持仓' },
+  { key: 'strategy', label: '策略' },
+  { key: 'review', label: '复盘' },
+]
+
+// 返回顶部胶囊（交互反馈包）：滚动超过一屏后出现
+const showTop = ref(false)
+function onScroll() { showTop.value = window.scrollY > 640 }
+function toTop() { window.scrollTo({ top: 0, behavior: 'smooth' }) }
+onMounted(() => window.addEventListener('scroll', onScroll, { passive: true }))
+onUnmounted(() => window.removeEventListener('scroll', onScroll))
+// 切主视图/子页都回到页首（D-116）：内容区过渡期间高度会先塌再涨，
+// 若停留在深滚动位置会被浏览器钳制 scrollTop 造成"上蹿下跳"——先回顶，抖动消失
+watch(view, () => { window.scrollTo({ top: 0 }); onScroll() })
+
+// 切子页：先瞬时回顶再换内容（D-116 抖动修复）——避免过渡期高度塌缩时
+// 浏览器钳制滚动位置造成的上蹿下跳
+function switchConsole(k) {
+  if (k === consoleView.value) return
+  window.scrollTo({ top: 0 })
+  consoleView.value = k
+  onScroll()
+}
 
 // ---------------------------------------------------------------- 主题色
 // 规则：选中账户的持仓——上涨市值占比决定红色覆盖比例，平均涨幅决定鲜艳度；绿色同理。
@@ -180,48 +215,44 @@ function cumText(o) {
   <!-- 主题背景：软边渐变（末端渐隐到 0）+ scaleY 占比 + 透明度=鲜艳度，全程 GPU 合成 -->
   <div class="theme-layer" :style="{
     transform: `scaleY(${themeView.red.toFixed(4)})`,
-    background: 'linear-gradient(180deg, rgba(224,49,49,0.9) 0%, rgba(224,49,49,0.32) 55%, rgba(224,49,49,0) 100%)',
+    background: 'linear-gradient(180deg, rgba(224,49,49,0.85) 0%, rgba(224,49,49,0.28) 55%, rgba(224,49,49,0) 100%)',
     opacity: redOpacity
   }"></div>
   <div class="theme-layer theme-layer--bottom" :style="{
     transform: `scaleY(${themeView.green.toFixed(4)})`,
-    background: 'linear-gradient(0deg, rgba(5,150,105,0.9) 0%, rgba(5,150,105,0.32) 55%, rgba(5,150,105,0) 100%)',
+    background: 'linear-gradient(0deg, rgba(5,150,105,0.85) 0%, rgba(5,150,105,0.28) 55%, rgba(5,150,105,0) 100%)',
     opacity: greenOpacity
   }"></div>
 
   <div class="min-h-screen text-slate-800">
-    <!-- 量化学院视图（独立于控制台数据面板） -->
-    <SchoolView v-if="view==='school'" class="fixed inset-0 z-40 overflow-auto bg-slate-900" @back="view='console'" />
-    <ResearchView v-if="view==='research'" class="fixed inset-0 z-40 overflow-auto bg-slate-900" @back="view='console'" />
-    <div v-else>
-    <!-- 顶栏 -->
-    <header class="sticky top-0 z-20 border-b border-slate-200/70 bg-white/80 backdrop-blur">
-      <div class="mx-auto flex max-w-[1400px] flex-wrap items-center gap-3 px-4 py-2.5">
-        <h1 class="flex items-center gap-2 text-base font-bold">
-          <button :class="view==='console' ? 'text-white' : 'text-slate-400'"
-                  class="rounded px-1 transition" @click="view='console'">控制台</button>
-          <span class="text-slate-600">/</span>
-          <button :class="view==='school' ? 'text-white' : 'text-slate-400'"
-                  class="rounded px-1 transition" @click="view='school'">量化学院</button>
-          <span class="text-slate-600">/</span>
-          <button :class="view==='research' ? 'text-white' : 'text-slate-400'"
-                  class="rounded px-1 transition" @click="view='research'">研究室</button>
-        </h1>
+    <!-- 顶栏（D-106 重设计）：白底 + 品牌字标 + 分段标签导航，视图切换不再覆盖 -->
+    <header class="sticky top-0 z-20 border-b border-slate-200/70 bg-white/85 backdrop-blur">
+      <div class="mx-auto flex max-w-[1440px] flex-wrap items-center gap-3 px-6 py-2.5">
+        <span class="qd-wordmark text-lg select-none">QuantDex</span>
+        <nav class="flex items-center gap-1">
+          <button class="qd-tab" :class="view==='console' && 'qd-tab--active'"
+                  @click="view='console'">控制台</button>
+          <button class="qd-tab" :class="view==='school' && 'qd-tab--active'"
+                  @click="view='school'">量化学院</button>
+          <button class="qd-tab" :class="view==='research' && 'qd-tab--active'"
+                  @click="view='research'">研究室</button>
+        </nav>
+
         <div class="group relative">
-          <button class="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm hover:border-sky-400"
+          <button class="qd-btn qd-btn--ghost"
                   @click="openGroup = openGroup ? null : 'root'">
             <span>{{ shortStrategy(currentStrategy) }}</span>
-            <span class="text-xs text-slate-500">{{ accLabel }}</span>
+            <span class="text-[11px] font-normal text-slate-400">{{ accLabel }}</span>
             <span class="text-[10px] text-slate-400 transition-transform duration-200"
                   :class="(openGroup || menuOpen) && 'rotate-180'">▼</span>
           </button>
-          <!-- 一级：全部策略（悬停触发按钮或面板内均保持展开） -->
+          <!-- 一级：全部策略 -->
           <div v-if="openGroup === 'root'" class="fixed inset-0 z-30" @click="openGroup = null; subOpen = null"></div>
-          <div class="invisible absolute left-0 z-40 mt-1.5 w-52 -translate-y-1 rounded-xl border border-slate-200 bg-white p-1.5 opacity-0 shadow-2xl transition-all duration-150
+          <div class="invisible absolute left-0 z-40 mt-1.5 w-52 -translate-y-1 rounded-2xl bg-white p-1.5 opacity-0 shadow-xl transition-all duration-150
                       group-hover:visible group-hover:translate-y-0 group-hover:opacity-100"
                :class="openGroup === 'root' ? 'visible translate-y-0 opacity-100' : ''">
             <div v-for="g in strategyGroups" :key="g.name" class="group/sub relative">
-              <button class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition"
+              <button class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm transition"
                       :class="isGroupActive(g) ? 'bg-slate-100 font-semibold' : 'hover:bg-slate-50'"
                       @click="subOpen = subOpen === g.name ? null : g.name">
                 <span class="flex items-center gap-1.5">
@@ -232,8 +263,8 @@ function cumText(o) {
                 <span class="text-[10px] text-slate-400"
                       :class="subOpen === g.name && 'text-sky-500'">▸</span>
               </button>
-              <!-- 二级：该策略的账户（悬停策略行向右弹出） -->
-              <div class="invisible absolute left-full top-0 z-40 ml-1.5 w-64 -translate-x-1 rounded-xl border border-slate-200 bg-white p-2 opacity-0 shadow-2xl transition-all duration-150
+              <!-- 二级：该策略的账户 -->
+              <div class="invisible absolute left-full top-0 z-40 ml-1.5 w-64 -translate-x-1 rounded-2xl bg-white p-2 opacity-0 shadow-xl transition-all duration-150
                           group-hover/sub:visible group-hover/sub:translate-x-0 group-hover/sub:opacity-100"
                    :class="subOpen === g.name ? 'visible translate-x-0 opacity-100' : ''">
                 <div class="px-2 pb-1 pt-1.5 text-[11px] font-medium tracking-wide text-slate-400">
@@ -241,7 +272,7 @@ function cumText(o) {
                 </div>
                 <button v-for="a in g.accs" :key="a.key"
                         @click="switchAccount(a.key); openGroup = null; subOpen = null"
-                        class="mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm text-white shadow-sm transition hover:brightness-110"
+                        class="mb-1 flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-white shadow-sm transition hover:brightness-110"
                         :class="rowCls(overviews[a.key])">
                   <span class="flex items-center gap-1.5 font-medium">
                     <span class="w-4">{{ account === a.key ? '✓' : '' }}</span>{{ a.label }}
@@ -255,20 +286,19 @@ function cumText(o) {
         </div>
 
         <span class="hidden text-xs text-slate-500 md:inline">{{ accLabel }}</span>
-                <div class="ml-auto flex items-center gap-2">
+        <div class="ml-auto flex items-center gap-2">
           <span v-if="freshness && !freshness.error"
-                class="rounded-full px-2.5 py-1 text-xs"
+                class="qd-chip"
                 :title="freshness.last_auto ? `上次自动更新：${freshness.last_auto}` : '本次会话还没触发过自动更新'"
                 :class="freshness.stale ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'">
             数据：{{ freshness.last_closed }} · {{ freshness.up_to_date }}/{{ freshness.sample }} 已更新
           </span>
           <span v-if="freshness && freshness.missing_reports && freshness.missing_reports.length"
-                class="rounded-full bg-orange-100 px-2.5 py-1 text-xs text-orange-800"
+                class="qd-chip bg-orange-100 text-orange-800"
                 :title="`未生成日报的账户：${freshness.missing_reports.join('、')}（打开服务会自动补跑并合并发信）`">
             日报待补 {{ freshness.missing_reports.length }}
           </span>
-          <button class="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-700"
-                  @click="loadAll(); say('已刷新')">刷新</button>
+          <button class="qd-btn qd-btn--primary" @click="loadAll(); say('已刷新')">刷新</button>
         </div>
       </div>
       <!-- 市场温度条：红/绿宽度 = 持仓涨/跌市值占比 -->
@@ -279,67 +309,86 @@ function cumText(o) {
       </div>
     </header>
 
-    <main class="mx-auto max-w-[1400px] space-y-4 px-4 py-4">
-      <!-- 账户卡 + 市场状态 -->
-      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div class="lg:col-span-2">
-          <OverviewCards :accounts="accounts" :overviews="overviews" :selected="account"
-                         @select="switchAccount" />
-        </div>
-        <RegimeCard :regime="regime" />
+    <!-- 内容区：三个视图共用一个文档流（不再 fixed 覆盖） -->
+    <main class="mx-auto max-w-[1440px] px-6 py-6">
+      <!-- 二级子页导航（D-114）：放在过渡层之外——切子页时导航不闪烁（D-115） -->
+      <div v-if="view === 'console'" class="sticky top-[60px] z-10 -mx-1 mb-4 flex flex-wrap items-center gap-1.5 rounded-2xl bg-white/85 px-2 py-1.5 backdrop-blur shadow-sm">
+        <button v-for="t in consoleTabs" :key="t.key" class="qd-subtab"
+                :class="consoleView === t.key && 'qd-subtab--active'"
+                @click="switchConsole(t.key)">{{ t.label }}</button>
+        <span class="ml-auto hidden text-[11px] text-slate-400 md:inline">{{ accLabel }}</span>
       </div>
 
-      <!-- 涨跌停观察（全池视角，D-063）：持仓徽章只在触板时可见，这里补市场视角 -->
-      <LimitWatch />
-
-      <!-- 策略动向（影子调仓，D-072）：打开 20 日调仓之间的黑箱——只展示，不构成建议 -->
-      <StrategyOutlook :account="account" />
-
-      <!-- 开户前体检（D-068 构想一 / D-076 v2）：预算+承受力 → 约束满足式档位推荐（D-098 校准） -->
-      <PreflightCheck />
-
-      <!-- 净值曲线 -->
-      <NavChart :account="account" :label="accLabel" />
-
-      <!-- 回测与样本外（原 15_dashboard 的职能） -->
-      <BacktestPanel :account="account" />
-
-      <!-- 持仓 + 订单 -->
-      <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div class="xl:col-span-2">
-          <PositionsTable :rows="positions" :account="account" :alerts="alerts" :orders="orders" />
+      <Transition name="qd-view" mode="out-in">
+      <div :key="view + ':' + (view === 'console' ? consoleView : '')">
+      <template v-if="view === 'console'">
+        <div v-if="consoleView === 'overview'" class="space-y-5">
+          <!-- 总览（默认）：打开 3 秒知道"今天怎么样" -->
+          <div class="grid grid-cols-1 gap-5 lg:grid-cols-3">
+            <div class="lg:col-span-2">
+              <OverviewCards :accounts="accounts" :overviews="overviews" :selected="account"
+                             @select="switchAccount" />
+            </div>
+            <RegimeCard :regime="regime" />
+          </div>
+          <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <TodayBrief :account="account" @open="dayReq = $event" />
+            <CalendarPanel @pick="dayReq = $event" />
+          </div>
+          <NavChart :account="account" :label="accLabel" />
         </div>
-        <OrdersPanel :orders="orders" :trades="trades" :account="account"
-                     @changed="loadAccountScoped" />
+
+        <div v-else-if="consoleView === 'positions'" class="space-y-5">
+          <!-- 持仓：管仓位 -->
+          <div class="grid grid-cols-1 gap-5 xl:grid-cols-3">
+            <div class="xl:col-span-2">
+              <PositionsTable :rows="positions" :account="account" :alerts="alerts" :orders="orders" />
+            </div>
+            <OrdersPanel :orders="orders" :trades="trades" :account="account"
+                         @changed="loadAccountScoped" />
+          </div>
+        </div>
+
+        <div v-else-if="consoleView === 'strategy'" class="space-y-5">
+          <!-- 策略：看选股逻辑 -->
+          <StrategyOutlook :account="account" />
+          <LimitWatch />
+          <PreflightCheck />
+          <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <CandidatesPanel :account="account" />
+            <FactorPanel :account="account" />
+          </div>
+        </div>
+
+        <div v-else-if="consoleView === 'review'" class="space-y-5">
+          <!-- 复盘：查历史与验证（日报面板已按用户裁决移除——
+               摘要在总览「今日要点」，全文点日历任意交易日查看） -->
+          <BacktestPanel :account="account" />
+          <div class="grid grid-cols-1 gap-5 xl:grid-cols-3">
+            <div class="xl:col-span-2">
+              <OpsTable :rows="ops" :account="account" />
+            </div>
+            <JobLog @done="loadAll" />
+          </div>
+        </div>
+
+        <footer class="pb-8 pt-4 text-center text-xs text-slate-400">
+          QuantDex 本地控制台 · Vue3 + Tailwind · 数据每 15 秒自动刷新 · T+1 开盘撮合口径
+        </footer>
+      </template>
+
+      <SchoolView v-else-if="view === 'school'" @back="view='console'" />
+      <ResearchView v-else-if="view === 'research'" @back="view='console'" />
       </div>
-
-      <!-- 备选标的（全池海选前 15：名称/行业/涨跌停/一手成本） -->
-      <CandidatesPanel :account="account" />
-
-      <!-- 因子（持仓 + 候选的因子原值/截面分位/综合分） -->
-      <FactorPanel :account="account" />
-
-      <!-- 日报 + 操作记录 + 任务 -->
-      <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div class="xl:col-span-2">
-          <ReportViewer :account="account" />
-        </div>
-        <div class="space-y-4">
-          <OpsTable :rows="ops" :account="account" />
-          <JobLog @done="loadAll" />
-        </div>
-      </div>
-
-      <footer class="pb-6 pt-2 text-center text-xs text-slate-400">
-        QuantDex 本地控制台 · Vue3 + Tailwind · 数据每 15 秒自动刷新 · T+1 开盘撮合口径
-      </footer>
+      </Transition>
     </main>
+  </div>
 
-    <div v-if="toast"
-         class="fixed bottom-5 right-5 z-50 rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white shadow-lg">
-      {{ toast }}
-    </div>
-  </div>
+  <!-- 返回顶部胶囊（长页交互反馈包） -->
+  <Transition name="qd-view">
+    <button v-if="showTop" class="qd-top-btn" @click="toTop">↑ 顶部</button>
+  </Transition>
+
   <KlineModal :req="klineReq" @close="klineReq = null" />
-  </div>
+  <DayDetailModal :req="dayReq" @close="dayReq = null" />
 </template>

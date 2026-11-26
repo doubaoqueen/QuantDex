@@ -22,9 +22,9 @@ const rows = computed(() => [
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="flex items-center justify-between">
-      <span class="text-xs font-medium text-slate-500">市场状态</span>
+      <span class="qd-title">市场状态</span>
       <span class="rounded-full px-2.5 py-0.5 text-xs font-semibold text-white" :class="level.color">
         {{ level.text }}
       </span>

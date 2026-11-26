@@ -16,9 +16,9 @@ const rest = (list) => (list || []).length - 12
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="flex items-center justify-between">
-      <span class="text-xs font-medium text-slate-500">涨跌停观察（全池）</span>
+      <span class="qd-title">涨跌停观察（全池）</span>
       <span class="tabular text-xs text-slate-400" v-if="data?.date">{{ data.date }}</span>
     </div>
 

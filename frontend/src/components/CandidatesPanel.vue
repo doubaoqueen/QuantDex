@@ -44,7 +44,7 @@ const industries = computed(() => {
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-sm font-semibold">备选标的</span>
       <span class="text-xs text-slate-400">

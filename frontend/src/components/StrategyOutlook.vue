@@ -48,7 +48,7 @@ const showRows = (list) => (list || []).slice(0, 20)
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="mb-1 flex flex-wrap items-baseline gap-2">
       <h3 class="text-sm font-semibold text-slate-800">策略动向（影子调仓）</h3>
       <span class="tabular text-[11px] text-slate-400" v-if="data?.date">截至 {{ data.date }} · 池 {{ data.pool }} 只</span>

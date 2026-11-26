@@ -1,6 +1,153 @@
 @import "tailwindcss";
 
-/* 主题色动效：背景红/绿层随持仓涨跌过渡（GPU 合成层，软边渐变） */
+/* =====================================================================
+   QuantDex 设计系统（D-106，2026-11-26）——借鉴 Xiaomi MiMo 的设计语言：
+   大量留白 / 白卡片 + 软分层阴影（无描边）/ 胶囊按钮 / 蓝紫渐变主色 /
+   克制的强调色。此前 20 个组件各自为政的 rounded-xl+border+bg-white/90
+   全部收敛到 .qd-card 一个类上；页面统一 #f5f6fa 浅灰底。
+   ===================================================================== */
+
+:root {
+  --qd-primary: #4f6bf7;        /* MiMo 蓝 */
+  --qd-primary-2: #8b5cf6;      /* 渐变紫端 */
+  --qd-grad: linear-gradient(135deg, #4f6bf7 0%, #8b5cf6 100%);
+  --qd-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 4px 16px rgba(15, 23, 42, 0.06);
+  --qd-card-shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.10);
+}
+
+/* ---- 卡片：全站唯一容器风格 ---- */
+.qd-card {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: var(--qd-card-shadow);
+  padding: 1rem 1.25rem;
+  transition: box-shadow 0.25s ease;
+}
+.qd-card--hover:hover { box-shadow: var(--qd-card-shadow-hover); }
+
+/* 卡片标题行：小字标签 + 渐变圆点（替代各面板自己的 text-xs 标题） */
+.qd-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.01em;
+}
+.qd-title::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--qd-grad);
+  flex: none;
+}
+
+/* ---- 按钮：胶囊 ---- */
+.qd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.4rem 0.9rem;
+  transition: filter 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+}
+.qd-btn--primary { background: var(--qd-grad); color: #fff; }
+.qd-btn--primary:hover { filter: brightness(1.08); }
+.qd-btn--ghost { background: #f1f3f9; color: #475569; }
+.qd-btn--ghost:hover { background: #e8ebf4; }
+
+/* ---- 徽章 / 状态胶囊 ---- */
+.qd-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.125rem 0.6rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+/* ---- 导航标签（顶栏）：MiMo 式分段胶囊 ---- */
+.qd-tab {
+  position: relative;
+  border-radius: 9999px;
+  padding: 0.3rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #64748b;
+  transition: color 0.18s ease, background 0.18s ease;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.qd-tab:hover { color: #0f172a; background: #f1f3f9; }
+.qd-tab--active {
+  color: #fff;
+  background: var(--qd-grad);
+  box-shadow: 0 2px 10px rgba(79, 107, 247, 0.35);
+}
+
+/* ---- 品牌字标 ---- */
+.qd-wordmark {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: var(--qd-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---- 二级子页标签（D-114 方案 A）：控制台内部导航，比一级标签更轻 ---- */
+.qd-subtab {
+  border-radius: 9999px;
+  padding: 0.22rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.qd-subtab:hover { color: #0f172a; background: #f1f3f9; }
+.qd-subtab--active {
+  color: #fff;
+  background: var(--qd-grad);
+  box-shadow: 0 2px 8px rgba(79, 107, 247, 0.30);
+}
+
+/* ---- 返回顶部胶囊（长页交互反馈包） ---- */
+.qd-top-btn {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 30;
+  border-radius: 9999px;
+  background: #fff;
+  color: #475569;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.14);
+  padding: 0.55rem 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.qd-top-btn:hover { transform: translateY(-2px); color: #0f172a; }
+
+/* ---- 视图切换过渡（D-107/D-115 修订）：只保留入场淡入；离场瞬时完成。
+   out-in 模式下若离场也带动画，新旧之间会出现"空档帧"——文档高度塌缩 +
+   滚动条出现/消失，正是切子页时"屏幕抖一下"的来源（D-116）。 ---- */
+.qd-view-enter-active { transition: opacity 0.18s ease, transform 0.18s ease; }
+.qd-view-leave-active { transition: none; }
+.qd-view-enter-from { opacity: 0; transform: translateY(10px); }
+.qd-view-leave-to { opacity: 1; }
+
+/* 主题色动效：背景红/绿层随持仓涨跌渐隐渐现（GPU 合成层，软边渐变）
+   （D-052 起的核心巧思，保留：负面空间给情绪，卡片留给数据） */
 .theme-layer {
   position: fixed;
   left: 0; right: 0; top: 0;
@@ -20,10 +167,12 @@
               background-color 1.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; scrollbar-gutter: stable; }
+/* scrollbar-gutter: stable（D-116）：滚动条出现/消失时预留固定槽位，
+   页面宽度不再跳 8px——切子页"横向抖一下"的另一半来源。 */
 body {
-  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-  background: #f6f7f9;
+  font-family: "MiSans", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  background: #f5f6fa;
 }
 
 /* 细滚动条 */

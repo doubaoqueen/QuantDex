@@ -85,7 +85,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-sm font-semibold">回测 · 全过程同轴对比</span>
       <span v-if="data && data.strategy" class="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{{ data.strategy }}</span>

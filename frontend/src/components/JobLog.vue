@@ -67,7 +67,7 @@ onUnmounted(() => clearTimeout(timer))
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="qd-card qd-card--hover">
     <div class="mb-2 flex items-center gap-2">
       <span class="text-sm font-semibold">后台任务</span>
       <span v-if="running" class="live-dot rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">

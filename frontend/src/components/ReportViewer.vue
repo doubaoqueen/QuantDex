@@ -22,7 +22,7 @@ watch(() => props.account, loadDates, { immediate: true })
 </script>
 
 <template>
-  <div class="h-full rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+  <div class="h-full qd-card qd-card--hover">
     <div class="mb-2 flex items-center gap-2">
       <span class="text-sm font-semibold">日报</span>
       <span class="text-xs text-slate-400">{{ account === 'large' ? '大账户' : '小账户' }}</span>
