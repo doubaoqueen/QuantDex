@@ -252,6 +252,10 @@ quantdex_vault/
 frontend/node_modules/
 !frontend/dist/
 
+# 前端构建的本地临时目录（沙箱会话把 TMP 重定向到工作区时产生，
+# esbuild/node 编译缓存，纯缓存可随时删；避免 270 个文件涌进 git status，2026-11-26）
+.tmp/
+
 # 本机启动脚本覆盖（Python 解释器路径，不入库；见 scripts/_bootstrap.bat）
 scripts/python_path.local.bat
 
