@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Parquet 数据仓库：分区存储、读取、增量更新（upsert）、数据注册表。
 
@@ -16,14 +15,21 @@ Parquet 数据仓库：分区存储、读取、增量更新（upsert）、数据
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
 import os
+import time
+from contextlib import contextmanager
 
 import pandas as pd
 
 from config import (
-    MARKET_DIR, META_DIR, VALUATION_DIR, FINANCIAL_DIR,
-    MONEYFLOW_DIR, MACRO_DIR, REGISTRY_PATH, ensure_dirs,
+    FINANCIAL_DIR,
+    MACRO_DIR,
+    MARKET_DIR,
+    META_DIR,
+    MONEYFLOW_DIR,
+    REGISTRY_PATH,
+    VALUATION_DIR,
+    ensure_dirs,
 )
 
 _DIR_MAP = {
@@ -58,7 +64,7 @@ class ParquetStore:
             self._cache.pop(key, None)
 
     # -------------------------------------------------- 路径
-    def _path(self, kind: str, name: str) -> "pd.io.common.PathLike":
+    def _path(self, kind: str, name: str) -> pd.io.common.PathLike:
         if kind not in _DIR_MAP:
             raise KeyError(f"未知数据集类型 kind={kind}，可选: {list(_DIR_MAP)}")
         base = _DIR_MAP[kind]
@@ -77,6 +83,22 @@ class ParquetStore:
             return
         path = self._path(kind, name)
         df.to_parquet(path, index=False, compression="snappy")
+        self._invalidate_cache(path)
+        self._register(kind, name, len(df), source, date_col, df, adjust)
+
+    def write_atomic(self, df: pd.DataFrame, kind: str, name: str,
+                     source: str = "", date_col: str | None = None,
+                     adjust: str = "") -> None:
+        """整表覆盖写入（tmp + os.replace 原子替换）并更新注册表。
+
+        给"边抓边落盘、同时可能被别的进程读"的整表数据集用（按日 ST 标记表，
+        D-118）：断点续抓每满一批就覆盖整表，直写目标路径时读者可能读到半截
+        parquet。行级行情仍走 upsert + 按日分区，不用本入口。
+        """
+        if df is None or len(df) == 0:
+            return
+        path = self._path(kind, name)
+        ParquetStore._write_parquet_atomic(df, path)
         self._invalidate_cache(path)
         self._register(kind, name, len(df), source, date_col, df, adjust)
 
@@ -169,16 +191,31 @@ class ParquetStore:
 
     @staticmethod
     def _write_parquet_atomic(df: pd.DataFrame, path) -> None:
-        """先写临时文件再原子替换（D-059）。
+        """先写临时文件再原子替换（D-059）；Windows 目标被读者占用时重试后降级直写。
 
         注册表是高频读改写的单点文件：直写目标路径时进程中断会留下半截
         parquet（读取方才报错），并发写会互相覆盖丢条目（实测已发生 6 条）。
         os.replace 在同一文件系统上是原子的。
+
+        Windows 降级（D-118）：目标文件被**读者**打开时 os.replace 抛
+        PermissionError（2026-11-26 实测：常驻面板读 meta/st_flag 的同时 61 号
+        脚本落盘，2.4M 行的表只写进第一批就失败）。与 _save_snapshot_cache 同款：
+        短重试后退回直写——此时并发读者可能读到半截，但比丢整批数据好。
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".parquet.tmp")
         df.to_parquet(tmp, index=False)
-        os.replace(tmp, path)
+        for attempt in range(4):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                time.sleep(0.2 * (attempt + 1))
+        df.to_parquet(path, index=False)      # 降级：最后一次直写
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
     def _write_registry_entry(self, kind: str, name: str,
                               entry: pd.DataFrame) -> None:

@@ -20,8 +20,8 @@ import numpy as np
 import pandas as pd
 
 from config import STORE_DIR
-from src.analysis.factors import build_factor_panel
-from src.backtest.portfolio import run_portfolio_backtest
+from src.analysis.factors import build_factor_panel, load_st_flag
+from src.backtest.portfolio import benchmark_total_return, run_portfolio_backtest
 from src.data import financials, universe
 from src.data.market import get_kline, load_price_matrix
 from src.data.storage import ParquetStore
@@ -40,6 +40,7 @@ GRID = [(tn, rb) for tn in (20, 30, 50) for rb in (10, 20, 60)]
 # 这样样本外链能和"固定 50/20 全样本"放在同一条时间轴上比（D-048）。
 TEST_YEARS = list(range(2019, 2027))
 _W_CACHE: dict = {}
+_ST_FLAG: pd.DataFrame | None = None      # D-118：按日 ST 标记（涨跌停判定用）
 
 
 def metrics_of(res: dict, bench_ret: pd.Series) -> dict:
@@ -93,7 +94,9 @@ def run_combo(panel: pd.DataFrame, prices: pd.DataFrame, opens: pd.DataFrame, co
         W, p, fee=0.00025, min_fee=5.0, slippage=0.0005,
         stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
         init_capital=1_000_000.0,
-        open_prices=opens.reindex(p.index))  # D-034 开盘执行
+        open_prices=opens.reindex(p.index),   # D-034 开盘执行
+        statutory_costs=True,                 # D-118：印花税/过户费按成交日法定费率
+        st_flag=_ST_FLAG)                     # D-118：主板 ST 当日按 ±5%
 
 
 def main() -> None:
@@ -110,9 +113,17 @@ def main() -> None:
     div_panel = None
     if strategy == "dividend":
         div_panel = financials.load_dividend_panel(store, symbols)
+    # D-118：默认按**当日** ST 状态剔除（--st-today 回 D-071 旧口径对照）
+    st_mode: bool | str = "today" if "--st-today" in sys.argv else True
+    global _ST_FLAG
+    _ST_FLAG = load_st_flag(store)
     print(f">> 构建 PIT 因子面板（{index_code}，{len(symbols)} 只，strategy={strategy}）...")
-    panel = build_factor_panel(store, symbols, start=START_DATE, exclude_st=("--include-st" not in sys.argv),  # D-071 剔除 ST
+    panel = build_factor_panel(store, symbols, start=START_DATE, exclude_st=st_mode,
                                pit_constituents=pit, dividend_panel=div_panel)
+    _st = panel.attrs.get("st_filter") or {}
+    print(f"   [st] 口径 {_st.get('mode')}：剔除 {_st.get('dropped', 0):,} 行"
+          f"（当日 ST {_st.get('in_st', 0):,} / 回退剔除 {_st.get('fell_back_dropped', 0):,}），"
+          f"表内最新日 {_st.get('as_of')}", flush=True)
     # D-050：价格用**全历史**（不按 PIT 删行），PIT 只用于"能不能买"。
     # 早先 panel.pivot 会留下非成分期间的价格空洞，引擎 ffill 补洞后把几年涨跌
     # 压成重回指数那天的一天假收益，样本外净值被系统性抬高。
@@ -125,7 +136,8 @@ def main() -> None:
           f"价格矩阵 {prices.shape[0]}×{prices.shape[1]}（全历史口径）")
 
     bench = get_kline(index_code, adjust="none", store=store)
-    bench_ret = bench.set_index("date")["close"].pct_change().rename("bench")
+    # D-118：基准改全收益近似（价格指数 + 2%/年股息，D-096 强制口径①）
+    bench_ret = benchmark_total_return(bench.set_index("date")["close"])
 
     # 价格用 qfq（收益已含分红），不再叠加现金分红；见 DECISIONS.md
 

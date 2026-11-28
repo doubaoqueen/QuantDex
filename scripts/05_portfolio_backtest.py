@@ -13,9 +13,13 @@ import _bootstrap  # noqa: F401
 import pandas as pd
 
 from config import STORE_DIR
-from src.analysis.factors import build_factor_panel
+from src.analysis.factors import build_factor_panel, load_st_flag
 from src.analysis.plot import plot_backtest
-from src.backtest.portfolio import portfolio_performance, run_portfolio_backtest
+from src.backtest.portfolio import (
+    benchmark_total_return,
+    portfolio_performance,
+    run_portfolio_backtest,
+)
 from src.data import financials, universe
 from src.data.market import get_kline, load_price_matrix
 from src.data.storage import ParquetStore
@@ -29,6 +33,22 @@ from src.strategies.multi_factor import (
 START_DATE = "20180101"
 
 
+def _print_st_filter(diag: dict | None) -> None:
+    """打印 ST 剔除口径统计（D-118：剔除多少行、是否回退今日名单、表内最新日）。"""
+    if not diag:
+        return
+    if diag.get("mode") == "today":
+        print(f"   [st] 今日名单口径（D-071 旧口径，含前视）：剔除 {diag.get('dropped', 0):,} 行",
+              flush=True)
+        return
+    warn = (f"；⚠️ 有 {diag['symbols_without_record']} 只标的整只无记录"
+            if diag.get("symbols_without_record") else "")
+    print(f"   [st] 按日口径：当日 ST 剔除 {diag.get('in_st', 0):,} 行；"
+          f"表内无记录回退 {diag.get('fell_back', 0):,} 行（其中按今日名单再剔除 "
+          f"{diag.get('fell_back_dropped', 0):,}）；表内最新日 {diag.get('as_of')}{warn}",
+          flush=True)
+
+
 def main() -> None:
     index_code = sys.argv[1] if len(sys.argv) > 1 else "000300"
     top_n = int(sys.argv[2]) if len(sys.argv) > 2 else 50
@@ -37,10 +57,14 @@ def main() -> None:
     store = ParquetStore()
     pit = universe.load_pit_constituents(index_code, store)
     symbols = universe.pit_union_symbols(index_code, store)
+    # D-118：默认按**当日** ST 状态剔除（61 号脚本的 meta/st_flag）；--st-today 回旧口径对照
+    st_mode: bool | str = "today" if "--st-today" in sys.argv else True
+    st_flag = load_st_flag(store)
 
     print(f">> 构建 PIT 因子面板（{index_code}，{len(symbols)} 只历史成分）...")
     panel = build_factor_panel(store, symbols, start=START_DATE,
-                               pit_constituents=pit, exclude_st=("--include-st" not in sys.argv))  # D-071 剔除 ST
+                               pit_constituents=pit, exclude_st=st_mode)
+    _print_st_filter(panel.attrs.get("st_filter"))
     print(f"   面板 {panel['date'].min().date()} ~ {panel['date'].max().date()}，"
           f"{panel['symbol'].nunique()} 只，{len(panel)} 行")
 
@@ -61,7 +85,7 @@ def main() -> None:
     if div_panel is not None:
         panel = build_factor_panel(store, symbols, start=START_DATE,
                                    pit_constituents=pit, dividend_panel=div_panel,
-                                   exclude_st=("--include-st" not in sys.argv))  # D-071
+                                   exclude_st=st_mode)
     print(f">> 策略[{strategy}]：每 {rebalance} 交易日调仓，Top {top_n} 等权")
     if strategy == "legacy":
         W = momentum_lowvol_topn(panel, top_n=top_n, rebalance_days=rebalance)
@@ -88,8 +112,9 @@ def main() -> None:
     try:
         b = get_kline(index_code, adjust="none", store=store)
         b = b.set_index("date")["close"]
-        bench_ret = b.pct_change().rename("bench")
-        print("   基准：", index_code)
+        # D-118：基准改全收益近似（价格指数 + 2%/年股息，D-096 强制口径①）
+        bench_ret = benchmark_total_return(b)
+        print("   基准：", index_code, "（全收益近似：价格指数 + 2%/年股息）")
     except FileNotFoundError:
         print("   [warn] 无指数日线，跳过基准对比（可在 02 脚本补指数后再跑）")
 
@@ -100,7 +125,9 @@ def main() -> None:
         W, prices, fee=0.00025, min_fee=5.0, slippage=0.0005,
         stamp_duty=0.0005, transfer_fee=0.00001, limit_skip=True,
         init_capital=1_000_000.0, benchmark_returns=bench_ret,
-        open_prices=opens)  # T+1 开盘执行=影子盘口径
+        open_prices=opens,             # T+1 开盘执行=影子盘口径
+        statutory_costs=True,          # D-118：印花税/过户费按成交日法定费率
+        st_flag=st_flag)               # D-118：主板 ST 当日按 ±5% 判涨跌停（F-21 回测侧）
     print(f"   保真约束：跳过 {res['n_skipped']} 笔（涨停买不进/跌停卖不出/停牌）")
     c = res["costs"]
     print(f"   成本合计 {c['total']:,.2f} 元（佣金 {c['commission']:,.0f} "

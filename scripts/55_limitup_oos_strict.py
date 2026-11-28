@@ -1,188 +1,197 @@
-"""第 55 步：修正口径的涨停 dip-buy 严格 OOS（D-103，并行会话 D-102 审计的落地执行）。
+"""第 55 步：涨停 dip-buy 事件扫描的严格时间外推（D-118 重写版）。
 
-修正两项（并行会话 D-102 审计发现）：
-  ① 涨停价口径：真实涨停价 = round(昨收 × (1+0.10/0.20), 2)——46/47/48/53/54 号
-     传承的 0.095/0.195 缓冲口径（docstring 写 10%/20% 与实现不符）废弃；
-  ② 换手过滤去未来函数：低换手过滤改用 **T-1 全天换手**（事前可知）——事件日
-     全天换手在 10:00 介入时点不可知（未来函数，D-102 审计①）。
+⚠️ 本脚本 2026-11-21 首版（D-103）的三处实现与预注册规则不符，归档结论因此建立在
+错误证据上（审计见 D-118）：
+  ① 涨停价用 9.5%/19.5% 缓冲口径 → 155/369 的"触板"是伪事件（最高价落在 9.5%~10%）；
+  ② "T-1 换手 < 3%"从分钟线读，而该列全空 → 求和为 0 → 过滤恒通过（等于没过滤）；
+  ③ "T+1 开盘无条件卖"实际实现成 -9%/+14% 止损止盈——归档中位数 -9.20% 就是止损线。
+本版把三条规则下沉到 src/data/limitup.py（带单元测试），脚本只做编排。
 
-规则（预注册冻结，与 D-102 用户定义一致仅修口径）：
-  触板 = bar high ≥ 真实涨停价；介入 = 首触 bar 收盘 < 真实涨停价（炸板即买）
-        或其后首个收盘 < 真实涨停价的 bar（开板确认买入）；介入价 = 该 bar 收盘。
-  过滤：T-1 全天换手 < 3% + 非一字（开盘 < 涨停价）+ 首触 ≤ 10:00。
-  出场 = T+1 开盘无条件卖；净收益扣全成本 20.2bp/回合（COST 误标已更正）。
-裁决（预注册）：混合口径（回封+炸板都算，事前可执行）样本外 2024-26 净均值 > 0
-  且逐日 NW-t ≥ 2 → 通过（小资金卫星仓候选）；否则永久关闭。
-容量代理：开板窗口内成交额合计（可吃到的流动性上限的粗测）。
+预注册规则（D-103 原文，字段级时点全部事前可知）：
+  触板     bar.high >= round(前收 × (1+幅度), 2)，幅度主板 10% / 创科 20%
+  首触     当日第一根触板 bar 的时间 <= 10:00
+  非一字   当日开盘价 < 涨停价（一字板买不到）
+  低换手   **前一日**全天换手 < 3%（当日换手要到收盘才知道，不能用）
+  介入     首触之后（含首触 bar）第一根收盘 < 涨停价的 bar，按该 bar 收盘价成交
+  出场     T+1 开盘无条件卖出（T+1 开盘跌停 → 退化为 T+1 收盘）
+  成本     20.2bp/回合
+
+裁决（预注册）：混合口径（回封 + 炸板都算，事前不知道回不回封）样本外 2024-26
+  净均值 > 0 且逐日 NW-t >= 2 → 通过；否则关闭。
+股票池：沪深300 历史成分并集，按成员期 + 按日 ST 状态过滤（与因子类检验同口径）。
+
+用法：python scripts/55_limitup_oos_strict.py
+产出：research_results/limitup_oos_strict.json + limitup_dip_events.parquet
 """
 import json
 
 import _bootstrap  # noqa: F401
-import numpy as np
 import pandas as pd
 
 from config import STORE_DIR
 from src.analysis.experiments import record
-from src.analysis.factor_test import _newey_west_tstat
 from src.analysis.factors import st_symbol_set
+from src.data import universe
+from src.data.limitup import (
+    COST_RT,
+    FIRST_TOUCH_DEADLINE,
+    LOW_TURNOVER_PCT,
+    cluster_t,
+    scan_universe,
+    summarize,
+)
 from src.data.storage import ParquetStore
 
-COST = 0.00025 * 2 + 0.0005 * 2 + 0.0005 + 0.00001 * 2   # 20.2bp/回合（D-095 误标更正）
-REAL_LIM = {"main": 0.10, "gem": 0.20}
-OUT = STORE_DIR / "research_results" / "limitup_oos_strict.json"
+OUT_JSON = STORE_DIR / "research_results" / "limitup_oos_strict.json"
+OUT_EVENTS = STORE_DIR / "research_results" / "limitup_dip_events.parquet"
+START = "2020-01-01"
 
 
-def _lim_ratio(code: str) -> float:
-    return REAL_LIM["gem"] if code.startswith(("30", "68")) else REAL_LIM["main"]
+def _rule_card() -> str:
+    """把预注册规则的字段级时点打出来（D-102 教训：事前可知是字段级属性）。"""
+    return (
+        f"触板=真实涨停价(按分四舍五入) | 首触<={FIRST_TOUCH_DEADLINE} | 非一字 | "
+        f"T-1 换手<{LOW_TURNOVER_PCT}% | 开板确认价介入 | T+1 开盘卖 | 成本 {COST_RT * 1e4:.1f}bp"
+    )
+
+
+def _self_check(ev: pd.DataFrame, store: ParquetStore) -> list[str]:
+    """启动前的口径自检（防"实现与预注册不符"再次发生）。
+
+    逐条验证**字段语义**而不只是"跑通"（抽样 30 起回读原始数据对照）：
+      ① 出场价必须是 T+1 的开盘价（跌停退化时是 T+1 收盘）；
+      ② 介入价必须低于当日真实涨停价，涨停价必须等于 round(前收×(1+幅度), 2)；
+      ③ t1_turnover 必须等于**前一交易日**的日线换手率（当日换手是未来函数）。
+    """
+    from src.data.limitup import get_minute, limit_ratio, turnover_by_date
+
+    issues = []
+    if len(ev) == 0:
+        return ["事件集为空"]
+    s = ev.head(30)
+    bad_exit = bad_entry = bad_turn = 0
+    for r in s.itertuples():
+        m = get_minute(store, r.symbol)
+        m["dt"] = pd.to_datetime(m["datetime"])
+        m["date"] = m["dt"].dt.normalize()
+        nxt = m[m["date"] == pd.Timestamp(r.exit_date)]
+        if r.exit_fallback:
+            expect = float(nxt["close"].iloc[-1]) if len(nxt) else None
+        else:
+            expect = float(nxt["open"].iloc[0]) if len(nxt) else None
+        if expect is not None and abs(expect - float(r.exit_price)) > 1e-6:
+            bad_exit += 1
+        if float(r.entry) >= float(r.limit_price) - 0.005:
+            bad_entry += 1
+        prev = m[m["date"] < pd.Timestamp(r.date)]
+        if len(prev):
+            pc = float(prev["close"].iloc[-1])
+            if abs(round(pc * (1 + limit_ratio(r.symbol)), 2) - float(r.limit_price)) > 1e-6:
+                bad_entry += 1
+        if pd.notna(r.t1_turnover):
+            turn = turnover_by_date(store, r.symbol)
+            entry_day = pd.Timestamp(r.date).strftime("%Y-%m-%d")
+            prev_days = [d for d in turn if d < entry_day]
+            want = turn[max(prev_days)] if prev_days else None      # 前一日，不是当日
+            if want is not None and abs(float(want) - float(r.t1_turnover)) > 1e-6:
+                bad_turn += 1
+    if bad_exit:
+        issues.append(f"出场价与 T+1 开盘不符 {bad_exit}/30")
+    if bad_entry:
+        issues.append(f"介入价/涨停价口径不符 {bad_entry}/30")
+    if bad_turn:
+        issues.append(f"t1_turnover 与日线前一日换手不符 {bad_turn}/30")
+    return issues
 
 
 def main() -> None:
-    s = ParquetStore()
-    st_syms = st_symbol_set(s)
-    minute_dir = STORE_DIR / "market" / "minute"
-    files = [f for f in sorted(minute_dir.glob("*__5__none.parquet"))
-             if f.name.split("__")[0] not in st_syms]
-    cal = pd.DatetimeIndex(sorted(pd.to_datetime(pd.read_parquet(
-        STORE_DIR / "meta" / "trade_calendar.parquet", columns=["date"])["date"]).unique()))
-    cal_pos = {d: i for i, d in enumerate(cal)}
-    pit = pd.read_parquet(STORE_DIR / "meta" / "pit_constituents_000300.parquet")
-    pit["in_date"] = pd.to_datetime(pit["in_date"])
-    pit["out_date"] = pd.to_datetime(pit["out_date"])
-    pit_g = pit.groupby("symbol")
-    print(f">> 修正口径扫描：{len(files)} 只（真实涨停价 + T-1 换手过滤）", flush=True)
+    store = ParquetStore()
+    print(f">> 预注册规则：{_rule_card()}", flush=True)
+    pit = universe.load_pit_constituents("000300", store)
+    st_flag = store.read_or_empty("meta", "st_flag")
+    if st_flag.empty:
+        print(">> [warn] 无按日 ST 标记表（meta/st_flag）——仅按今日名单剔除 ST，"
+              "请先跑 scripts/61_fetch_st_flag.py", flush=True)
+        today_st = st_symbol_set(store)
+        st_flag = None
+    else:
+        today_st = None
+    names = [f for f in sorted((STORE_DIR / "market" / "minute").glob("*__5__none.parquet"))]
+    codes = [f.name.split("__")[0] for f in names]
+    if today_st:
+        codes = [c for c in codes if c not in today_st]
+    print(f">> 扫描 {len(codes)} 只（PIT 成员期 + 按日 ST 过滤）...", flush=True)
+    ev_all = scan_universe(store, codes, start=START, pit=pit, st_flag=st_flag)
+    print(f"   原始开板确认信号 {len(ev_all)}（未过滤换手）", flush=True)
+    if ev_all.empty:
+        _save({"verdict": "NO_EVENTS", "rule": _rule_card()})
+        return
+    ev = ev_all[ev_all["t1_turnover"] < LOW_TURNOVER_PCT].reset_index(drop=True)
+    print(f"   T-1 换手 < {LOW_TURNOVER_PCT}%：{len(ev)} 起"
+          f"（T-1 换手中位 {ev_all['t1_turnover'].median():.2f}%）", flush=True)
+    ev["entry_year"] = pd.to_datetime(ev["date"]).dt.year
+    issues = _self_check(ev, store)
+    for m in issues:
+        print(f"   ⚠️ 自检：{m}", flush=True)
 
-    events = []
-    done = 0
-    for f in files:
-        code = f.name.split("__")[0]
-        lim_r = _lim_ratio(code)
-        bars = pd.read_parquet(f, columns=["datetime", "open", "high", "low", "close",
-                                           "turnover", "amount"])
-        bars["date"] = pd.to_datetime(bars["datetime"]).dt.normalize()
-        bars = bars.sort_values("datetime")
-        if code in pit_g.groups:
-            rows = pit_g.get_group(code)
-            in_d = pd.to_datetime(rows["in_date"].iloc[0])
-            bars = bars[bars["date"] >= in_d]
-            outs = rows["out_date"].dropna()
-            if len(outs):
-                bars = bars[bars["date"] < pd.to_datetime(outs.iloc[-1])]
-        if len(bars) < 200:
+    res = summarize(ev)
+    print("\n== 预注册规则下的净期望（T+1 开盘卖，扣 20.2bp）==")
+    for label, m in res.items():
+        if m.get("insufficient"):
+            print(f"  {label}: n={m['n']}（不足）")
             continue
+        print(f"  {label}: n={m['n']} 日 {m['dates']} 净均值 {m['mean']:+.2%} "
+              f"中位 {m['median']:+.2%} 胜率 {m['win']:.0%} | 逐日 NW-t {m['nw_t_daily']:+.2f} "
+              f"| 按日聚类 t {cluster_t(_slice(ev, label)):+.2f}", flush=True)
+    print("\n  逐年：")
+    yr = ev.groupby("entry_year")["net"].agg(["size", "mean", "median"])
+    for y, r in yr.iterrows():
+        print(f"    {int(y)}: n={int(r['size']):>4} 净均值 {r['mean']:+.2%} 中位 {r['median']:+.2%}")
+    print("\n  事后分层（仅信息性，不可交易）：")
+    for lab, sub in (("收盘封住", ev[ev["sealed"]]), ("收盘炸板", ev[~ev["sealed"]])):
+        if len(sub):
+            print(f"    {lab}: n={len(sub)} 净均值 {sub['net'].mean():+.2%} "
+                  f"中位 {sub['net'].median():+.2%}")
+    print(f"  扣费前毛均值 {ev['gross'].mean():+.2%}（成本 {COST_RT:.4%}）")
 
-        # 日级骨架：每交易日 prev_close（前交易日收盘）与 prev_turn（T-1 全天换手，事前可知）
-        days = []
-        for d_key, d_bars in bars.groupby("date", sort=True):
-            days.append({"date": d_key, "open": float(d_bars["open"].iloc[0]),
-                         "high": float(d_bars["high"].max()),
-                         "low": float(d_bars["low"].min()),
-                         "close": float(d_bars["close"].iloc[-1]),
-                         "turn": float(d_bars["turnover"].sum()),
-                         "amt": float(d_bars["amount"].sum()),
-                         "o_arr": d_bars["open"].to_numpy(float),
-                         "h_arr": d_bars["high"].to_numpy(float),
-                         "l_arr": d_bars["low"].to_numpy(float),
-                         "c_arr": d_bars["close"].to_numpy(float),
-                         "ft_arr": pd.to_datetime(d_bars["datetime"]).to_numpy()})
-        for i in range(1, len(days)):
-            prev, cur = days[i - 1], days[i]
-            cur["prev_close"] = prev["close"]
-            cur["prev_turn"] = prev["turn"]
-            cur["contig"] = (cal_pos.get(cur["date"], -1) - cal_pos.get(prev["date"], -1)) == 1
-
-        dpos_map = {d["date"]: cal_pos.get(d["date"], -1) for d in days}
-        holding = None
-        cooldown_until = -1
-        for i, cur in enumerate(days):
-            dpos = dpos_map[cur["date"]]
-            if dpos < 0:
-                continue
-            limit_price = (round(cur["prev_close"] * (1 + lim_r), 2)
-                           if cur.get("contig", False) else None)
-
-            # ---- 出场（T+1 起；SL 优先保守；跳空走开盘价）----
-            if holding and i > holding["entry_i"]:
-                sl_p = holding["entry_price"] * 0.91
-                tp_p = holding["entry_price"] * 1.14
-                o, lo_, h = cur["o_arr"], cur["l_arr"], cur["h_arr"]
-                exit_px = exit_kind = None
-                for k in range(len(cur["c_arr"])):
-                    if o[k] <= sl_p:
-                        exit_px, exit_kind = o[k], "SL跳空"
-                        break
-                    if lo_[k] <= sl_p:
-                        exit_px, exit_kind = sl_p, "SL触线"
-                        break
-                    if o[k] >= tp_p:
-                        exit_px, exit_kind = o[k], "TP跳空"
-                        break
-                    if h[k] >= tp_p:
-                        exit_px, exit_kind = tp_p, "TP触线"
-                        break
-                if exit_kind:
-                    events.append({**{k2: holding[k2] for k2 in
-                                      ("kind", "code", "entry_date", "entry_price")},
-                                   "exit_date": str(cur["date"].date()), "exit_price": exit_px,
-                                   "exit_kind": exit_kind,
-                                   "ret": exit_px / holding["entry_price"] - 1.0 - COST,
-                                   "holding_days": dpos - holding["entry_pos"],
-                                   "year": cur["date"].year})
-                    holding = None
-
-            # ---- 介入（空仓 + 非冷却 + 连续交易日 + 事前过滤）----
-            if (holding is None and limit_price is not None and cur.get("contig", False)
-                    and dpos > cooldown_until and cur["prev_turn"] < 3.0
-                    and cur["open"] < limit_price - 0.005):          # 非一字（开盘未封）
-                c_arr = cur["c_arr"]
-                ft_times = pd.DatetimeIndex(cur["ft_arr"]).time
-                touched_idx = np.where((cur["h_arr"] >= limit_price - 0.005)
-                                       & (ft_times <= pd.Timestamp("10:00").time()))[0]
-                if len(touched_idx) == 0:
-                    continue
-                k0 = int(touched_idx[0])
-                # 介入 = 首触后首个收盘 < 涨停价的 bar（炸板即买 / 开板确认）
-                buy_k = next((k for k in range(k0, len(c_arr))
-                              if c_arr[k] < limit_price - 0.005), None)
-                if buy_k is None:
-                    continue                                          # 全程封死 → 买不到
-                holding = {"kind": "DIP", "code": code, "entry_date": str(cur["date"].date()),
-                           "entry_pos": dpos, "entry_price": float(c_arr[buy_k]),
-                           "entry_i": i, "day_amt": float(cur["amt"])}
-        done += 1
-        if done % 150 == 0:
-            print(f"   {done}/{len(files)}", flush=True)
-
-    ev = pd.DataFrame([e for e in events if e["kind"]])
-    print(f"\n事件 {len(ev)} 起")
-    out = {}
-    if len(ev):
-        ev["ret"] = ev["exit_price"] / ev["entry_price"] - 1.0 - COST
-        ev["entry_year"] = pd.to_datetime(ev["entry_date"]).dt.year
-        for label, lo, hi in (("全样本 2020-26", 2020, 2026),
-                              ("样本内 2020-23", 2020, 2023), ("样本外 2024-26", 2024, 2026)):
-            sub = ev[(ev["entry_year"] >= lo) & (ev["entry_year"] <= hi)]
-            if len(sub) < 20:
-                print(f"  {label}: n={len(sub)}（不足）"); continue
-            daily = sub.groupby("entry_date")["ret"].mean().sort_index()
-            tt = float(_newey_west_tstat(daily, 19))
-            sealed = "（事件级 sealed 回填待并入）"
-            print(f"  {label}: n={len(sub)} 净期望 {sub['ret'].mean():+.2%} "
-                  f"中位 {sub['ret'].median():+.2%} 胜率 {(sub['ret']>0).mean():.0%} "
-                  f"NW-t {tt:+.2f}")
-            out[label] = {"n": int(len(sub)), "mean": float(sub["ret"].mean()),
-                          "median": float(sub["ret"].median()), "nw_t": tt}
-    verdict = ("OOS_PASS" if (len(ev) and out.get("样本外 2024-26", {}).get("mean", -1) > 0
-               and out.get("样本外 2024-26", {}).get("nw_t", 0) >= 2) else "CLOSED")
+    oos = res.get("样本外 2024-26", {})
+    passed = (oos.get("mean", -1) > 0 and oos.get("nw_t_daily", 0) >= 2 and not issues)
+    verdict = "OOS_PASS" if passed else "CLOSED"
     print(f"\n== 裁决：{verdict} ==")
-    json.dump({"verdict": verdict, "out": out, "n": int(len(ev))},
-              open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2, default=str)
+    if passed:
+        print("→ 样本外净期望为正且 NW-t>=2 → 小资金卫星仓候选（容量与尾部建模另做）")
+    else:
+        print("→ 样本外无正期望 → 按预注册关闭；结论为「沪深300 池 + 追涨类」不可做，"
+              "换池或换族需另立假设")
+    ev.drop(columns=["entry_year"]).to_parquet(OUT_EVENTS, index=False)
+    _save({"verdict": verdict, "rule": _rule_card(), "cost_rt": COST_RT,
+           "n_all_signals": int(len(ev_all)), "n_after_turnover": int(len(ev)),
+           "self_check_issues": issues,
+           "summary": res, "gross_mean": float(ev["gross"].mean()),
+           "by_year": {str(int(k)): {"n": int(v["size"]), "mean": float(v["mean"]),
+                                     "median": float(v["median"])}
+                       for k, v in yr.iterrows()}})
     try:
-        record("limitup_oos_strict", params={"cost": COST, "sl": -0.09, "tp": 0.14},
-               metrics={"oos_mean": float(out.get("样本外 2024-26", {}).get("mean", np.nan)),
-                        "oos_nw_t": float(out.get("样本外 2024-26", {}).get("nw_t", np.nan))},
-               notes=f"修正口径 dip-buy OOS：{verdict}", artifacts=[OUT.name])
-    except Exception as e:  # noqa: BLE001
-        print(f"[experiments] {e}")
+        record("limitup_oos_strict",
+               params={"rule": _rule_card(), "start": START, "turnover_max": LOW_TURNOVER_PCT},
+               metrics={"oos_mean": float(oos.get("mean", float("nan"))),
+                        "oos_nw_t": float(oos.get("nw_t_daily", float("nan")))},
+               notes=f"D-118 重写版 dip-buy OOS：{verdict}", artifacts=[OUT_JSON.name])
+    except Exception as e:  # noqa: BLE001  存档失败不掩盖结论
+        print(f"[experiments] 记录失败: {e}")
+
+
+def _slice(ev: pd.DataFrame, label: str) -> pd.DataFrame:
+    lo, hi = {"全样本 2020-26": (2020, 2026), "样本内 2020-23": (2020, 2023),
+              "样本外 2024-26": (2024, 2026)}.get(label, (2020, 2026))
+    return ev[ev["entry_year"].between(lo, hi)]
+
+
+def _save(payload: dict) -> None:
+    OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    OUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                        encoding="utf-8")
+    print(f"已保存 {OUT_JSON}")
 
 
 if __name__ == "__main__":

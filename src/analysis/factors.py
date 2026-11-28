@@ -91,13 +91,20 @@ def compute_raw_factors(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- 截面因子面板
-def st_symbol_set(store: ParquetStore) -> set:
-    """当前 ST/*ST 名头股票集合（按**今日**证券简称，实盘口径，D-071）。
+# ---------------------------------------------------------------- 按日 ST 剔除（PIT，D-118）
+ST_FLAG_NAME = "st_flag"   # meta/st_flag.parquet；与 src.data.universe 同名常量保持一致——
+# 分析层不 import 抓取模块（会连带拉起 akshare/baostock），故各自声明
 
-    ST 股的流动性枯竭是制度性风险（退市警示+机构禁持），不是因子模型里的
-    "冷门安静"——低换手因子会系统性给它们打高分（2026-11-08 候选池 rank4/5
-    实测），所以策略选股池默认剔除。名称是当前快照：用于实盘选股无前视；
-    用于历史回测是轻度前视（当时未必 ST），量级有限（33/949）。
+
+def st_symbol_set(store: ParquetStore) -> set:
+    """当前 ST/*ST 名头股票集合（按**今日**证券简称）。
+
+    实盘选股用本集合无前视（今天就知道谁今天是 ST）。但把它用于**历史回测**是前视：
+    2026-11-26 审计实测，被它抹掉的持仓里，策略真正持有过的 7 只现 ST 股 33 次持有
+    **全部早于戴帽日**（苏宁易购 2022-05-06、中南建设 2024-04-24、阳光城 2023-05-05……），
+    且 35 只里 19 只已退市——等于把"事后已知的输家"从历史里整段删除。历史口径自
+    D-118 起改用按日 ST 标记表（st_exclusion_mask / exclude_st=True），本函数只承担
+    "今日名单"这一角色。
     """
     try:
         sec = store.read("meta", "bs_securities", columns=["symbol", "name"])
@@ -105,6 +112,55 @@ def st_symbol_set(store: ParquetStore) -> set:
                 if "ST" in str(n).upper()}
     except Exception:  # noqa: BLE001  证券表缺失时不误杀（宁可放过不可错杀）
         return set()
+
+
+def load_st_flag(store: ParquetStore) -> pd.DataFrame | None:
+    """按日 ST 标记表（meta/st_flag：symbol, date, is_st，61 号脚本抓取）。
+
+    表不存在、或正好被写入方占用读到半截 parquet → 返回 None（调用方回退今日名单
+    口径并打印告警）。宁可口径退化，不可让回测/流水线因辅助数据崩掉。
+    """
+    if not store.exists("meta", ST_FLAG_NAME):
+        return None
+    try:
+        return store.read("meta", ST_FLAG_NAME, columns=["symbol", "date", "is_st"])
+    except Exception as e:  # noqa: BLE001  坏文件/半截写入
+        print(f"[st] 按日 ST 标记表读取失败（{e}）——回退今日名单口径", flush=True)
+        return None
+
+
+def st_exclusion_mask(dates: pd.Series, symbols: pd.Series, flag: pd.DataFrame | None,
+                      today_st: set[str]) -> tuple[pd.Series, dict]:
+    """需要从面板剔除的股票日掩码（与 dates/symbols 同索引）。
+
+    flag 为按日 ST 标记表时（D-118 口径）：
+      · 有记录且 is_st=1 → 剔除（**当日**确实 ST）；
+      · 无记录（该标的未抓到，或日期晚于表内最新日）→ 回退今日名单：今日是 ST 才剔除。
+        表停更只影响最近几日，方向保守；未抓到的标的由调用方按 61 号的失败清单处理。
+    flag 为 None 时整列回退今日名单（D-071 旧口径，含前视，仅供 --st-today 对照）。
+    """
+    sym = pd.Series(symbols.astype(str).to_numpy(), index=dates.index)
+    is_today = sym.isin(today_st).to_numpy()
+    n_rows = int(len(sym))
+    if flag is None or flag.empty:
+        mask = pd.Series(is_today, index=dates.index)
+        return mask, {"mode": "today", "dropped": int(mask.sum()), "rows": n_rows, "as_of": None}
+    f = flag[flag["symbol"].astype(str).isin(set(sym))].copy()
+    f["symbol"] = f["symbol"].astype(str)
+    f["date"] = pd.to_datetime(f["date"])
+    left = pd.DataFrame({"symbol": sym.to_numpy(), "date": pd.to_datetime(dates).to_numpy()})
+    merged = left.merge(f, on=["symbol", "date"], how="left")
+    known = merged["is_st"].notna().to_numpy()
+    in_st = merged["is_st"].fillna(0).to_numpy() == 1
+    fell_back = ~known                      # 表里没有这一行：未抓到，或日期晚于表内最新日
+    mask = pd.Series(in_st | (fell_back & is_today), index=dates.index)
+    has_record = pd.DataFrame({"symbol": left["symbol"], "known": known}).groupby("symbol")["known"].any()
+    diag = {"mode": "pit", "dropped": int(mask.sum()), "rows": n_rows,
+            "in_st": int(in_st.sum()), "fell_back": int(fell_back.sum()),
+            "fell_back_dropped": int((fell_back & is_today).sum()),
+            "as_of": pd.Timestamp(f["date"].max()) if len(f) else None,
+            "symbols_without_record": int((~has_record).sum())}
+    return mask, diag
 
 
 def build_factor_panel(
@@ -116,7 +172,7 @@ def build_factor_panel(
     pit_constituents: pd.DataFrame | None = None,
     dividend_panel: pd.DataFrame | None = None,
     expr_factors: dict[str, str] | None = None,
-    exclude_st: bool = False,
+    exclude_st: bool | str = False,
 ) -> pd.DataFrame:
     """
     读取多标的日线 -> 算原始因子 -> 拼成长表 -> 每个交易日截面 rank(pct)。
@@ -127,6 +183,11 @@ def build_factor_panel(
     pit_constituents: 传入 point-in-time 成分表（universe.load_pit_constituents 的输出）
     时，面板只保留「当天确实是该指数成分」的 (date, symbol) 行——消除幸存者偏差。
     判定口径：in_date <= date < out_date，out_date 为空视为至今仍是成分。
+
+    exclude_st: ST 剔除口径，在截面 rank **之前**执行（ST 的极端低换手会污染全池
+    分位数，D-071）。True = 按**当日** ST 状态剔除（meta/st_flag，D-118；表缺失时
+    回退今日名单并打印告警）；"today" = 用今日简称回溯全部历史（D-071 旧口径，含
+    前视，只供对照）；False = 不剔除。剔除统计落在返回值的 attrs["st_filter"]。
 
     dividend_panel: 传入分红面板（financials.load_dividend_panel 输出：
     date=除权日, symbol, dividend=每股税前红利）时，追加计算股息率因子 dy_ttm
@@ -214,17 +275,24 @@ def build_factor_panel(
         panel = merged[keep_rows].drop(columns=["in_date", "out_date"])
         panel = panel.reset_index(drop=True)
 
-    # ST 剔除必须在截面 rank 之前：ST 的极端低换手会污染全池分位数（D-071）
+    # ST 剔除必须在截面 rank 之前：ST 的极端低换手会污染全池分位数（D-071）。
+    # 口径见 st_exclusion_mask（D-118）：默认按当日状态；表缺失不许静默——打印告警。
+    st_diag: dict = {"mode": "none", "dropped": 0}
     if exclude_st:
-        st = st_symbol_set(store)
-        if st:
-            panel = panel[~panel["symbol"].isin(st)].reset_index(drop=True)
+        today_st = st_symbol_set(store)
+        flag = None if exclude_st == "today" else load_st_flag(store)
+        if flag is None and exclude_st != "today":
+            print("[st] 未找到按日 ST 标记表（meta/st_flag）——回退今日名单口径（历史回测含前视，"
+                  "请先运行 scripts/61_fetch_st_flag.py，D-118）", flush=True)
+        mask, st_diag = st_exclusion_mask(panel["date"], panel["symbol"], flag, today_st)
+        panel = panel[~mask.to_numpy()].reset_index(drop=True)
 
     # 截面 rank：同一天所有股票横向排名为百分位（一次 groupby 完成全部因子）
     rank_cols = [*factor_names, *extra]
     panel[rank_cols] = panel.groupby("date")[rank_cols].rank(pct=True)
 
     panel = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
+    panel.attrs["st_filter"] = st_diag
     return panel
 
 

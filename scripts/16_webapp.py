@@ -573,17 +573,19 @@ def _account_strategy(acc):
 
 
 PREFLIGHT_STRATEGIES = [
-    # D-108 全量新档（2026-11-22，同源同代）：MDD = 05 号全样本 canonical 重跑
-    #（corrected -32.01%/dividend -28.99%/topk -28.61%，nav 指纹核对），
-    # WF = 06 号样本外重跑（corrected 12.44%*/dividend 11.52%/topk 10.53%，_div/_tk 指纹核对）。
-    # *corrected 的 WF 12.44% 与 D-071 档 10.59% 差 +1.85pp 待定位（PIT 扩容/新鲜度修复
-    # 为候选），按"不利口径并列"暂采旧值 10.59%——分子分母都取保守端。
-    {"key": "corrected", "name": "现行版（低换手+低波+反转）", "mdd": 0.3201,
-     "wf_ann": 0.1059, "wf_note": "MDD 11-22 新档；WF 10.59% 待定位（新跑 12.44%）"},
-    {"key": "dividend", "name": "红利版（+股息率）", "mdd": 0.2899,
-     "wf_ann": 0.1152, "wf_note": "11-22 新档（dy 分母修复+2018 分红）"},
-    {"key": "topkdrop", "name": "topk（换手机制优化）", "mdd": 0.2861,
-     "wf_ann": 0.1053, "wf_note": "11-22 新档（参数稳定性弱：4/8）"},
+    # D-118 新档（2026-11-27，口径修正后重跑）：MDD = 05 号全样本（Top50/20，实盘参数），
+    # WF = 06 号样本外。三项口径修正同时生效：① ST 剔除改**按日**状态（旧口径按今日
+    # 名单回溯历史 = 前视，corrected 高估 5.0pp / topk 高估 3.5pp）；② 印花税/过户费按
+    # 成交日法定费率；③ 基准改全收益近似（+2%/年股息）。
+    # ⚠️ 已知结构问题（体检 v4 待改，见 DECISIONS D-118 §待办）：MDD 取实盘参数
+    # （Top50/20）、WF 年化取 WF 选出的参数（多为 Top20/60），两者不同源；且 WF 是
+    # 逐折拼接（每折年初强制建仓），同参数连续运行 lower（corrected 实测 9.6% vs 10.3%）。
+    {"key": "corrected", "name": "现行版（低换手+低波+反转）", "mdd": 0.3186,
+     "wf_ann": 0.1028, "wf_note": "11-27 新档（按日 ST + 法定费率 + 全收益基准）"},
+    {"key": "dividend", "name": "红利版（+股息率）", "mdd": 0.2922,
+     "wf_ann": 0.1228, "wf_note": "11-27 新档"},
+    {"key": "topkdrop", "name": "topk（换手机制优化）", "mdd": 0.2784,
+     "wf_ann": 0.1156, "wf_note": "11-27 新档（参数稳定性 4/8 仍弱）"},
 ]
 
 
@@ -671,13 +673,63 @@ def preflight_combo(budget: float, l_amount: float, acc: str = "large") -> dict:
     }, k
 
 
+def preflight_replay(budget: float, key: str = "corrected") -> dict | None:
+    """按预算查"逐期整手回放"的实测结果（D-119，62 号产物）。
+
+    为什么体检必须看这个（用户 2026-11-26 指认 + 实测）：体检用**50 只组合的 MDD**
+    当分母算可投入，但预算买不满 50 只。回放实测（corrected，2018-2026）：
+      预算 62,480 元 → 平均 33 只 / 53% 仓位 / 年化 -0.3% / 满仓折算 MDD -48.2%
+      （策略 -31.9%）/ 成本占投入 6.1%（策略 1.6%）；
+      预算 20,000 元 → 9 只 / 15% 仓位 / 满仓折算 MDD -83.2%。
+    即"同样满仓口径下，小预算风险是策略的 1.5~2.6 倍"，且牛市年份仓位自动缩水
+    （股价涨→一手门槛变高），跑输最多。查不到产物时返回 None（调用方如实说明）。
+    """
+    suffix = {"dividend": "_div", "topkdrop": "_tk"}.get(key, "")
+    f = STORE_DIR / "research_results" / f"mini_budget_replay{suffix}.parquet"
+    if not f.exists():
+        return None
+    try:
+        df = pd.read_parquet(f)
+        full = df[df["segment"] == "全样本 2018-2026"]
+        if full.empty:
+            return None
+        row = full.iloc[(full["budget"] - float(budget)).abs().argmin()]
+        seg = {s: g.iloc[(g["budget"] - float(budget)).abs().argmin()]
+               for s, g in df[df["segment"] != "全样本 2018-2026"].groupby("segment")}
+        return {
+            "nearest_budget": float(row["budget"]),
+            "avg_positions": float(row["avg_positions"]),
+            "avg_invested": float(row["avg_invested"]),
+            "ann": float(row["mini_ann"]),
+            "mdd": float(row["mini_mdd"]),
+            "mdd_norm": (float(row["mini_mdd_norm"])
+                         if pd.notna(row["mini_mdd_norm"]) else None),
+            "cost_on_invested": float(row["cost_on_invested"]),
+            "ref_mdd": float(row["ref_mdd"]),
+            "ref_ann": float(row["ref_ann"]),
+            "worst_year": min(
+                ((s, float(g["mini_ann"] - g["ref_ann"])) for s, g in seg.items()),
+                key=lambda kv: kv[1]) if seg else None,
+            "by_year": {s: {"ann": float(g["mini_ann"]), "ref_ann": float(g["ref_ann"]),
+                            "invested": float(g["avg_invested"]),
+                            "positions": float(g["avg_positions"])}
+                        for s, g in seg.items() if s.isdigit() or s.endswith("年")},
+        }
+    except Exception:  # noqa: BLE001  产物坏/列缺失 → 当没有，不影响体检主表
+        return None
+
+
 def preflight_check(l_amount: float):
-    """开户前体检（D-068 构想一 / D-076 v1 公式 / D-098 归因校准输入）。
+    """开户前体检（D-068 构想一 / D-076 v1 公式 / D-098 归因校准输入 / D-119 回放层）。
 
     约束满足式（D-009 产品化）：可投入 = 可承受亏损 L ÷ |历史 MDD|；
     1.5× 压力档 = L ÷ (1.5×|MDD|)——为"没见过所有危机"支付的保险费。
     期望带 = WF 样本外年化 ±3pp × 投入额。alpha 未裁决（D-010 挂起），
     四周影子盘实测带仅供参考，非收益承诺。
+
+    D-119 新增 replay：对"主策略推荐投入"这个预算做逐期整手回放，给出该预算
+    自己会经历的 MDD/年化/持仓数/成本率——因为可投入公式的分母（50 只组合的 MDD）
+    在一个买不满 50 只的预算上并不成立。
     """
     l_amount = max(float(l_amount or 0), 0.0)
     rows = []
@@ -704,8 +756,18 @@ def preflight_check(l_amount: float):
             combo_15, _ = preflight_combo(rows[0]["invest_15"], l_amount, "large")
     except Exception as e:  # noqa: BLE001  组合核查失败不拖垮体检主表
         combo = {"err": str(e)[:80]}
+    # D-119：回放层——主策略推荐预算下"这个账户真实会长什么样"
+    replay = None
+    replay_15 = None
+    try:
+        if rows:
+            replay = preflight_replay(rows[0]["invest"], "corrected")
+            replay_15 = preflight_replay(rows[0]["invest_15"], "corrected")
+    except Exception:  # noqa: BLE001
+        replay = None
     return {"L": l_amount, "rows": rows, "calibration": calibration,
-            "combo": combo, "combo_15": combo_15}
+            "combo": combo, "combo_15": combo_15,
+            "replay": replay, "replay_15": replay_15}
 
 
 def research_list():

@@ -1,15 +1,15 @@
-# -*- coding: utf-8 -*-
 """
 标的池与基础数据：股票/ETF/指数/可转债列表、交易日历、全量证券、指数成分股。
 所有结果落 Parquet 仓库的 meta 分区。
 """
 import time
+
 import pandas as pd
 
 from config import REQUEST_INTERVAL
+from src.data.schema import normalize_code, to_bs_code
+from src.data.sources import ak, bs_query, bs_to_df, ensure_bs_login, retry_call
 from src.data.storage import ParquetStore
-from src.data.sources import ak, ensure_bs_login, bs_to_df, retry_call
-from src.data.schema import normalize_code
 
 
 # ---------------------------------------------------------------- A股股票列表
@@ -254,3 +254,90 @@ def init_universe(store: ParquetStore | None = None,
         df = fetch_index_constituents(idx, store)
         result[f"constituents_{idx}"] = len(df)
     return result
+
+
+# ---------------------------------------------------------------- 按日 ST 标记（时点数据，D-118）
+ST_FLAG_NAME = "st_flag"            # meta/st_flag.parquet：symbol, date, is_st
+ST_FLAG_START = "2015-01-01"        # 因子最长回看 365 日，2018 起的回测留足预热
+ST_FLAG_CHECKPOINT = 50             # 每抓满多少只落一次盘（断点续抓的粒度）
+_BS_FLAG_NONE = "3"                 # 不复权：isST 与价格无关，只是随行字段
+
+
+def fetch_st_flag(symbol: str, start: str = ST_FLAG_START,
+                  end: str | None = None) -> pd.DataFrame:
+    """抓取单只股票的逐日 ST 标记（baostock 日线随行字段 isST，1=当日 ST/*ST）。
+
+    start/end 为 ISO 日期（YYYY-MM-DD，baostock 接口口径）；end 缺省到今天。
+
+    为什么要有这张表（D-118）：`exclude_st` 早先按**今天的简称**剔除全部历史，
+    把尚未戴帽时期的持仓一并抹掉——2026-11-26 审计实测，策略持有过的 7 只现 ST 股
+    33 次持有全部早于戴帽日（苏宁易购 2022-05-06、中南建设 2024-04-24、阳光城
+    2023-05-05……）。isST 在当天就成立，是真正的时点数据，回测与检验据此只剔除
+    **当日确实处于 ST** 的股票日。
+    """
+    code = normalize_code(symbol)
+    bs = ensure_bs_login()
+    raw = bs_query(bs.query_history_k_data_plus, to_bs_code(code), "date,isST",
+                   start_date=start, end_date=end or pd.Timestamp.now().strftime("%Y-%m-%d"),
+                   frequency="d", adjustflag=_BS_FLAG_NONE)
+    if raw.empty:
+        return pd.DataFrame({"symbol": pd.Series(dtype=str),
+                             "date": pd.Series(dtype="datetime64[ns]"),
+                             "is_st": pd.Series(dtype="int8")})
+    out = pd.DataFrame({
+        "symbol": code,
+        "date": pd.to_datetime(raw["date"], errors="coerce"),
+        "is_st": pd.to_numeric(raw["isST"], errors="coerce").fillna(0).astype("int8"),
+    })
+    return (out.dropna(subset=["date"]).drop_duplicates("date")
+            .sort_values("date").reset_index(drop=True))
+
+
+def update_st_flag(symbols, store: ParquetStore | None = None,
+                   start: str = ST_FLAG_START, sleep: float = REQUEST_INTERVAL,
+                   checkpoint: int = ST_FLAG_CHECKPOINT, log=print) -> dict:
+    """增量更新按日 ST 标记表（断点续抓：已有记录的标的只抓最后日期之后）。
+
+    一只标的一次请求；每满 checkpoint 只原子覆盖整表一次，中断后重跑即续抓。
+    返回 {"updated", "uptodate", "empty", "failed", "rows"}。
+    """
+    store = store or ParquetStore()
+    old = store.read_or_empty("meta", ST_FLAG_NAME)
+    last = (old.groupby("symbol")["date"].max() if len(old)
+            else pd.Series(dtype="datetime64[ns]"))
+    today = pd.Timestamp.now().strftime("%Y-%m-%d")
+    stats = {"updated": 0, "uptodate": 0, "empty": 0, "failed": [], "rows": int(len(old))}
+    fetched: list[pd.DataFrame] = []        # 本次运行抓到的全部帧（落盘时整体重建，避免批次互相覆盖）
+
+    def _flush() -> None:
+        if not fetched:
+            return
+        new = pd.concat(fetched, ignore_index=True)
+        merged = (new if old.empty
+                  else pd.concat([old[~old["symbol"].isin(new["symbol"])], new], ignore_index=True))
+        merged = merged.sort_values(["symbol", "date"]).reset_index(drop=True)
+        store.write_atomic(merged, "meta", ST_FLAG_NAME, source="baostock/isST", date_col="date")
+        stats["rows"] = int(len(merged))
+
+    for i, sym in enumerate(symbols, 1):
+        code = normalize_code(str(sym))
+        try:
+            since = ((pd.Timestamp(last[code]) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                     if code in last.index else start)
+            if since > today:
+                stats["uptodate"] += 1
+            else:
+                df = fetch_st_flag(code, start=since)
+                if df.empty:
+                    stats["empty"] += 1
+                else:
+                    fetched.append(df)
+                    stats["updated"] += 1
+                time.sleep(sleep)        # 符号间微休眠（拉黑教训，同 D-071）
+        except Exception as e:  # noqa: BLE001  单只失败不拖垮批次，重跑续抓
+            stats["failed"].append((code, str(e)[:80]))
+        if stats["updated"] and stats["updated"] % checkpoint == 0 and i < len(symbols):
+            _flush()
+            log(f"   进度 {i}/{len(symbols)} | 已抓 {stats['updated']} | 表内 {stats['rows']} 行")
+    _flush()
+    return stats

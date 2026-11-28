@@ -12,8 +12,12 @@
   开盘相对昨收的涨跌幅（容差 0.1%，与 pipeline 相同）；
 - 收益：组合日收益 = Σ w_eff * r_close；两次调仓之间权重按个股收益自然漂移；
 - 成本：逐笔佣金（含**最低佣金 5 元/笔**）+ 过户费 + 滑点 + 卖出印花税；
+  statutory_costs=True 时印花税/过户费按**成交日**取法定费率（D-118：印花税
+  2023-08-28 前为 0.1%、过户费 2022-04-29 前为 0.002%），否则用传入的固定值；
 - 保真约束（limit_skip=True）：执行日**停牌**跳过该标的调仓；**涨停买不进/跌停卖不出**
   （按收盘涨跌幅判断，主板 10%、创业板/科创板 20%）→ 维持原权重；
+  st_flag（symbol, date, is_st，61 号脚本的按日 ST 标记表）传入后，主板 ST 股票日
+  按其当日 ±5% 判定（F-21 回测侧：此前回测拿不到名称，历史 ST 一律按 ±10%）；
 - 分红：dividends=(date, symbol, dividend) 时，除权日按持仓权重计入现金（近似）。
 
 用法：
@@ -29,14 +33,46 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import board_limit
+from config import (
+    BENCH_DIVIDEND_YIELD,
+    STAMP_RATE_HISTORY,
+    TRANSFER_RATE_HISTORY,
+    board_limit,
+    rate_on,
+)
 
 TRADING_DAYS = 250
 
 
-def _board_limit(symbol: str, date=None) -> float:
+def _board_limit(symbol: str, date=None, is_st: bool = False) -> float:
     # 深检 2026-11-22：传成交日按当年制度判涨跌停（创业板 2020-08-24 前 ±10%）
-    return board_limit(symbol, date=date)
+    # D-118：传 is_st → 主板 ST 按当日 ±5%（F-21 回测侧）
+    return board_limit(symbol, "ST" if is_st else None, date=date)
+
+
+def benchmark_total_return(close: pd.Series,
+                           div_yield: float = BENCH_DIVIDEND_YIELD) -> pd.Series:
+    """价格指数收盘序列 → 全收益近似日收益（价格收益 + 固定股息率按交易日折算，D-118）。
+
+    股息按 (1+股息率)^(1/年交易日)−1 逐日计提并与价格收益相加：250 日累计恰为
+    1+股息率，忽略再投资的交叉项（约股息率²/年，2% 下不足 0.05%）。
+    """
+    c = pd.to_numeric(close, errors="coerce").sort_index()
+    daily_div = (1.0 + div_yield) ** (1.0 / TRADING_DAYS) - 1.0
+    return (c.pct_change() + daily_div).rename("bench_total_return")
+
+
+def _st_matrix(st_flag: pd.DataFrame | None, dates, cols) -> np.ndarray | None:
+    """按日 ST 标记表 → 与价格矩阵同形的布尔矩阵；未传或为空返回 None（一律按非 ST）。"""
+    if st_flag is None or len(st_flag) == 0:
+        return None
+    f = st_flag[st_flag["symbol"].astype(str).isin(set(map(str, cols)))]
+    if f.empty:
+        return None
+    wide = f.assign(symbol=f["symbol"].astype(str), date=pd.to_datetime(f["date"]),
+                    is_st=pd.to_numeric(f["is_st"], errors="coerce"))
+    st = wide.pivot(index="date", columns="symbol", values="is_st") == 1.0
+    return st.reindex(index=dates, columns=list(cols)).fillna(False).to_numpy(dtype=bool)
 
 
 def run_portfolio_backtest(
@@ -55,6 +91,8 @@ def run_portfolio_backtest(
     verbose: bool = False,
     open_prices: pd.DataFrame | None = None,
     limit_tol: float = 0.002,
+    statutory_costs: bool = False,
+    st_flag: pd.DataFrame | None = None,
 ) -> dict:
     """目标权重矩阵 -> 组合回测结果。
 
@@ -105,6 +143,9 @@ def run_portfolio_backtest(
                 eff[later[trade_lag - 1]] = d
     if not eff:
         raise ValueError("没有任何信号日能映射到执行日（检查 weights 与 prices 的日期范围）")
+
+    # 按日 ST 标记 → 与价格矩阵同形的布尔矩阵（dates × cols），缺失一律按非 ST（F-21 回测侧）
+    st_mat = _st_matrix(st_flag, dates, cols)
 
     n_sym = len(cols)
     w_hold = np.zeros(n_sym)
@@ -164,7 +205,8 @@ def run_portfolio_backtest(
                     if pd.isna(p0) or p0 <= 0:
                         continue
                     chg = float(raw_t.get(sym)) / float(p0) - 1.0
-                    lim = _board_limit(sym, date=t)
+                    is_st = bool(st_mat[i, k]) if st_mat is not None else False
+                    lim = _board_limit(sym, date=t, is_st=is_st)
                     tol = 0.001 if exec_at_open else limit_tol  # 开盘口径与 pipeline 相同
                     if w_target[k] > w_hold[k] and chg >= lim - tol:
                         w_target[k] = w_hold[k]           # 开盘/收盘触涨停：买不进
@@ -201,8 +243,11 @@ def run_portfolio_backtest(
             comm = float(sum(max(a * fee, min_fee) for a in buy_amt if a > 0)
                          + sum(max(a * fee, min_fee) for a in sell_amt if a > 0))
             slip_amt = float((buy_amt.sum() + sell_amt.sum()) * slippage)
-            stamp_amt = float(sell_amt.sum() * stamp_duty)
-            trans_amt = float((buy_amt.sum() + sell_amt.sum()) * transfer_fee)
+            # D-118：法定费率按成交日取（印花税/过户费有过下调），否则用传入的固定值
+            stamp_t = rate_on(STAMP_RATE_HISTORY, t) if statutory_costs else stamp_duty
+            trans_t = rate_on(TRANSFER_RATE_HISTORY, t) if statutory_costs else transfer_fee
+            stamp_amt = float(sell_amt.sum() * stamp_t)
+            trans_amt = float((buy_amt.sum() + sell_amt.sum()) * trans_t)
             cost_amt = comm + slip_amt + stamp_amt + trans_amt
             if notional > 0:
                 nav *= 1.0 - cost_amt / notional
@@ -227,6 +272,7 @@ def run_portfolio_backtest(
         "turnover": turn_series.astype(float),
         "n_rebalance": w_rounds,
         "n_skipped": n_skipped,
+        "statutory_costs": bool(statutory_costs),
         "costs": {k: float(v) for k, v in totals.items()},
         "dates": nav_series.index,
     }

@@ -61,6 +61,21 @@ LOT = 100                 # A 股整手
 GEM_PREFIX = ("300", "301")         # 创业板
 STAR_PREFIX = "688"                 # 科创板
 
+# 历史费率时间线（D-118）：回测按**成交日**取当期法定费率；影子盘撮合永远用上面的现行值。
+# 条目 = (生效日, 费率)，日期升序，None = 自始适用。
+#   印花税（仅卖出）：2008-09-19 起 0.1% → 2023-08-28 减半
+#   过户费（双边）：  2015-08-01 起 0.002% → 2022-04-29 减半
+# 早先回测全程按现行值计，2018~2023-08 的卖出少算一半印花税（实测约 1.5pp 总收益）。
+STAMP_RATE_HISTORY: tuple[tuple[str | None, float], ...] = (
+    (None, 0.0010), ("2023-08-28", STAMP_RATE))
+TRANSFER_RATE_HISTORY: tuple[tuple[str | None, float], ...] = (
+    (None, 0.00002), ("2022-04-29", TRANSFER_RATE))
+
+# 基准全收益近似（D-096 强制口径①，D-118 落地到 05/06）：价格指数 + 固定股息率/年。
+# 免费源没有沪深300 全收益指数（H00300）的历史，故用近似；股息率年际在约 1.8%~3.5%
+# 间波动，取 2% 是 D-096 的既定口径——偏高或偏低 1pp，年化超额同向差约 1pp。
+BENCH_DIVIDEND_YIELD = 0.02
+
 # 制度时间线（涨跌停幅度随年代不同，回测/撮合必须按**日期**判定）：
 #   创业板 2020-08-24 注册制改革：±10% → ±20%（ST 同升）；此前 ST ±5%
 #   科创板 2019-07-22 开市即 ±20%（含 ST；上市前 5 日无涨跌停，未建模）
@@ -115,3 +130,16 @@ def board_limit(symbol: str, name: str | None = None, date=None) -> float:
     if c.startswith(STAR_PREFIX):                 # 科创板：含 ST 均 ±20%
         return 0.20
     return 0.05 if is_st else 0.10                # 主板
+
+
+def rate_on(history: tuple[tuple[str | None, float], ...], date=None) -> float:
+    """取某日适用的费率：生效日 <= date 的最后一个条目（date=None → 现行值，即末条）。
+
+    history 形如 STAMP_RATE_HISTORY；date 早于全部生效日时返回首条（自始费率）。
+    """
+    d = _as_iso_date(date)
+    rate = history[0][1]
+    for effective, r in history:
+        if effective is None or d is None or effective <= d:
+            rate = r
+    return rate

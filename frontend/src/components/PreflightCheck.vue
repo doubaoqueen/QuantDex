@@ -161,15 +161,85 @@ run()
       组合核查不可用：{{ data.combo.err }}
     </div>
 
+    <!-- D-119：预算回放——这个预算自己会经历的净值路径，而不是"50 只组合"的借来数字 -->
+    <div v-if="data && data.replay" class="mt-3 rounded-lg border border-violet-200 bg-violet-50/60 p-3 text-xs text-violet-950">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span class="font-semibold">预算回放（逐期整手 · 按真实 20 日调仓序列）</span>
+        <span class="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">
+          {{ data.replay.nearest_budget.toLocaleString() }} 元档
+        </span>
+      </div>
+      <div class="mt-1.5 grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
+        <div class="rounded-md bg-white/70 p-1.5">
+          <div class="text-[10px] text-slate-400">实际持仓（目标 50）</div>
+          <div class="tabular font-bold">{{ data.replay.avg_positions.toFixed(0) }} 只</div>
+        </div>
+        <div class="rounded-md bg-white/70 p-1.5">
+          <div class="text-[10px] text-slate-400">平均仓位</div>
+          <div class="tabular font-bold">{{ (data.replay.avg_invested * 100).toFixed(0) }}%</div>
+        </div>
+        <div class="rounded-md bg-white/70 p-1.5">
+          <div class="text-[10px] text-slate-400">回放年化</div>
+          <div class="tabular font-bold" :class="data.replay.ann < 0 ? 'text-red-600' : 'text-emerald-600'">
+            {{ (data.replay.ann * 100).toFixed(1) }}%
+          </div>
+        </div>
+        <div class="rounded-md bg-white/70 p-1.5">
+          <div class="text-[10px] text-slate-400">成本 / 投入资金</div>
+          <div class="tabular font-bold text-orange-700">{{ (data.replay.cost_on_invested * 100).toFixed(1) }}%</div>
+        </div>
+      </div>
+      <div class="mt-2 rounded-md bg-white/70 p-2 text-[11px] leading-relaxed">
+        <b>满仓折算 MDD {{ (data.replay.mdd_norm * 100).toFixed(1) }}%</b>
+        vs 策略 {{ (data.replay.ref_mdd * 100).toFixed(1) }}%
+        （放大 {{ (data.replay.mdd_norm / data.replay.ref_mdd).toFixed(2) }}×）——
+        实际回撤 {{ (data.replay.mdd * 100).toFixed(1) }}% 之所以更浅，是因为只投出去
+        {{ (data.replay.avg_invested * 100).toFixed(0) }}%，不是组合更安全。
+        <template v-if="data.replay.worst_year">
+          <br />最差年份：{{ data.replay.worst_year[0] }} 跑输策略
+          <b>{{ (data.replay.worst_year[1] * -100).toFixed(1) }}pp</b>（仓位在牛市被"一手门槛"自动压低）。
+        </template>
+      </div>
+      <div class="mt-2 max-h-40 overflow-y-auto rounded-md border border-violet-200/70">
+        <table class="w-full text-[11px] tabular">
+          <thead class="sticky top-0 bg-violet-100/80 text-violet-700">
+            <tr><th class="px-2 py-1 text-left">分段</th><th class="px-2 py-1 text-right">仓位</th>
+                <th class="px-2 py-1 text-right">回放年化</th><th class="px-2 py-1 text-right">策略年化</th>
+                <th class="px-2 py-1 text-right">差额</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(v, k) in data.replay.by_year" :key="k" class="border-t border-violet-100">
+              <td class="px-2 py-1">{{ k }}</td>
+              <td class="px-2 py-1 text-right">{{ (v.invested * 100).toFixed(0) }}%</td>
+              <td class="px-2 py-1 text-right">{{ (v.ann * 100).toFixed(1) }}%</td>
+              <td class="px-2 py-1 text-right text-slate-500">{{ (v.ref_ann * 100).toFixed(1) }}%</td>
+              <td class="px-2 py-1 text-right font-semibold"
+                  :class="(v.ann - v.ref_ann) < 0 ? 'text-red-600' : 'text-emerald-600'">
+                {{ ((v.ann - v.ref_ann) * 100).toFixed(1) }}pp
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="mt-1.5 text-[10px] text-violet-700/80">
+        回放口径：真实 20 日调仓权重 + T+1 开盘成交 + 100 股整手 + 最低佣金 5 元 + 法定费率（D-118）。
+        产物由 62 号脚本生成，随 nightly 刷新。
+      </p>
+    </div>
+    <div v-else-if="data" class="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-500">
+      预算回放不可用（未找到 62 号产物）——运行 <code>python scripts/62_mini_budget_replay.py</code>。
+    </div>
+
     <div class="mt-2 rounded-lg border border-orange-200 bg-orange-50/60 p-3 text-xs text-orange-900">
       1.5× 黑天鹅档说明：分母放大 1.5 倍——即使未来回撤达到历史的 1.5 倍也不刺穿红线。
       标准档与保守档的差价，是为"没见过所有危机"支付的保险费。alpha 未裁决（D-010），
       期望带是<b>档案口径的参考带</b>，不是收益承诺。
     </div>
     <p class="mt-2 text-[10px] text-slate-400">
-      三行均为 11-22 同源新档（MDD = 05 号全样本 canonical，WF = 06 号样本外，产物指纹核对）。
-      corrected 的 WF 暂采保守旧值 10.59%——新跑 12.44% 差异待定位（D-108）。
-      上表为<b>等比例口径</b>（假设无摩擦等权 50 只分散）；小预算下该假设不成立，以「组合可行性核查」为准（D-104）。
+      三行均为 11-27 口径修正新档（D-118：按日 ST 剔除 / 法定费率 / 全收益基准；
+      MDD = 05 号全样本 Top50/20，WF = 06 号样本外）。
+      上表为<b>等比例口径</b>（假设无摩擦等权 50 只分散）；小预算下该假设不成立——
+      以「组合可行性核查」（截面能否买到）与「预算回放」（这个预算自己的历史路径）为准。
     </p>
   </div>
 </template>

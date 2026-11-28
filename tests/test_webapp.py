@@ -315,3 +315,36 @@ def test_preflight_combo_feasibility():
     # 极小预算：连一手都买不起 → k=0 fail（预算 1 元）
     tiny, _ = webapp.preflight_combo(1.0, 1000.0)
     assert "err" not in tiny and tiny["k"] == 0 and tiny["verdict"] == "fail"
+
+
+def test_preflight_replay_contract():
+    """D-119：体检的预算回放层——读 62 号产物，字段齐全且自洽。
+
+    产物缺失时返回 None（面板显示"不可用"而不是崩）；有产物时：
+    · 满仓折算 MDD = 实际 MDD / 平均仓位；
+    · 最差年份 = 各年 (回放年化 - 策略年化) 的最小值。
+    """
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "webapp_pf", root / "scripts" / "16_webapp.py")
+    w = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(w)
+
+    r = w.preflight_replay(62_480, "corrected")
+    if r is None:                                   # 未跑 62 号 → 允许 None
+        return
+    assert r["nearest_budget"] > 0
+    assert 0 < r["avg_invested"] <= 1.0
+    assert r["mdd"] <= 0 and r["ref_mdd"] <= 0
+    if r["mdd_norm"] is not None and r["avg_invested"] > 0:
+        assert abs(r["mdd_norm"] - r["mdd"] / r["avg_invested"]) < 1e-6
+    assert isinstance(r["by_year"], dict) and len(r["by_year"]) >= 1
+    worst = min((v["ann"] - v["ref_ann"]) for v in r["by_year"].values())
+    assert r["worst_year"] is None or abs(r["worst_year"][1] - worst) < 1e-9
+
+    # 完整响应形状：replay 在 preflight_check 顶层
+    payload = w.preflight_check(20_000)
+    assert "replay" in payload and payload["rows"]

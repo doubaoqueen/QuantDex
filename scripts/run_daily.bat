@@ -26,10 +26,12 @@ rem stage 3: 5-minute bars; failure here must NOT mask a successful mail run
 echo ===== STAGE 3/3 minute-bars done %date% %time% RC_MINUTE=%ERRORLEVEL% >> data\store\logs\daily_run.log
 rem stage 4 (D-117): refresh backtest artifacts (05/06 x3 strategies, ~3.5 min, offline)
 rem so the backtest panel never goes stale again; --no-archive avoids experiment spam
+rem D-119: 62 also runs here - the preflight panel's "budget replay" reads its artifact
 echo ===== STAGE 4/4 backtest-refresh start %date% %time% >> data\store\logs\daily_run.log
 for %%S in (corrected dividend topkdrop) do (
   "%PY%" scripts\05_portfolio_backtest.py 000300 50 20 %%S --no-archive >> data\store\logs\daily_run.log 2>&1
   "%PY%" scripts\06_walkforward.py 000300 %%S --no-archive >> data\store\logs\daily_run.log 2>&1
+  "%PY%" scripts\62_mini_budget_replay.py %%S >> data\store\logs\daily_run.log 2>&1
 )
 echo ===== STAGE 4/4 backtest-refresh done %date% %time% RC_BT=%ERRORLEVEL% >> data\store\logs\daily_run.log
 if not "%RC_MAIL%"=="0" exit /b %RC_MAIL%
